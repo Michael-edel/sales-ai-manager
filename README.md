@@ -36,6 +36,7 @@ cd worker
 npm install
 npx wrangler d1 create sales-ai-manager
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put GEMINI_API_KEY
 npm run d1:migrate:local
 
 cd ..\frontend
@@ -216,3 +217,18 @@ npm run dev
 ```
 
 Важно: Cloudflare-версия пока переносит заявки, D1, OpenAI text/vision/audio. IMAP-проверка mailcow/Yandex остается в Docker/FastAPI-версии и требует отдельного bridge-сервиса для production.
+
+Cloudflare Worker поддерживает два LLM-провайдера:
+
+```toml
+AI_PROVIDER = "openai"
+```
+
+или:
+
+```toml
+AI_PROVIDER = "gemini"
+GEMINI_MODEL = "gemini-3.5-flash"
+```
+
+`OPENAI_API_KEY` и `GEMINI_API_KEY` задаются как Cloudflare secrets через Wrangler.

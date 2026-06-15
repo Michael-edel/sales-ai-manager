@@ -47,6 +47,33 @@ REPLACE_WITH_D1_DATABASE_ID
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+## 3.1. Добавить Gemini API key
+
+Gemini API key получите в Google AI Studio:
+
+```text
+https://aistudio.google.com/app/apikey
+```
+
+Добавьте secret:
+
+```powershell
+npx wrangler secret put GEMINI_API_KEY
+```
+
+Выбор провайдера задается в `worker/wrangler.toml`:
+
+```toml
+AI_PROVIDER = "openai"
+```
+
+или:
+
+```toml
+AI_PROVIDER = "gemini"
+GEMINI_MODEL = "gemini-3.5-flash"
+```
+
 ## 4. Проверить локально через Wrangler
 
 ```powershell

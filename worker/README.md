@@ -67,6 +67,35 @@ npm run d1:migrate:remote
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+## Gemini API
+
+Gemini поддерживается как альтернативный провайдер.
+
+Получите ключ в Google AI Studio:
+
+```text
+https://aistudio.google.com/app/apikey
+```
+
+Добавьте secret:
+
+```powershell
+npx wrangler secret put GEMINI_API_KEY
+```
+
+Чтобы использовать Gemini вместо OpenAI, измените в `wrangler.toml`:
+
+```toml
+AI_PROVIDER = "gemini"
+GEMINI_MODEL = "gemini-3.5-flash"
+```
+
+Чтобы вернуться на OpenAI:
+
+```toml
+AI_PROVIDER = "openai"
+```
+
 ## Локальный запуск
 
 Соберите frontend:

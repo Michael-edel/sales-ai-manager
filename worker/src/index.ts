@@ -1,9 +1,12 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  AI_PROVIDER: string;
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
   OPENAI_TRANSCRIBE_MODEL: string;
+  GEMINI_API_KEY: string;
+  GEMINI_MODEL: string;
 }
 
 type Metadata = {
@@ -112,10 +115,10 @@ async function processUpload(request: Request, env: Env) {
   let sourceType = "file";
 
   if (isImage(lowerName)) {
-    const dataUrl = await fileToDataUrl(file);
+    const filePayload = await fileToPayload(file);
     originalText = `${context}Загружено изображение для vision-анализа: ${fileName}`;
     if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
-    aiResult = await analyzeImage(env, dataUrl, fileName, `${context}${managerNote}`.trim());
+    aiResult = await analyzeImage(env, filePayload, fileName, `${context}${managerNote}`.trim());
     sourceType = "image";
   } else if (isAudio(lowerName)) {
     const transcription = await transcribeAudio(env, file, managerNote);
@@ -139,6 +142,9 @@ async function processUpload(request: Request, env: Env) {
 }
 
 async function analyzeText(env: Env, originalText: string): Promise<string> {
+  if (useGemini(env)) {
+    return analyzeTextGemini(env, originalText);
+  }
   requireOpenAI(env);
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -152,7 +158,10 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
   return readOpenAIText(response);
 }
 
-async function analyzeImage(env: Env, imageDataUrl: string, fileName: string, managerNote: string): Promise<string> {
+async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+  if (useGemini(env)) {
+    return analyzeImageGemini(env, filePayload, fileName, managerNote);
+  }
   requireOpenAI(env);
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -168,7 +177,7 @@ async function analyzeImage(env: Env, imageDataUrl: string, fileName: string, ma
               type: "input_text",
               text: `Проанализируй изображение как входящую заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
             },
-            { type: "input_image", image_url: imageDataUrl },
+            { type: "input_image", image_url: filePayload.dataUrl },
           ],
         },
       ],
@@ -178,6 +187,10 @@ async function analyzeImage(env: Env, imageDataUrl: string, fileName: string, ma
 }
 
 async function transcribeAudio(env: Env, file: File, managerNote: string): Promise<string> {
+  if (useGemini(env)) {
+    const filePayload = await fileToPayload(file);
+    return transcribeAudioGemini(env, filePayload, file.name, managerNote);
+  }
   requireOpenAI(env);
   const formData = new FormData();
   formData.append("model", env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-transcribe");
@@ -194,6 +207,80 @@ async function transcribeAudio(env: Env, file: File, managerNote: string): Promi
   return (await response.text()).trim();
 }
 
+async function analyzeTextGemini(env: Env, originalText: string): Promise<string> {
+  requireGemini(env);
+  const response = await fetch(geminiGenerateUrl(env), {
+    method: "POST",
+    headers: geminiHeaders(env),
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [
+        {
+          parts: [
+            {
+              text: `Проанализируй входящую заявку менеджера по продажам.\n\nЗаявка:\n${originalText}`,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  return readGeminiText(response);
+}
+
+async function analyzeImageGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+  requireGemini(env);
+  const response = await fetch(geminiGenerateUrl(env), {
+    method: "POST",
+    headers: geminiHeaders(env),
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [
+        {
+          parts: [
+            {
+              text: `Проанализируй изображение как входящую заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+            },
+            {
+              inline_data: {
+                mime_type: filePayload.mimeType,
+                data: filePayload.base64,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  return readGeminiText(response);
+}
+
+async function transcribeAudioGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+  requireGemini(env);
+  const response = await fetch(geminiGenerateUrl(env), {
+    method: "POST",
+    headers: geminiHeaders(env),
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            {
+              text: `Расшифруй голосовое сообщение дословно на языке оригинала. Это B2B-заявка по электротехнике. Имя файла: ${fileName}. Контекст: ${managerNote || "нет"}`,
+            },
+            {
+              inline_data: {
+                mime_type: filePayload.mimeType,
+                data: filePayload.base64,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  return readGeminiText(response);
+}
+
 async function readOpenAIText(response: Response): Promise<string> {
   const raw = await response.text();
   if (!response.ok) throw new Error(`Ошибка OpenAI API: ${raw}`);
@@ -204,6 +291,18 @@ async function readOpenAIText(response: Response): Promise<string> {
     ?.join("\n")
     ?.trim();
   if (!text) throw new Error("OpenAI API вернул пустой ответ.");
+  return text;
+}
+
+async function readGeminiText(response: Response): Promise<string> {
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`Ошибка Gemini API: ${raw}`);
+  const data = JSON.parse(raw);
+  const text = data.candidates?.flatMap((candidate: any) => candidate.content?.parts || [])
+    ?.map((part: any) => part.text || "")
+    ?.join("\n")
+    ?.trim();
+  if (!text) throw new Error("Gemini API вернул пустой ответ.");
   return text;
 }
 
@@ -255,12 +354,24 @@ function isAudio(fileName: string): boolean {
   return [".mp3", ".m4a", ".wav", ".ogg", ".opus", ".webm"].some((extension) => fileName.endsWith(extension));
 }
 
-async function fileToDataUrl(file: File): Promise<string> {
+type FilePayload = {
+  mimeType: string;
+  base64: string;
+  dataUrl: string;
+};
+
+async function fileToPayload(file: File): Promise<FilePayload> {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `data:${file.type || "application/octet-stream"};base64,${btoa(binary)}`;
+  const mimeType = file.type || "application/octet-stream";
+  const base64 = btoa(binary);
+  return {
+    mimeType,
+    base64,
+    dataUrl: `data:${mimeType};base64,${base64}`,
+  };
 }
 
 function stringValue(value: FormDataEntryValue | null): string {
@@ -271,9 +382,29 @@ function requireOpenAI(env: Env): void {
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не задан. Установите secret через Wrangler.");
 }
 
+function requireGemini(env: Env): void {
+  if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY не задан. Установите secret через Wrangler.");
+}
+
+function useGemini(env: Env): boolean {
+  return (env.AI_PROVIDER || "").toLowerCase() === "gemini";
+}
+
 function openAIHeaders(env: Env): HeadersInit {
   return {
     Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+    "Content-Type": "application/json",
+  };
+}
+
+function geminiGenerateUrl(env: Env): string {
+  const model = env.GEMINI_MODEL || "gemini-3.5-flash";
+  return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+}
+
+function geminiHeaders(env: Env): HeadersInit {
+  return {
+    "x-goog-api-key": env.GEMINI_API_KEY,
     "Content-Type": "application/json",
   };
 }
