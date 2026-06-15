@@ -3,10 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2026-06-15"
 
 [vars]
-AI_PROVIDER = "openai"
-OPENAI_MODEL = "gpt-5.5"
-OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe"
+AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-flash"
 
 [assets]
 directory = "../frontend/dist"
