@@ -1,0 +1,121 @@
+# GitHub + Cloudflare Deploy
+
+Этот проект сейчас рассчитан на запуск без Docker через Cloudflare Workers, D1 и Wrangler.
+
+## 1. Что нужно установить локально
+
+- Git
+- Node.js 22+
+- Wrangler
+
+GitHub CLI `gh` у вас сейчас не установлен. Для автоматического создания репозитория установите его:
+
+```powershell
+winget install --id GitHub.cli
+```
+
+После установки:
+
+```powershell
+gh auth login
+```
+
+## 2. Создать Cloudflare D1
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\worker
+npm install
+npx wrangler login
+npx wrangler d1 create sales-ai-manager
+```
+
+Скопируйте `database_id` в:
+
+```text
+worker/wrangler.toml
+```
+
+вместо:
+
+```text
+REPLACE_WITH_D1_DATABASE_ID
+```
+
+## 3. Добавить OpenAI secret в Cloudflare Worker
+
+```powershell
+npx wrangler secret put OPENAI_API_KEY
+```
+
+## 4. Проверить локально через Wrangler
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\frontend
+npm install
+npm run build
+
+cd ..\worker
+npm run d1:migrate:local
+npm run dev
+```
+
+## 5. Создать GitHub repository
+
+Если установлен `gh`:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager
+git init
+git branch -M main
+git add .
+git commit -m "cloudflare workers d1 mvp"
+gh repo create sales-ai-manager --private --source=. --remote=origin --push
+```
+
+Если репозиторий нужен публичный, замените `--private` на `--public`.
+
+## 6. GitHub Secrets
+
+В GitHub repository откройте:
+
+```text
+Settings -> Secrets and variables -> Actions -> New repository secret
+```
+
+Добавьте:
+
+```text
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+```
+
+API token должен иметь права:
+
+- Workers Scripts: Edit
+- D1: Edit
+- Account Settings: Read
+
+## 7. Автоматический запуск
+
+После каждого push в ветку `main` GitHub Actions выполнит:
+
+1. сборку React frontend;
+2. установку Worker dependencies;
+3. применение D1 migrations;
+4. деплой Cloudflare Worker.
+
+Workflow:
+
+```text
+.github/workflows/deploy-cloudflare.yml
+```
+
+## 8. Ручной deploy
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\frontend
+npm run build
+cd ..\worker
+npm run d1:migrate:remote
+npm run deploy
+```
