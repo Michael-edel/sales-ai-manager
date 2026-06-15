@@ -2,6 +2,7 @@ name = "sales-ai-manager"
 main = "src/index.ts"
 compatibility_date = "2026-06-15"
 account_id = "3e2a044cfaf01abb436adfe910297e5c"
+workers_dev = true
 
 [vars]
 AI_PROVIDER = "gemini"
