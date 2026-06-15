@@ -113,8 +113,9 @@ Settings -> Secrets and variables -> Actions -> New repository secret
 
 ```text
 CLOUDFLARE_API_TOKEN
-CLOUDFLARE_ACCOUNT_ID
 ```
+
+`CLOUDFLARE_ACCOUNT_ID` больше не обязателен: Account ID указан в `worker/wrangler.toml`.
 
 API token должен иметь права:
 
