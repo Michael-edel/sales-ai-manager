@@ -4,6 +4,15 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Frontend = Join-Path $Root "frontend"
 $Worker = Join-Path $Root "worker"
 $NpmCache = Join-Path $Root ".npm-cache"
+$DevVars = Join-Path $Worker ".dev.vars"
+
+if (-not (Test-Path -LiteralPath $DevVars)) {
+  Write-Host "Create local Worker secrets first:"
+  Write-Host "  Copy-Item worker\.dev.vars.example worker\.dev.vars"
+  Write-Host "  notepad worker\.dev.vars"
+  Write-Host "Set ACCESS_PASSWORD, then run this script again."
+  exit 1
+}
 
 Write-Host "Building frontend..."
 Push-Location $Frontend

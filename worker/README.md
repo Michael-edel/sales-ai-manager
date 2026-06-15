@@ -67,6 +67,31 @@ npm run d1:migrate:remote
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+## Защита доступа
+
+Интерфейс и все API закрыты HTTP Basic Auth.
+
+Логин задается в `wrangler.toml`:
+
+```toml
+ACCESS_USERNAME = "manager"
+```
+
+Пароль задается только как secret:
+
+```powershell
+npx wrangler secret put ACCESS_PASSWORD
+```
+
+Для локального запуска создайте `worker\.dev.vars` из примера:
+
+```powershell
+Copy-Item .dev.vars.example .dev.vars
+notepad .dev.vars
+```
+
+В `.dev.vars` укажите свой `ACCESS_PASSWORD`. Этот файл добавлен в `.gitignore` и не должен попадать в GitHub.
+
 ## Gemini API
 
 Gemini поддерживается как альтернативный провайдер.

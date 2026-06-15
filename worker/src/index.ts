@@ -7,6 +7,8 @@ export interface Env {
   OPENAI_TRANSCRIBE_MODEL: string;
   GEMINI_API_KEY: string;
   GEMINI_MODEL: string;
+  ACCESS_USERNAME: string;
+  ACCESS_PASSWORD: string;
 }
 
 type Metadata = {
@@ -15,6 +17,8 @@ type Metadata = {
   michael_manager?: string;
   communication_channel?: string;
 };
+
+type FormValue = string | File;
 
 const REQUIRED_OUTPUT = `
 Вывод должен строго содержать разделы:
@@ -47,6 +51,10 @@ ${REQUIRED_OUTPUT}
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    if (!(await isAuthorized(request, env))) {
+      return unauthorizedResponse(env);
+    }
 
     if (!url.pathname.startsWith("/api")) return env.ASSETS.fetch(request);
 
@@ -108,7 +116,7 @@ async function processText(request: Request, env: Env) {
 async function processUpload(request: Request, env: Env) {
   const formData = await request.formData();
   const file = formData.get("file");
-  if (!(file instanceof File)) throw new Error("Файл не передан.");
+  if (!isUploadedFile(file)) throw new Error("Файл не передан.");
 
   const metadata: Metadata = {
     client_company: stringValue(formData.get("client_company")),
@@ -390,8 +398,18 @@ async function fileToPayload(file: File): Promise<FilePayload> {
   };
 }
 
-function stringValue(value: FormDataEntryValue | null): string {
+function stringValue(value: FormValue | null): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function isUploadedFile(value: FormValue | null): value is File {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "name" in value &&
+      "arrayBuffer" in value &&
+      typeof value.arrayBuffer === "function",
+  );
 }
 
 function requireOpenAI(env: Env): void {
@@ -423,6 +441,58 @@ function geminiHeaders(env: Env): HeadersInit {
     "x-goog-api-key": env.GEMINI_API_KEY,
     "Content-Type": "application/json",
   };
+}
+
+async function isAuthorized(request: Request, env: Env): Promise<boolean> {
+  if (!env.ACCESS_PASSWORD) return false;
+
+  const authorization = request.headers.get("Authorization") || "";
+  const [scheme, encoded] = authorization.split(" ");
+  if (scheme !== "Basic" || !encoded) return false;
+
+  let decoded = "";
+  try {
+    decoded = atob(encoded);
+  } catch {
+    return false;
+  }
+
+  const separatorIndex = decoded.indexOf(":");
+  if (separatorIndex < 0) return false;
+
+  const username = decoded.slice(0, separatorIndex);
+  const password = decoded.slice(separatorIndex + 1);
+  const expectedUsername = env.ACCESS_USERNAME || "manager";
+
+  return (await safeEquals(username, expectedUsername)) && (await safeEquals(password, env.ACCESS_PASSWORD));
+}
+
+async function safeEquals(actual: string, expected: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const actualHash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(actual)));
+  const expectedHash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(expected)));
+
+  let diff = actualHash.length ^ expectedHash.length;
+  const length = Math.max(actualHash.length, expectedHash.length);
+  for (let index = 0; index < length; index += 1) {
+    diff |= (actualHash[index] || 0) ^ (expectedHash[index] || 0);
+  }
+  return diff === 0;
+}
+
+function unauthorizedResponse(env: Env): Response {
+  const body = env.ACCESS_PASSWORD
+    ? "Нужен логин и пароль для доступа к ИИ-менеджеру."
+    : "ACCESS_PASSWORD не задан. Установите Cloudflare Worker secret ACCESS_PASSWORD.";
+
+  return new Response(body, {
+    status: 401,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Sales AI Manager", charset="UTF-8"',
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 function json(data: unknown, status = 200): Response {

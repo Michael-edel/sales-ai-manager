@@ -8,6 +8,7 @@ workers_dev = true
 AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-flash"
+ACCESS_USERNAME = "manager"
 
 [assets]
 directory = "../frontend/dist"

@@ -35,6 +35,7 @@ GITHUB_DEPLOY.md
 cd worker
 npm install
 npx wrangler d1 create sales-ai-manager
+npx wrangler secret put ACCESS_PASSWORD
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npm run d1:migrate:local
@@ -232,3 +233,24 @@ GEMINI_MODEL = "gemini-3.5-flash"
 ```
 
 `OPENAI_API_KEY` и `GEMINI_API_KEY` задаются как Cloudflare secrets через Wrangler.
+
+## Защита доступа
+
+Cloudflare-версия закрыта HTTP Basic Auth до выдачи интерфейса и API.
+
+Логин по умолчанию:
+
+```text
+manager
+```
+
+Пароль задается только как Cloudflare Worker secret:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\worker
+npx wrangler secret put ACCESS_PASSWORD
+```
+
+Если пароль не задан, приложение не откроется и покажет сообщение `ACCESS_PASSWORD не задан`.
+
+Для смены логина измените `ACCESS_USERNAME` в `worker/wrangler.toml`, затем сделайте deploy.

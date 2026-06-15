@@ -47,6 +47,22 @@ REPLACE_WITH_D1_DATABASE_ID
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+## 3.0. Закрыть доступ к приложению паролем
+
+Приложение защищено HTTP Basic Auth. Логин по умолчанию:
+
+```text
+manager
+```
+
+Пароль задайте как Cloudflare Worker secret:
+
+```powershell
+npx wrangler secret put ACCESS_PASSWORD
+```
+
+После этого при открытии сайта браузер попросит логин и пароль. Если `ACCESS_PASSWORD` не задан, Worker специально не откроет приложение.
+
 ## 3.1. Добавить Gemini API key
 
 Gemini API key получите в Google AI Studio:
@@ -116,6 +132,13 @@ CLOUDFLARE_API_TOKEN
 ```
 
 `CLOUDFLARE_ACCOUNT_ID` больше не обязателен: Account ID указан в `worker/wrangler.toml`.
+
+Пароль доступа `ACCESS_PASSWORD` задается не в GitHub Secrets, а в Cloudflare Worker secrets через Wrangler:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\worker
+npx wrangler secret put ACCESS_PASSWORD
+```
 
 API token должен иметь права:
 
