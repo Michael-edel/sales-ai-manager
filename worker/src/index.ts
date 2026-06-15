@@ -63,6 +63,17 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
         return json(await processUpload(request, env));
       }
+      if (request.method === "GET" && url.pathname === "/api/email/messages") {
+        return json(await listEmailMessages(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/email/check") {
+        return json({
+          imported: 0,
+          skipped: 0,
+          total_seen: 0,
+          detail: "IMAP mailcow/Yandex не поддерживается напрямую в Cloudflare Worker. Нужен отдельный email bridge-сервис.",
+        });
+      }
 
       const requestMatch = url.pathname.match(/^\/api\/requests\/(\d+)$/);
       if (request.method === "GET" && requestMatch) {
@@ -308,6 +319,11 @@ async function readGeminiText(response: Response): Promise<string> {
 
 async function listRequests(env: Env) {
   const result = await env.DB.prepare("SELECT * FROM requests ORDER BY created_at DESC LIMIT 100").all();
+  return result.results;
+}
+
+async function listEmailMessages(env: Env) {
+  const result = await env.DB.prepare("SELECT * FROM email_messages ORDER BY created_at DESC LIMIT 100").all();
   return result.results;
 }
 
