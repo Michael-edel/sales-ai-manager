@@ -1318,6 +1318,8 @@ const KBI_CONTRACT_DATE_RU = "17 февраля 2026 года";
 const KBI_DEFAULT_DELIVERY_PLACE = "DDP, г. Экибастуз.";
 const KBI_DEFAULT_PAYMENT_TERM = "20 календарных дней с момента получения Товара.";
 const KBI_DEFAULT_WARRANTY = "14 дней";
+const KBI_BUYER_SIGNATORY = "Абдрахманов Д.Е.";
+const MICHAEL_SUPPLIER_SIGNATORY = "Эйрих М.М.";
 
 const KBI_BUYER_REQUISITES = [
   "Покупатель:",
@@ -1373,7 +1375,7 @@ function buildKbiAppendixData(
     invoiceDate !== "уточняется" ? `Дата счета: ${invoiceDate}` : "",
   ].filter(Boolean).join("\n\n");
   const rows = parseAppendixRows(sourceText);
-  const appendixRows = rows.length ? rows : [emptyAppendixRow(1)];
+  const appendixRows = rows;
   const totalValue = appendixRows.reduce((sum, row) => row.sumValue !== null ? sum + row.sumValue : sum, 0);
   const hasTotal = appendixRows.some((row) => row.sumValue !== null);
   const totalText = hasTotal ? formatMoney(totalValue) : "________";
@@ -1440,7 +1442,7 @@ function parseAppendixRows(sourceText: string): AppendixTableRow[] {
   const warranty = firstMatch(source, [/Гарантия\s*[:\-]\s*([^\n]+)/i]) || KBI_DEFAULT_WARRANTY;
   const computedSum = sum || computeRowSum(quantity, price);
 
-  if (!name && !quantity && !price && !computedSum && !code) return [];
+  if (!name && !code) return [];
 
   return [
     makeAppendixRow(1, {
@@ -1543,15 +1545,9 @@ function makeAppendixRow(number: number, raw: Partial<AppendixTableRow>): Append
     quantity: cleanQuantity(raw.quantity) || "уточняется",
     price: formatMoneyText(raw.price),
     sum: formatMoneyText(sum),
-    warranty: cleanAppendixValue(raw.warranty) || KBI_DEFAULT_WARRANTY,
+    warranty: normalizeWarranty(raw.warranty),
     sumValue: parseMoneyText(sum),
   };
-}
-
-function emptyAppendixRow(number: number): AppendixTableRow {
-  return makeAppendixRow(number, {
-    warranty: KBI_DEFAULT_WARRANTY,
-  });
 }
 
 function buildKbiAppendixText(data: KbiAppendixData): string {
@@ -1614,7 +1610,10 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     ".summary { margin-top: 0; }",
     ".terms { margin-top: 18px; }",
     ".sign-title { font-weight: 700; margin: 54px 0 16px; text-align: center; }",
-    ".requisites { display: grid; gap: 58px; grid-template-columns: 1fr 1fr; }",
+    ".requisites-table { border-collapse: collapse; table-layout: fixed; width: 100%; }",
+    ".requisites-table td { border: 0; padding: 0; vertical-align: top; width: 50%; }",
+    ".requisites-table td:first-child { padding-right: 29px; }",
+    ".requisites-table td:last-child { padding-left: 29px; }",
     ".party p { margin: 0; }",
     ".party p:nth-child(1), .party p:nth-child(2), .party .bold { font-weight: 700; }",
     ".party .italic { font-style: italic; }",
@@ -1661,10 +1660,12 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     `<p>Срок оплаты: ${escapeHtml(data.paymentTerm)}</p>`,
     "</div>",
     '<p class="sign-title">Подписи Сторон:</p>',
-    '<div class="requisites">',
-    `<div class="party">${buyerRequisites}${renderPartySignature("Абдрахманов Д.Е.")}</div>`,
-    `<div class="party">${supplierRequisites}${renderPartySignature("Ширин М.М.")}</div>`,
-    "</div>",
+    '<table class="requisites-table">',
+    "<tr>",
+    `<td class="party">${buyerRequisites}${renderPartySignature(KBI_BUYER_SIGNATORY)}</td>`,
+    `<td class="party">${supplierRequisites}${renderPartySignature(MICHAEL_SUPPLIER_SIGNATORY)}</td>`,
+    "</tr>",
+    "</table>",
     "</body>",
     "</html>",
   ].join("\n");
@@ -1718,6 +1719,12 @@ function cleanQuantity(value: unknown): string {
   if (!text) return "";
   const match = text.match(/([0-9]+(?:[,.][0-9]+)?)/);
   return match ? match[1].replace(".", ",") : text;
+}
+
+function normalizeWarranty(value: unknown): string {
+  const text = cleanAppendixValue(value);
+  if (!text || text.toLowerCase().includes("уточняется")) return KBI_DEFAULT_WARRANTY;
+  return text;
 }
 
 function normalizeUnit(value: string): string {
