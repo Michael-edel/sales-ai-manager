@@ -31,6 +31,14 @@ export function updateRequestStatus(requestId, payload) {
   });
 }
 
+export function updateDealDocuments(requestId, payload) {
+  return request(`/requests/${requestId}/deal-documents`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function processText(originalText, metadata = {}) {
   return request("/requests/text", {
     method: "POST",

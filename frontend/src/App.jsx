@@ -8,6 +8,7 @@ import {
   listRequests,
   processEmailMessage,
   processText,
+  updateDealDocuments,
   updateRequestStatus,
   uploadFile,
 } from "./api";
@@ -58,6 +59,27 @@ const PRIORITY_OPTIONS = [
 const STATUS_LABELS = Object.fromEntries(STATUS_OPTIONS);
 const PRIORITY_LABELS = Object.fromEntries(PRIORITY_OPTIONS);
 
+const INVOICE_STATUS_OPTIONS = [
+  ["not_required", "Не требуется"],
+  ["required", "Нужен счет"],
+  ["prepared", "Счет подготовлен"],
+  ["sent", "Счет отправлен"],
+  ["paid", "Оплачен"],
+  ["cancelled", "Отменен"],
+];
+
+const APPENDIX_STATUS_OPTIONS = [
+  ["not_required", "Не требуется"],
+  ["required", "Нужно приложение"],
+  ["prepared", "Приложение подготовлено"],
+  ["sent", "Приложение отправлено"],
+  ["signed", "Подписано"],
+  ["cancelled", "Отменено"],
+];
+
+const INVOICE_STATUS_LABELS = Object.fromEntries(INVOICE_STATUS_OPTIONS);
+const APPENDIX_STATUS_LABELS = Object.fromEntries(APPENDIX_STATUS_OPTIONS);
+
 export default function App() {
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -75,6 +97,14 @@ export default function App() {
     status: "new",
     priority: "normal",
     next_action: "",
+  });
+  const [dealDraft, setDealDraft] = useState({
+    invoice_number: "",
+    invoice_date: "",
+    invoice_status: "not_required",
+    contract_appendix_status: "not_required",
+    contract_appendix_note: "",
+    customer_sent_at: "",
   });
   const [metadata, setMetadata] = useState({
     client_company: "ТОО KBI Energy",
@@ -118,6 +148,16 @@ export default function App() {
       status: selected.status || "new",
       priority: selected.priority || "normal",
       next_action: selected.next_action || "",
+    });
+    setDealDraft({
+      invoice_number: selected.invoice_number || "",
+      invoice_date: selected.invoice_date || "",
+      invoice_status: selected.invoice_status || "not_required",
+      contract_appendix_status:
+        selected.contract_appendix_status ||
+        (selected.requires_contract_appendix ? "required" : "not_required"),
+      contract_appendix_note: selected.contract_appendix_note || "",
+      customer_sent_at: selected.customer_sent_at || "",
     });
     listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
   }, [selected]);
@@ -194,11 +234,34 @@ export default function App() {
     }
   }
 
+  async function handleDealDocumentsSave() {
+    if (!selected) return;
+    setError("");
+    setLoading(true);
+    try {
+      const item = await updateDealDocuments(selected.id, {
+        ...dealDraft,
+        actor: metadata.michael_manager || selected.michael_manager || "manager",
+      });
+      await refreshHistory(item);
+      const events = await listRequestEvents(item.id);
+      setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const canProcess = Boolean(text.trim() || file) && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
 
   function updateMetadata(field, value) {
     setMetadata((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateDealDraft(field, value) {
+    setDealDraft((current) => ({ ...current, [field]: value }));
   }
 
   return (
@@ -245,6 +308,14 @@ export default function App() {
                   {PRIORITY_LABELS[item.priority || "normal"] || "Обычный"}
                 </small>
                 {item.requires_contract_appendix ? <small className="vip-pill">KBI договор</small> : null}
+                {item.invoice_status && item.invoice_status !== "not_required" ? (
+                  <small className="doc-pill">{INVOICE_STATUS_LABELS[item.invoice_status] || "Счет"}</small>
+                ) : null}
+                {item.contract_appendix_status && item.contract_appendix_status !== "not_required" ? (
+                  <small className="doc-pill">
+                    {APPENDIX_STATUS_LABELS[item.contract_appendix_status] || "Приложение"}
+                  </small>
+                ) : null}
               </div>
               <small>{new Date(item.created_at).toLocaleString()}</small>
             </button>
@@ -486,6 +557,74 @@ export default function App() {
                 <button className="secondary-button" onClick={handleStatusSave} disabled={loading}>
                   Сохранить статус
                 </button>
+              </div>
+
+              <div className="deal-documents">
+                <div className="deal-documents-title">
+                  <h3>Документы сделки</h3>
+                  <p>Счет, приложение к договору и факт отправки клиенту</p>
+                </div>
+                <div className="deal-documents-grid">
+                  <label>
+                    <span>Номер счета</span>
+                    <input
+                      value={dealDraft.invoice_number}
+                      onChange={(event) => updateDealDraft("invoice_number", event.target.value)}
+                      placeholder="Например: 5262"
+                    />
+                  </label>
+                  <label>
+                    <span>Дата счета</span>
+                    <input
+                      type="date"
+                      value={dealDraft.invoice_date}
+                      onChange={(event) => updateDealDraft("invoice_date", event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>Статус счета</span>
+                    <select
+                      value={dealDraft.invoice_status}
+                      onChange={(event) => updateDealDraft("invoice_status", event.target.value)}
+                    >
+                      {INVOICE_STATUS_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Приложение</span>
+                    <select
+                      value={dealDraft.contract_appendix_status}
+                      onChange={(event) => updateDealDraft("contract_appendix_status", event.target.value)}
+                    >
+                      {APPENDIX_STATUS_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Дата отправки</span>
+                    <input
+                      type="date"
+                      value={dealDraft.customer_sent_at}
+                      onChange={(event) => updateDealDraft("customer_sent_at", event.target.value)}
+                    />
+                  </label>
+                  <label className="deal-note">
+                    <span>Примечание</span>
+                    <input
+                      value={dealDraft.contract_appendix_note}
+                      onChange={(event) => updateDealDraft("contract_appendix_note", event.target.value)}
+                      placeholder="Например: счет и приложение отправлены в WhatsApp"
+                    />
+                  </label>
+                </div>
+                <div className="deal-documents-actions">
+                  <button className="secondary-button" onClick={handleDealDocumentsSave} disabled={loading}>
+                    Сохранить документы
+                  </button>
+                </div>
               </div>
             </div>
 

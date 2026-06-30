@@ -116,7 +116,8 @@ textarea {
 
 .status-pill,
 .priority-pill,
-.vip-pill {
+.vip-pill,
+.doc-pill {
   border-radius: 999px;
   display: inline-flex;
   font-size: 11px;
@@ -166,6 +167,11 @@ textarea {
 .vip-pill {
   background: #fff1f0;
   color: #9b1c14;
+}
+
+.doc-pill {
+  background: #eef8f1;
+  color: #1f6b45;
 }
 
 .workspace {
@@ -368,6 +374,48 @@ button:disabled,
   grid-template-columns: 170px 170px minmax(220px, 1fr) auto;
 }
 
+.deal-documents {
+  border-top: 1px solid #d9dfd7;
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.deal-documents-title h3 {
+  margin: 0;
+}
+
+.deal-documents-title p {
+  color: #6b756e;
+  margin: 4px 0 0;
+}
+
+.deal-documents-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.deal-documents-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.deal-documents-grid span {
+  color: #6b756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.deal-note {
+  grid-column: span 2;
+}
+
+.deal-documents-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .events-area {
   display: grid;
   gap: 10px;
@@ -484,8 +532,13 @@ pre {
 
   .request-card-main,
   .status-editor,
+  .deal-documents-grid,
   .event-item {
     grid-template-columns: 1fr;
+  }
+
+  .deal-note {
+    grid-column: auto;
   }
 
   .primary-button,

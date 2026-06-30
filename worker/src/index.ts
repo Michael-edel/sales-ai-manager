@@ -108,6 +108,12 @@ export default {
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
 
+      const dealDocsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/deal-documents$/);
+      if (request.method === "PATCH" && dealDocsMatch) {
+        const item = await updateDealDocuments(request, env, Number(dealDocsMatch[1]));
+        return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
+      }
+
       const eventsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/events$/);
       if (request.method === "GET" && eventsMatch) {
         return json(await listRequestEvents(env, Number(eventsMatch[1])));
@@ -370,14 +376,16 @@ async function insertRequest(env: Env, item: Record<string, any>) {
   const status = normalizeStatus(item.status);
   const priority = normalizePriority(item.priority);
   const nextAction = normalizeOptionalText(item.next_action);
+  const appendixStatus = crm.requiresContractAppendix ? "required" : "not_required";
 
   const result = await env.DB.prepare(`
     INSERT INTO requests (
       source_type, client_company, client_contact_name, michael_manager,
       communication_channel, original_text, uploaded_file_name, ai_result,
       status, priority, client_type, requires_contract_appendix,
-      next_action, client_id, contact_id, michael_manager_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      next_action, client_id, contact_id, michael_manager_id,
+      invoice_status, contract_appendix_status, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `)
     .bind(
       item.source_type,
@@ -396,6 +404,8 @@ async function insertRequest(env: Env, item: Record<string, any>) {
       crm.clientId,
       crm.contactId,
       crm.michaelManagerId,
+      "not_required",
+      appendixStatus,
     )
     .run();
   const requestId = Number(result.meta.last_row_id);
@@ -408,6 +418,8 @@ async function insertRequest(env: Env, item: Record<string, any>) {
     michael_manager: item.michael_manager || null,
     communication_channel: item.communication_channel || null,
     requires_contract_appendix: crm.requiresContractAppendix,
+    invoice_status: "not_required",
+    contract_appendix_status: appendixStatus,
   });
   return getRequest(env, requestId);
 }
@@ -438,6 +450,64 @@ async function updateRequestStatus(request: Request, env: Env, id: number) {
     status,
     priority,
     next_action: nextAction,
+  });
+
+  return getRequest(env, id);
+}
+
+async function updateDealDocuments(request: Request, env: Env, id: number) {
+  const existing = await getRequest(env, id) as Record<string, any> | null;
+  if (!existing) return null;
+
+  const payload = (await request.json()) as {
+    invoice_number?: string;
+    invoice_date?: string;
+    invoice_status?: string;
+    contract_appendix_status?: string;
+    contract_appendix_note?: string;
+    customer_sent_at?: string;
+    actor?: string;
+  };
+
+  const invoiceNumber = normalizeOptionalText(payload.invoice_number);
+  const invoiceDate = normalizeIsoDate(payload.invoice_date);
+  const invoiceStatus = normalizeInvoiceStatus(payload.invoice_status || existing.invoice_status || "not_required");
+  const appendixStatus = normalizeAppendixStatus(
+    payload.contract_appendix_status ||
+      existing.contract_appendix_status ||
+      (existing.requires_contract_appendix ? "required" : "not_required"),
+  );
+  const appendixNote = normalizeOptionalText(payload.contract_appendix_note);
+  const customerSentAt = normalizeOptionalText(payload.customer_sent_at);
+  const actor = normalizeOptionalText(payload.actor) || existing.michael_manager || "system";
+
+  await env.DB.prepare(`
+    UPDATE requests
+    SET invoice_number = ?,
+        invoice_date = ?,
+        invoice_status = ?,
+        contract_appendix_status = ?,
+        contract_appendix_note = ?,
+        customer_sent_at = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(
+    invoiceNumber || null,
+    invoiceDate || null,
+    invoiceStatus,
+    appendixStatus,
+    appendixNote || null,
+    customerSentAt || null,
+    id,
+  ).run();
+
+  await createRequestEvent(env, id, "request.deal_documents_updated", actor, {
+    invoice_number: invoiceNumber || null,
+    invoice_date: invoiceDate || null,
+    invoice_status: invoiceStatus,
+    contract_appendix_status: appendixStatus,
+    contract_appendix_note: appendixNote || null,
+    customer_sent_at: customerSentAt || null,
   });
 
   return getRequest(env, id);
@@ -609,6 +679,23 @@ function normalizeStatus(value: unknown): string {
 function normalizePriority(value: unknown): string {
   const normalized = normalizeOptionalText(value) || "normal";
   return ["low", "normal", "high", "urgent"].includes(normalized) ? normalized : "normal";
+}
+
+function normalizeInvoiceStatus(value: unknown): string {
+  const normalized = normalizeOptionalText(value) || "not_required";
+  const allowed = ["not_required", "required", "prepared", "sent", "paid", "cancelled"];
+  return allowed.includes(normalized) ? normalized : "not_required";
+}
+
+function normalizeAppendixStatus(value: unknown): string {
+  const normalized = normalizeOptionalText(value) || "not_required";
+  const allowed = ["not_required", "required", "prepared", "sent", "signed", "cancelled"];
+  return allowed.includes(normalized) ? normalized : "not_required";
+}
+
+function normalizeIsoDate(value: unknown): string {
+  const normalized = normalizeOptionalText(value);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
 }
 
 function isImage(fileName: string): boolean {
