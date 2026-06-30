@@ -31,6 +31,9 @@ jobs:
             parser-service/requirements.txt
             parser-service/requirements-dev.txt
 
+      - name: Validate email bridge syntax
+        run: python -m py_compile email-bridge/app/main.py
+
       - name: Install parser-service dependencies
         working-directory: parser-service
         run: python -m pip install -r requirements.txt -r requirements-dev.txt

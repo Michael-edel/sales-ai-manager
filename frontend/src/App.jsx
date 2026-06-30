@@ -6,6 +6,7 @@ import {
   createRequestTask,
   getCrmSummary,
   getCurrentUser,
+  getEmailSmtpHealth,
   getParserHealth,
   listEmailMessages,
   listOpenTasks,
@@ -18,6 +19,7 @@ import {
   processEmailMessage,
   processText,
   resetUserPassword,
+  sendEmailReply,
   updateDealDocuments,
   updateUserActive,
   updateRequestTask,
@@ -128,6 +130,8 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [emails, setEmails] = useState([]);
   const [emailStatus, setEmailStatus] = useState("");
+  const [emailSendStatus, setEmailSendStatus] = useState("");
+  const [smtpStatus, setSmtpStatus] = useState(null);
   const [fileInputKey, setFileInputKey] = useState(0);
   const [crmSummary, setCrmSummary] = useState(null);
   const [parserStatus, setParserStatus] = useState(null);
@@ -204,6 +208,20 @@ export default function App() {
     }
   }
 
+  async function refreshSmtpStatus() {
+    try {
+      const status = await getEmailSmtpHealth();
+      setSmtpStatus(status);
+    } catch (err) {
+      setSmtpStatus({
+        configured: false,
+        reachable: false,
+        status: "error",
+        detail: err.message,
+      });
+    }
+  }
+
   useEffect(() => {
     getCurrentUser()
       .then(({ user }) => {
@@ -218,6 +236,7 @@ export default function App() {
     refreshHistory().catch((err) => setError(err.message));
     refreshEmails().catch((err) => setEmailStatus(err.message));
     refreshParserStatus().catch(() => {});
+    refreshSmtpStatus().catch(() => {});
     refreshUsers().catch(() => {});
   }, [authUser]);
 
@@ -373,6 +392,36 @@ export default function App() {
     }
   }
 
+  async function handleSendClientEmail() {
+    if (!selected || !clientBlock || !canManageRequests) return;
+    setError("");
+    const to = selected.client_contact_name || "";
+    if (!to.includes("@")) {
+      setError("У заявки нет email получателя.");
+      return;
+    }
+    const subject = `Ответ ТОО Michael по заявке #${selected.id}`;
+    if (!window.confirm(`Отправить черновик D на ${to}?`)) return;
+
+    setEmailSendStatus("");
+    setLoading(true);
+    try {
+      await sendEmailReply({
+        request_id: selected.id,
+        to,
+        subject,
+        body: clientBlock,
+      });
+      setEmailSendStatus(`Письмо отправлено: ${to}`);
+      const events = await listRequestEvents(selected.id);
+      setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleStatusSave() {
     if (!selected || !canManageRequests) return;
     setError("");
@@ -476,6 +525,16 @@ export default function App() {
     : parserStatus?.configured
       ? "ошибка"
       : "не настроен";
+  const smtpHealthClass = smtpStatus?.reachable
+    ? "ok"
+    : smtpStatus?.configured
+      ? "error"
+      : "warn";
+  const smtpHealthText = smtpStatus?.reachable
+    ? "SMTP подключен"
+    : smtpStatus?.configured
+      ? "SMTP ошибка"
+      : "SMTP не настроен";
 
   function updateMetadata(field, value) {
     setMetadata((current) => ({ ...current, [field]: value }));
@@ -796,6 +855,7 @@ export default function App() {
               <Mail size={18} />
               Проверить почту
             </button>
+            <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
             {emailStatus && <span className="email-status">{emailStatus}</span>}
           </div>
 
@@ -910,11 +970,29 @@ export default function App() {
               <h2>Результат A-F</h2>
               <p>{selected ? `Заявка #${selected.id}` : "Выберите заявку или обработайте новую"}</p>
             </div>
-            <button className="secondary-button" onClick={copyClientBlock} disabled={!clientBlock}>
-              <Clipboard size={18} />
-              {copied ? "Скопировано" : "Копировать D"}
-            </button>
+            <div className="result-actions">
+              <button className="secondary-button" onClick={copyClientBlock} disabled={!clientBlock}>
+                <Clipboard size={18} />
+                {copied ? "Скопировано" : "Копировать D"}
+              </button>
+              <button
+                className="secondary-button"
+                onClick={handleSendClientEmail}
+                disabled={
+                  loading ||
+                  !canManageRequests ||
+                  !clientBlock ||
+                  !selected?.client_contact_name?.includes("@")
+                }
+                title={!selected?.client_contact_name?.includes("@") ? "У заявки нет email получателя" : "Отправить D по Email"}
+              >
+                <Mail size={18} />
+                Отправить Email
+              </button>
+            </div>
           </div>
+
+          {emailSendStatus && <div className="email-send-status">{emailSendStatus}</div>}
 
           {!selected && <div className="empty-state">Результат появится здесь после обработки заявки.</div>}
 

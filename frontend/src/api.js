@@ -139,6 +139,18 @@ export function checkEmail() {
   return request("/email/check", { method: "POST" });
 }
 
+export function getEmailSmtpHealth() {
+  return request("/email/smtp/health");
+}
+
+export function sendEmailReply(payload) {
+  return request("/email/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listEmailMessages() {
   return request("/email/messages");
 }

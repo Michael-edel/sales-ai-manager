@@ -9,6 +9,8 @@ export interface Env {
   GEMINI_MODEL: string;
   PARSER_SERVICE_URL: string;
   PARSER_SERVICE_TOKEN: string;
+  EMAIL_BRIDGE_URL: string;
+  EMAIL_BRIDGE_TOKEN: string;
   ACCESS_USERNAME: string;
   ACCESS_PASSWORD: string;
 }
@@ -165,6 +167,9 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/email/messages") {
         return json(await listEmailMessages(env));
       }
+      if (request.method === "GET" && url.pathname === "/api/email/smtp/health") {
+        return json(await checkEmailBridge(env));
+      }
       if (request.method === "POST" && url.pathname === "/api/email/check") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json({
@@ -173,6 +178,17 @@ export default {
           total_seen: 0,
           detail: "IMAP mailcow/Yandex не поддерживается напрямую в Cloudflare Worker. Нужен отдельный email bridge-сервис.",
         });
+      }
+      if (request.method === "POST" && url.pathname === "/api/email/send") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await sendEmailReply(request, env, currentUser));
+      }
+
+      const emailProcessMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)\/process$/);
+      if (request.method === "POST" && emailProcessMatch) {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const item = await processEmailMessage(env, Number(emailProcessMatch[1]));
+        return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
       }
 
       const requestMatch = url.pathname.match(/^\/api\/requests\/(\d+)$/);
@@ -533,6 +549,138 @@ async function checkParserService(env: Env) {
   }
 }
 
+async function checkEmailBridge(env: Env) {
+  const baseUrl = (env.EMAIL_BRIDGE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    return {
+      configured: false,
+      reachable: false,
+      status: "not_configured",
+      detail: "EMAIL_BRIDGE_URL не задан.",
+    };
+  }
+
+  let serviceOrigin = baseUrl;
+  try {
+    serviceOrigin = new URL(baseUrl).origin;
+  } catch {
+    return {
+      configured: true,
+      reachable: false,
+      status: "invalid_url",
+      detail: "EMAIL_BRIDGE_URL задан в неверном формате.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const headers = new Headers();
+    if (env.EMAIL_BRIDGE_TOKEN) headers.set("X-Email-Bridge-Token", env.EMAIL_BRIDGE_TOKEN);
+
+    const response = await fetch(`${baseUrl}/health`, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let data: any = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok) {
+      return {
+        configured: true,
+        reachable: false,
+        status: "error",
+        service_origin: serviceOrigin,
+        detail: data?.detail || raw || response.statusText,
+      };
+    }
+
+    return {
+      configured: true,
+      reachable: true,
+      status: data?.status || "ok",
+      service: data?.service || "email-bridge",
+      service_origin: serviceOrigin,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Email bridge недоступен.";
+    return {
+      configured: true,
+      reachable: false,
+      status: "unreachable",
+      service_origin: serviceOrigin,
+      detail: message,
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUser) {
+  const payload = (await request.json()) as {
+    request_id?: number;
+    to?: string;
+    subject?: string;
+    body?: string;
+  };
+  const to = normalizeOptionalText(payload.to);
+  const subject = normalizeOptionalText(payload.subject);
+  const body = normalizeOptionalText(payload.body);
+  const requestId = Number(payload.request_id || 0);
+
+  if (!to || !to.includes("@")) throw new Error("Укажите email получателя.");
+  if (!subject) throw new Error("Тема письма пустая.");
+  if (!body) throw new Error("Текст письма пустой.");
+
+  const baseUrl = (env.EMAIL_BRIDGE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("EMAIL_BRIDGE_URL не задан. Для SMTP-отправки запустите email-bridge и укажите его URL в настройках Worker.");
+  }
+
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (env.EMAIL_BRIDGE_TOKEN) headers.set("X-Email-Bridge-Token", env.EMAIL_BRIDGE_TOKEN);
+
+  const response = await fetch(`${baseUrl}/send`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ to, subject, body }),
+  });
+  const raw = await response.text();
+  let data: any = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+  if (!response.ok) {
+    throw new Error(`Ошибка email-bridge: ${data?.detail || raw || response.statusText}`);
+  }
+
+  if (requestId) {
+    const existing = await getRequest(env, requestId);
+    if (existing) {
+      await createRequestEvent(env, requestId, "email.sent", currentUser.display_name || currentUser.username, {
+        to,
+        subject,
+        bridge_status: data?.status || "sent",
+      });
+    }
+  }
+
+  return {
+    sent: true,
+    to,
+    subject,
+    detail: data?.detail || "Письмо отправлено через email-bridge.",
+  };
+}
+
 async function analyzeText(env: Env, originalText: string): Promise<string> {
   if (useGemini(env)) {
     return analyzeTextGemini(env, originalText);
@@ -791,6 +939,76 @@ async function listRequests(env: Env) {
 async function listEmailMessages(env: Env) {
   const result = await env.DB.prepare("SELECT * FROM email_messages ORDER BY created_at DESC LIMIT 100").all();
   return result.results;
+}
+
+async function getEmailMessage(env: Env, id: number) {
+  return env.DB.prepare("SELECT * FROM email_messages WHERE id = ?").bind(id).first() as Promise<Record<string, any> | null>;
+}
+
+async function processEmailMessage(env: Env, emailId: number) {
+  const emailItem = await getEmailMessage(env, emailId);
+  if (!emailItem) return null;
+
+  if (emailItem.processed_request_id) {
+    const existing = await getRequest(env, Number(emailItem.processed_request_id));
+    if (existing) return existing;
+  }
+
+  const emailText = buildEmailAnalysisText(emailItem);
+  const clientCompany = detectKbiEnergy(emailText) ? "ТОО KBI Energy" : "";
+  const metadata: Metadata = {
+    client_company: clientCompany,
+    client_contact_name: normalizeOptionalText(emailItem.from_address),
+    michael_manager: normalizeOptionalText(emailItem.michael_manager),
+    communication_channel: "Email",
+    priority: clientCompany ? "high" : "normal",
+    next_action: "Подготовить ответ клиенту",
+  };
+  const originalText = `${buildContextPrefix(metadata)}${emailText}`;
+  const aiResult = await analyzeText(env, originalText);
+
+  const item = await insertRequest(env, {
+    source_type: "email",
+    ...metadata,
+    original_text: originalText,
+    uploaded_file_name: emailItem.attachment_names || null,
+    ai_result: aiResult,
+  }) as Record<string, any> | null;
+
+  if (!item?.id) throw new Error("Не удалось создать заявку из письма.");
+
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET processed_request_id = ?
+    WHERE id = ?
+  `).bind(Number(item.id), emailId).run();
+
+  await createRequestEvent(env, Number(item.id), "email.processed", metadata.michael_manager || "system", {
+    email_id: emailId,
+    from_address: emailItem.from_address || null,
+    mailbox_email: emailItem.mailbox_email || null,
+    subject: emailItem.subject || null,
+  });
+
+  return getRequest(env, Number(item.id));
+}
+
+function buildEmailAnalysisText(emailItem: Record<string, any>): string {
+  const parts = [
+    "Входящее письмо из почтового ящика Michael.",
+    `От: ${emailItem.from_address || "уточняется"}`,
+    `Кому: ${emailItem.to_address || "уточняется"}`,
+    `Почтовый ящик Michael: ${emailItem.mailbox_email || "уточняется"}`,
+    `Ответственный менеджер Michael: ${emailItem.michael_manager || "уточняется"}`,
+    `Тема: ${emailItem.subject || "без темы"}`,
+    `Дата письма: ${emailItem.received_at || "уточняется"}`,
+    "",
+    "Тело письма:",
+    emailItem.body_text || "уточняется",
+  ];
+  if (emailItem.attachment_names) parts.push("", "Вложения:", emailItem.attachment_names);
+  if (emailItem.attachment_text) parts.push("", "Текст из поддерживаемых вложений:", emailItem.attachment_text);
+  return parts.join("\n");
 }
 
 async function getRequest(env: Env, id: number) {
@@ -1273,6 +1491,11 @@ function normalizeKey(value: string): string {
 function isKbiEnergy(company: string): boolean {
   const normalized = normalizeKey(company);
   return normalized.includes("kbi energy") || normalized.includes("кби энерджи");
+}
+
+function detectKbiEnergy(value: string): boolean {
+  const normalized = normalizeKey(value);
+  return normalized.includes("kbi") || normalized.includes("кби");
 }
 
 function normalizeStatus(value: unknown): string {

@@ -16,6 +16,8 @@
 - `GET /api/requests/:id`
 - `POST /api/requests/text`
 - `POST /api/requests/upload`
+- `POST /api/email/messages/:id/process`
+- `POST /api/email/send` через внешний `email-bridge`
 - D1 таблицы `requests` и `email_messages`
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
@@ -25,10 +27,10 @@
 ## Что пока не перенесено
 
 - IMAP-проверка mailcow/Yandex.
-- SMTP-отправка.
+- Встроенная SMTP-отправка из самого Worker.
 - Парсинг PDF/DOCX/XLSX внутри самого Worker.
 
-Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для документов уже добавлен Python-сервис `../parser-service`.
+Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для документов уже добавлен Python-сервис `../parser-service`.
 
 ## Подготовка
 
@@ -139,6 +141,56 @@ GET /api/parser/health
 ```
 
 Ответ не раскрывает token. В интерфейсе статус отображается в блоке новой обработки рядом с загрузкой файла.
+
+## Email bridge для SMTP
+
+Worker не отправляет SMTP напрямую. Для mailcow/Yandex добавлен отдельный FastAPI-сервис:
+
+```text
+../email-bridge
+```
+
+Локально:
+
+```powershell
+cd ..\email-bridge
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:EMAIL_BRIDGE_TOKEN="change-this-email-token"
+$env:SMTP_HOST="mail.your-domain.kz"
+$env:SMTP_PORT="587"
+$env:SMTP_USER="manager@your-domain.kz"
+$env:SMTP_PASSWORD="smtp-password"
+$env:SMTP_FROM="manager@your-domain.kz"
+$env:SMTP_FROM_NAME="ТОО Michael"
+uvicorn app.main:app --host 0.0.0.0 --port 8090
+```
+
+В `worker/.dev.vars`:
+
+```env
+EMAIL_BRIDGE_URL=http://127.0.0.1:8090
+EMAIL_BRIDGE_TOKEN=change-this-email-token
+```
+
+Для production:
+
+```powershell
+npx wrangler secret put EMAIL_BRIDGE_TOKEN
+```
+
+`EMAIL_BRIDGE_URL` добавьте как Worker variable. Проверка:
+
+```text
+GET /api/email/smtp/health
+```
+
+Отправка D-блока клиенту:
+
+```text
+POST /api/email/send
+```
 
 ## Gemini API
 

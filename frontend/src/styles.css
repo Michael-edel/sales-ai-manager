@@ -440,6 +440,14 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.result-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .service-status {
   align-items: center;
   border: 1px solid #d9dfd7;
@@ -756,6 +764,27 @@ button:disabled,
   color: #4f5b53;
 }
 
+.email-status-ok {
+  color: #246247;
+}
+
+.email-status-warn {
+  color: #6f4d0a;
+}
+
+.email-status-error {
+  color: #9b1c14;
+}
+
+.email-send-status {
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 8px;
+  color: #246247;
+  margin-top: 10px;
+  padding: 10px 12px;
+}
+
 .email-list {
   display: grid;
   gap: 10px;
@@ -818,6 +847,7 @@ pre {
 
   .input-controls,
   .result-header,
+  .result-actions,
   .email-controls,
   .email-item {
     align-items: stretch;

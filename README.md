@@ -58,6 +58,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Общая панель открытых задач, чтобы видеть незавершенные действия без открытия каждой заявки.
 - Встроенная авторизация: вход через форму, cookie-сессии, пользователи и роли.
 - Проверка входящей почты mailcow через IMAP.
+- Обработка сохраненного письма в заявку через `/api/email/messages/:id/process`.
+- SMTP-отправка блока D через отдельный `email-bridge`.
 - Отправка заявки в OpenAI API.
 - Сохранение исходного текста и ответа ИИ в таблицу `requests`.
 - Копирование раздела D «Черновик для клиента».
@@ -80,6 +82,7 @@ npx wrangler secret put ACCESS_PASSWORD
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put PARSER_SERVICE_TOKEN
+npx wrangler secret put EMAIL_BRIDGE_TOKEN
 npm run d1:migrate:local
 
 cd ..\frontend
@@ -91,6 +94,7 @@ npm run dev
 ```
 
 Для обработки `.pdf`, `.docx` и `.xlsx` в Cloudflare-версии отдельно запустите `parser-service` и задайте `PARSER_SERVICE_URL`.
+Для отправки email через SMTP отдельно запустите `email-bridge` и задайте `EMAIL_BRIDGE_URL`.
 
 ## Legacy Docker запуск
 
@@ -344,13 +348,60 @@ GET /api/parser/health
 
 ## Проверка входящей почты mailcow
 
-1. Заполните `MAIL_IMAP_HOST` и `MAIL_ACCOUNTS` в `.env`.
+1. В Docker/FastAPI версии заполните `MAIL_IMAP_HOST` и `MAIL_ACCOUNTS` в `.env`.
 2. Перезапустите backend.
 3. В интерфейсе нажмите «Проверить почту».
 4. Новые непрочитанные письма появятся в блоке «Почта mailcow».
 5. Нажмите «Обработать письмо», чтобы создать заявку A-F.
 
-В MVP письма только читаются через IMAP. Автоматическая отправка через SMTP пока не включена, чтобы менеджер подтверждал ответ вручную.
+В Cloudflare-версии прямой IMAP не выполняется внутри Worker. Worker умеет обработать уже сохраненное письмо через:
+
+```text
+POST /api/email/messages/:id/process
+```
+
+Для production нужен email bridge/webhook, который читает IMAP/mailcow и записывает письма в D1 или вызывает Worker API.
+
+## SMTP-отправка через email-bridge
+
+SMTP-логин и пароль не хранятся в Worker и браузере. Для отправки email добавлен отдельный сервис:
+
+```text
+email-bridge/
+```
+
+Локальный запуск:
+
+```powershell
+cd email-bridge
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:EMAIL_BRIDGE_TOKEN="change-this-email-token"
+$env:SMTP_HOST="mail.your-domain.kz"
+$env:SMTP_PORT="587"
+$env:SMTP_USER="manager@your-domain.kz"
+$env:SMTP_PASSWORD="smtp-password"
+$env:SMTP_FROM="manager@your-domain.kz"
+$env:SMTP_FROM_NAME="ТОО Michael"
+uvicorn app.main:app --host 0.0.0.0 --port 8090
+```
+
+В Worker задайте:
+
+```env
+EMAIL_BRIDGE_URL=https://email-bridge.your-domain.kz
+EMAIL_BRIDGE_TOKEN=change-this-email-token
+```
+
+Secret:
+
+```powershell
+cd worker
+npx wrangler secret put EMAIL_BRIDGE_TOKEN
+```
+
+После настройки в интерфейсе можно отправить блок D «Черновик для клиента» по email, если в контакте заявки указан email-адрес.
 
 ## Полезные команды PowerShell
 
