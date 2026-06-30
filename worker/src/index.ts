@@ -75,6 +75,9 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/requests") {
         return json(await listRequests(env));
       }
+      if (request.method === "GET" && url.pathname === "/api/tasks/open") {
+        return json(await listOpenTasks(env));
+      }
       if (request.method === "POST" && url.pathname === "/api/requests/text") {
         return json(await processText(request, env));
       }
@@ -374,7 +377,25 @@ async function readGeminiText(response: Response): Promise<string> {
 }
 
 async function listRequests(env: Env) {
-  const result = await env.DB.prepare("SELECT * FROM requests ORDER BY created_at DESC LIMIT 100").all();
+  const result = await env.DB.prepare(`
+    SELECT
+      r.*,
+      COALESCE(task_counts.open_task_count, 0) AS open_task_count,
+      COALESCE(task_counts.done_task_count, 0) AS done_task_count,
+      COALESCE(task_counts.total_task_count, 0) AS total_task_count
+    FROM requests r
+    LEFT JOIN (
+      SELECT
+        request_id,
+        SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_task_count,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_task_count,
+        COUNT(*) AS total_task_count
+      FROM request_tasks
+      GROUP BY request_id
+    ) task_counts ON task_counts.request_id = r.id
+    ORDER BY r.created_at DESC
+    LIMIT 100
+  `).all();
   return result.results;
 }
 
@@ -384,7 +405,24 @@ async function listEmailMessages(env: Env) {
 }
 
 async function getRequest(env: Env, id: number) {
-  return env.DB.prepare("SELECT * FROM requests WHERE id = ?").bind(id).first();
+  return env.DB.prepare(`
+    SELECT
+      r.*,
+      COALESCE(task_counts.open_task_count, 0) AS open_task_count,
+      COALESCE(task_counts.done_task_count, 0) AS done_task_count,
+      COALESCE(task_counts.total_task_count, 0) AS total_task_count
+    FROM requests r
+    LEFT JOIN (
+      SELECT
+        request_id,
+        SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_task_count,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_task_count,
+        COUNT(*) AS total_task_count
+      FROM request_tasks
+      GROUP BY request_id
+    ) task_counts ON task_counts.request_id = r.id
+    WHERE r.id = ?
+  `).bind(id).first();
 }
 
 async function insertRequest(env: Env, item: Record<string, any>) {
@@ -552,6 +590,31 @@ async function listRequestTasks(env: Env, requestId: number) {
   return result.results;
 }
 
+async function listOpenTasks(env: Env) {
+  const result = await env.DB.prepare(`
+    SELECT
+      t.*,
+      r.client_company,
+      r.client_contact_name,
+      r.michael_manager,
+      r.communication_channel,
+      r.priority,
+      r.requires_contract_appendix,
+      r.invoice_status,
+      r.contract_appendix_status
+    FROM request_tasks t
+    INNER JOIN requests r ON r.id = t.request_id
+    WHERE t.status = 'open'
+      AND r.status NOT IN ('done', 'closed', 'lost')
+    ORDER BY
+      CASE r.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+      COALESCE(t.due_date, '9999-12-31') ASC,
+      t.created_at ASC
+    LIMIT 50
+  `).all();
+  return result.results;
+}
+
 async function getRequestTask(env: Env, requestId: number, taskId: number) {
   return env.DB.prepare(`
     SELECT * FROM request_tasks
@@ -670,12 +733,28 @@ async function createDefaultTasks(
 }
 
 async function getCrmSummary(env: Env) {
-  const [clients, contacts, managers, openRequests, vipRequests, statusCounts] = await Promise.all([
+  const [clients, contacts, managers, openRequests, vipRequests, openTasks, overdueTasks, statusCounts] = await Promise.all([
     env.DB.prepare("SELECT * FROM crm_clients ORDER BY updated_at DESC LIMIT 100").all(),
     env.DB.prepare("SELECT * FROM crm_contacts ORDER BY updated_at DESC LIMIT 100").all(),
     env.DB.prepare("SELECT * FROM michael_managers ORDER BY display_name ASC LIMIT 100").all(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE status NOT IN ('done', 'closed', 'lost')").first(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE client_type = 'vip'").first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM request_tasks t
+      INNER JOIN requests r ON r.id = t.request_id
+      WHERE t.status = 'open'
+        AND r.status NOT IN ('done', 'closed', 'lost')
+    `).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM request_tasks t
+      INNER JOIN requests r ON r.id = t.request_id
+      WHERE t.status = 'open'
+        AND t.due_date IS NOT NULL
+        AND t.due_date < date('now')
+        AND r.status NOT IN ('done', 'closed', 'lost')
+    `).first(),
     env.DB.prepare("SELECT status, COUNT(*) AS count FROM requests GROUP BY status ORDER BY count DESC").all(),
   ]);
 
@@ -685,6 +764,8 @@ async function getCrmSummary(env: Env) {
     managers: managers.results,
     open_requests: Number((openRequests as Record<string, unknown> | null)?.count || 0),
     vip_requests: Number((vipRequests as Record<string, unknown> | null)?.count || 0),
+    open_tasks: Number((openTasks as Record<string, unknown> | null)?.count || 0),
+    overdue_tasks: Number((overdueTasks as Record<string, unknown> | null)?.count || 0),
     status_counts: statusCounts.results,
   };
 }

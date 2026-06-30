@@ -5,6 +5,7 @@ import {
   createRequestTask,
   getCrmSummary,
   listEmailMessages,
+  listOpenTasks,
   listRequestEvents,
   listRequestTasks,
   listRequests,
@@ -103,6 +104,7 @@ export default function App() {
   const [crmSummary, setCrmSummary] = useState(null);
   const [requestEvents, setRequestEvents] = useState([]);
   const [requestTasks, setRequestTasks] = useState([]);
+  const [openTasks, setOpenTasks] = useState([]);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [statusDraft, setStatusDraft] = useState({
     status: "new",
@@ -133,6 +135,7 @@ export default function App() {
     const items = await listRequests();
     setRequests(items);
     getCrmSummary().then(setCrmSummary).catch(() => {});
+    listOpenTasks().then(setOpenTasks).catch(() => {});
     if (latestItem) {
       setSelected(latestItem);
     } else if (!selected && items.length > 0) {
@@ -273,6 +276,9 @@ export default function App() {
     ]);
     setRequestTasks(tasks);
     setRequestEvents(events);
+    listOpenTasks().then(setOpenTasks).catch(() => {});
+    getCrmSummary().then(setCrmSummary).catch(() => {});
+    listRequests().then(setRequests).catch(() => {});
   }
 
   async function handleTaskToggle(task) {
@@ -327,6 +333,11 @@ export default function App() {
     setDealDraft((current) => ({ ...current, [field]: value }));
   }
 
+  function selectTaskRequest(task) {
+    const requestItem = requests.find((item) => Number(item.id) === Number(task.request_id));
+    if (requestItem) setSelected(requestItem);
+  }
+
   return (
     <main className="app-shell">
       <aside className="history-panel">
@@ -350,6 +361,30 @@ export default function App() {
           <div>
             <strong>{crmSummary?.clients?.length ?? 0}</strong>
             <span>клиентов</span>
+          </div>
+          <div>
+            <strong>{crmSummary?.open_tasks ?? openTasks.length}</strong>
+            <span>задач</span>
+          </div>
+        </div>
+
+        <div className="open-tasks-panel">
+          <h2>Открытые задачи</h2>
+          <div className="open-task-list">
+            {openTasks.length === 0 && <p className="muted">Открытых задач нет</p>}
+            {openTasks.slice(0, 8).map((task) => (
+              <button className="open-task-item" key={task.id} onClick={() => selectTaskRequest(task)}>
+                <strong>{task.title}</strong>
+                <span>
+                  #{task.request_id}
+                  {task.client_company ? ` · ${task.client_company}` : ""}
+                </span>
+                <small>
+                  {PRIORITY_LABELS[task.priority || "normal"] || "Обычный"}
+                  {task.requires_contract_appendix ? " · KBI договор" : ""}
+                </small>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -378,6 +413,9 @@ export default function App() {
                   <small className="doc-pill">
                     {APPENDIX_STATUS_LABELS[item.contract_appendix_status] || "Приложение"}
                   </small>
+                ) : null}
+                {Number(item.open_task_count || 0) > 0 ? (
+                  <small className="task-pill">{item.open_task_count} задач</small>
                 ) : null}
               </div>
               <small>{new Date(item.created_at).toLocaleString()}</small>

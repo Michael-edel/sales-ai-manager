@@ -63,7 +63,7 @@ textarea {
   border-radius: 8px;
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   margin-bottom: 24px;
   padding: 10px;
 }
@@ -91,6 +91,48 @@ textarea {
   gap: 6px;
   padding: 12px;
   text-align: left;
+}
+
+.open-tasks-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.open-tasks-panel h2 {
+  margin: 0;
+}
+
+.open-task-list {
+  display: grid;
+  gap: 8px;
+}
+
+.open-task-item {
+  background: #ffffff;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  text-align: left;
+}
+
+.open-task-item:hover {
+  border-color: #277a50;
+}
+
+.open-task-item strong,
+.open-task-item span,
+.open-task-item small {
+  overflow-wrap: anywhere;
+}
+
+.open-task-item span,
+.open-task-item small {
+  color: #6b756e;
+  font-size: 12px;
 }
 
 .history-item.active {
@@ -172,6 +214,11 @@ textarea {
 .doc-pill {
   background: #eef8f1;
   color: #1f6b45;
+}
+
+.task-pill {
+  background: #edf4ff;
+  color: #1e4f8f;
 }
 
 .workspace {

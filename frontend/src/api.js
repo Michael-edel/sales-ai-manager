@@ -19,6 +19,10 @@ export function getCrmSummary() {
   return request("/crm/summary");
 }
 
+export function listOpenTasks() {
+  return request("/tasks/open");
+}
+
 export function listRequestEvents(requestId) {
   return request(`/requests/${requestId}/events`);
 }
