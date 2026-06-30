@@ -23,6 +23,26 @@ export function listRequestEvents(requestId) {
   return request(`/requests/${requestId}/events`);
 }
 
+export function listRequestTasks(requestId) {
+  return request(`/requests/${requestId}/tasks`);
+}
+
+export function createRequestTask(requestId, payload) {
+  return request(`/requests/${requestId}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRequestTask(requestId, taskId, payload) {
+  return request(`/requests/${requestId}/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function updateRequestStatus(requestId, payload) {
   return request(`/requests/${requestId}/status`, {
     method: "PATCH",

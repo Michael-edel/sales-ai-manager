@@ -381,13 +381,41 @@ button:disabled,
   padding-top: 12px;
 }
 
+.task-checklist {
+  border-top: 1px solid #d9dfd7;
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+
 .deal-documents-title h3 {
   margin: 0;
 }
 
-.deal-documents-title p {
+.deal-documents-title p,
+.task-checklist-title p {
   color: #6b756e;
   margin: 4px 0 0;
+}
+
+.task-checklist-title {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.task-checklist-title h3 {
+  margin: 0;
+}
+
+.task-checklist-title span {
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 999px;
+  color: #1f6b45;
+  font-weight: 700;
+  padding: 6px 10px;
 }
 
 .deal-documents-grid {
@@ -414,6 +442,61 @@ button:disabled,
 .deal-documents-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.task-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-item {
+  align-items: center;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.task-item input {
+  height: 18px;
+  min-height: 18px;
+  width: 18px;
+}
+
+.task-item svg {
+  color: #277a50;
+}
+
+.task-item div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.task-item strong {
+  overflow-wrap: anywhere;
+}
+
+.task-item small {
+  color: #6b756e;
+}
+
+.task-done {
+  background: #f4f6f3;
+}
+
+.task-done strong {
+  color: #6b756e;
+  text-decoration: line-through;
+}
+
+.task-create {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .events-area {
@@ -533,6 +616,7 @@ pre {
   .request-card-main,
   .status-editor,
   .deal-documents-grid,
+  .task-create,
   .event-item {
     grid-template-columns: 1fr;
   }

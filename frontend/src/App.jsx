@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Clipboard, FileText, Loader2, Mail, Upload } from "lucide-react";
+import { CheckSquare, Clipboard, FileText, Loader2, Mail, Plus, Upload } from "lucide-react";
 import {
   checkEmail,
+  createRequestTask,
   getCrmSummary,
   listEmailMessages,
   listRequestEvents,
+  listRequestTasks,
   listRequests,
   processEmailMessage,
   processText,
   updateDealDocuments,
+  updateRequestTask,
   updateRequestStatus,
   uploadFile,
 } from "./api";
@@ -80,6 +83,12 @@ const APPENDIX_STATUS_OPTIONS = [
 const INVOICE_STATUS_LABELS = Object.fromEntries(INVOICE_STATUS_OPTIONS);
 const APPENDIX_STATUS_LABELS = Object.fromEntries(APPENDIX_STATUS_OPTIONS);
 
+const TASK_STATUS_LABELS = {
+  open: "Открыта",
+  done: "Выполнена",
+  cancelled: "Отменена",
+};
+
 export default function App() {
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -93,6 +102,8 @@ export default function App() {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [crmSummary, setCrmSummary] = useState(null);
   const [requestEvents, setRequestEvents] = useState([]);
+  const [requestTasks, setRequestTasks] = useState([]);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
   const [statusDraft, setStatusDraft] = useState({
     status: "new",
     priority: "normal",
@@ -142,6 +153,7 @@ export default function App() {
   useEffect(() => {
     if (!selected) {
       setRequestEvents([]);
+      setRequestTasks([]);
       return;
     }
     setStatusDraft({
@@ -160,6 +172,7 @@ export default function App() {
       customer_sent_at: selected.customer_sent_at || "",
     });
     listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
+    listRequestTasks(selected.id).then(setRequestTasks).catch(() => setRequestTasks([]));
   }, [selected]);
 
   async function handleProcess() {
@@ -246,6 +259,56 @@ export default function App() {
       await refreshHistory(item);
       const events = await listRequestEvents(item.id);
       setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshSelectedTasksAndEvents(requestId) {
+    const [tasks, events] = await Promise.all([
+      listRequestTasks(requestId),
+      listRequestEvents(requestId),
+    ]);
+    setRequestTasks(tasks);
+    setRequestEvents(events);
+  }
+
+  async function handleTaskToggle(task) {
+    if (!selected) return;
+    setError("");
+    setLoading(true);
+    try {
+      const nextStatus = task.status === "done" ? "open" : "done";
+      await updateRequestTask(selected.id, task.id, {
+        title: task.title,
+        status: nextStatus,
+        owner_name: task.owner_name || selected.michael_manager || "",
+        due_date: task.due_date || "",
+        actor: metadata.michael_manager || selected.michael_manager || "manager",
+      });
+      await refreshSelectedTasksAndEvents(selected.id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleTaskCreate() {
+    if (!selected || !newTaskTitle.trim()) return;
+    setError("");
+    setLoading(true);
+    try {
+      await createRequestTask(selected.id, {
+        title: newTaskTitle,
+        status: "open",
+        owner_name: selected.michael_manager || metadata.michael_manager || "",
+        actor: metadata.michael_manager || selected.michael_manager || "manager",
+      });
+      setNewTaskTitle("");
+      await refreshSelectedTasksAndEvents(selected.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -623,6 +686,57 @@ export default function App() {
                 <div className="deal-documents-actions">
                   <button className="secondary-button" onClick={handleDealDocumentsSave} disabled={loading}>
                     Сохранить документы
+                  </button>
+                </div>
+              </div>
+
+              <div className="task-checklist">
+                <div className="task-checklist-title">
+                  <div>
+                    <h3>Задачи по заявке</h3>
+                    <p>Контроль действий менеджера до закрытия заявки</p>
+                  </div>
+                  <span>
+                    {requestTasks.filter((task) => task.status === "done").length}/{requestTasks.length}
+                  </span>
+                </div>
+
+                <div className="task-list">
+                  {requestTasks.length === 0 && <p className="muted">Задач пока нет.</p>}
+                  {requestTasks.map((task) => (
+                    <label className={task.status === "done" ? "task-item task-done" : "task-item"} key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={task.status === "done"}
+                        onChange={() => handleTaskToggle(task)}
+                        disabled={loading}
+                      />
+                      <CheckSquare size={18} />
+                      <div>
+                        <strong>{task.title}</strong>
+                        <small>
+                          {TASK_STATUS_LABELS[task.status] || task.status}
+                          {task.owner_name ? ` · ${task.owner_name}` : ""}
+                          {task.due_date ? ` · до ${task.due_date}` : ""}
+                        </small>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="task-create">
+                  <input
+                    value={newTaskTitle}
+                    onChange={(event) => setNewTaskTitle(event.target.value)}
+                    placeholder="Добавить задачу: отправить счет и приложение в WhatsApp"
+                  />
+                  <button
+                    className="secondary-button"
+                    onClick={handleTaskCreate}
+                    disabled={loading || !newTaskTitle.trim()}
+                  >
+                    <Plus size={18} />
+                    Добавить
                   </button>
                 </div>
               </div>

@@ -114,6 +114,22 @@ export default {
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
 
+      const tasksMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/tasks$/);
+      if (tasksMatch) {
+        const requestId = Number(tasksMatch[1]);
+        if (request.method === "GET") return json(await listRequestTasks(env, requestId));
+        if (request.method === "POST") {
+          const task = await createRequestTask(request, env, requestId);
+          return task ? json(task) : json({ detail: "Заявка не найдена." }, 404);
+        }
+      }
+
+      const taskMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/tasks\/(\d+)$/);
+      if (request.method === "PATCH" && taskMatch) {
+        const task = await updateRequestTask(request, env, Number(taskMatch[1]), Number(taskMatch[2]));
+        return task ? json(task) : json({ detail: "Задача не найдена." }, 404);
+      }
+
       const eventsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/events$/);
       if (request.method === "GET" && eventsMatch) {
         return json(await listRequestEvents(env, Number(eventsMatch[1])));
@@ -421,6 +437,7 @@ async function insertRequest(env: Env, item: Record<string, any>) {
     invoice_status: "not_required",
     contract_appendix_status: appendixStatus,
   });
+  await createDefaultTasks(env, requestId, item, crm.requiresContractAppendix);
   return getRequest(env, requestId);
 }
 
@@ -521,6 +538,135 @@ async function listRequestEvents(env: Env, requestId: number) {
     LIMIT 100
   `).bind(requestId).all();
   return result.results;
+}
+
+async function listRequestTasks(env: Env, requestId: number) {
+  const result = await env.DB.prepare(`
+    SELECT * FROM request_tasks
+    WHERE request_id = ?
+    ORDER BY
+      CASE status WHEN 'open' THEN 0 WHEN 'done' THEN 1 ELSE 2 END,
+      COALESCE(due_date, '9999-12-31') ASC,
+      id ASC
+  `).bind(requestId).all();
+  return result.results;
+}
+
+async function getRequestTask(env: Env, requestId: number, taskId: number) {
+  return env.DB.prepare(`
+    SELECT * FROM request_tasks
+    WHERE request_id = ? AND id = ?
+  `).bind(requestId, taskId).first();
+}
+
+async function createRequestTask(request: Request, env: Env, requestId: number) {
+  const existingRequest = await getRequest(env, requestId);
+  if (!existingRequest) return null;
+
+  const payload = (await request.json()) as {
+    title?: string;
+    status?: string;
+    owner_name?: string;
+    due_date?: string;
+    actor?: string;
+  };
+  const title = normalizeOptionalText(payload.title);
+  if (!title) throw new Error("Название задачи пустое.");
+
+  const status = normalizeTaskStatus(payload.status || "open");
+  const ownerName = normalizeOptionalText(payload.owner_name);
+  const dueDate = normalizeIsoDate(payload.due_date);
+  const completedAt = status === "done" ? new Date().toISOString() : null;
+  const actor = normalizeOptionalText(payload.actor) || "manager";
+
+  const result = await env.DB.prepare(`
+    INSERT INTO request_tasks (request_id, title, status, owner_name, due_date, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(requestId, title, status, ownerName || null, dueDate || null, completedAt).run();
+
+  const taskId = Number(result.meta.last_row_id);
+  await createRequestEvent(env, requestId, "request.task_created", actor, {
+    task_id: taskId,
+    title,
+    status,
+    owner_name: ownerName || null,
+    due_date: dueDate || null,
+  });
+
+  return getRequestTask(env, requestId, taskId);
+}
+
+async function updateRequestTask(request: Request, env: Env, requestId: number, taskId: number) {
+  const existing = await getRequestTask(env, requestId, taskId) as Record<string, any> | null;
+  if (!existing) return null;
+
+  const payload = (await request.json()) as {
+    title?: string;
+    status?: string;
+    owner_name?: string;
+    due_date?: string;
+    actor?: string;
+  };
+  const title = normalizeOptionalText(payload.title ?? existing.title);
+  if (!title) throw new Error("Название задачи пустое.");
+
+  const status = normalizeTaskStatus(payload.status || existing.status || "open");
+  const ownerName = normalizeOptionalText(payload.owner_name ?? existing.owner_name);
+  const dueDate = normalizeIsoDate(payload.due_date ?? existing.due_date);
+  const completedAt = status === "done" ? (existing.completed_at || new Date().toISOString()) : null;
+  const actor = normalizeOptionalText(payload.actor) || "manager";
+
+  await env.DB.prepare(`
+    UPDATE request_tasks
+    SET title = ?, status = ?, owner_name = ?, due_date = ?, completed_at = ?
+    WHERE request_id = ? AND id = ?
+  `).bind(title, status, ownerName || null, dueDate || null, completedAt, requestId, taskId).run();
+
+  await createRequestEvent(env, requestId, "request.task_updated", actor, {
+    task_id: taskId,
+    title,
+    previous_status: existing.status || "open",
+    status,
+    owner_name: ownerName || null,
+    due_date: dueDate || null,
+    completed_at: completedAt,
+  });
+
+  return getRequestTask(env, requestId, taskId);
+}
+
+async function createDefaultTasks(
+  env: Env,
+  requestId: number,
+  item: Record<string, any>,
+  requiresContractAppendix: boolean,
+) {
+  const ownerName = normalizeOptionalText(item.michael_manager);
+  const tasks = [
+    "Проверить наличие и цену с НДС",
+    "Подготовить ответ клиенту",
+  ];
+
+  if (item.source_type === "audio") {
+    tasks.unshift("Проверить транскрибацию голосового сообщения");
+  }
+
+  if (requiresContractAppendix) {
+    tasks.push("Подготовить счет от ТОО Michael");
+    tasks.push("Подготовить приложение к годовому договору");
+  }
+
+  for (const title of tasks) {
+    await env.DB.prepare(`
+      INSERT INTO request_tasks (request_id, title, owner_name)
+      VALUES (?, ?, ?)
+    `).bind(requestId, title, ownerName || null).run();
+  }
+
+  await createRequestEvent(env, requestId, "request.tasks_created", ownerName || "system", {
+    count: tasks.length,
+    requires_contract_appendix: requiresContractAppendix,
+  });
 }
 
 async function getCrmSummary(env: Env) {
@@ -691,6 +837,11 @@ function normalizeAppendixStatus(value: unknown): string {
   const normalized = normalizeOptionalText(value) || "not_required";
   const allowed = ["not_required", "required", "prepared", "sent", "signed", "cancelled"];
   return allowed.includes(normalized) ? normalized : "not_required";
+}
+
+function normalizeTaskStatus(value: unknown): string {
+  const normalized = normalizeOptionalText(value) || "open";
+  return ["open", "done", "cancelled"].includes(normalized) ? normalized : "open";
 }
 
 function normalizeIsoDate(value: unknown): string {
