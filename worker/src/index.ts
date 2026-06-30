@@ -449,24 +449,31 @@ async function processUpload(request: Request, env: Env) {
     aiResult = await analyzeText(env, originalText);
     sourceType = "audio";
   } else if (isDocument(lowerName)) {
-    const parsed = await parseDocumentWithService(env, file);
-    const parsedText = parsedDocumentText(parsed);
-    const warningsText = parsed.warnings?.length
-      ? `\n\nПредупреждения parser-service:\n${parsed.warnings.join("\n")}`
-      : "";
-    originalText = `${context}Файл: ${fileName}\nParser: ${parsed.parser || "parser-service"}${warningsText}`;
-    if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
-
-    if (parsedText) {
-      originalText += `\n\nИзвлеченный текст:\n${limitText(parsedText, 120000)}`;
-      aiResult = await analyzeText(env, originalText);
+    if (isPdf(lowerName) && useGemini(env) && !isParserServiceConfigured(env)) {
+      const filePayload = await fileToPayload(file);
+      originalText = `${context}PDF-файл обработан напрямую через Gemini: ${fileName}`;
+      if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
+      aiResult = await analyzePdfGemini(env, filePayload, fileName, `${context}${managerNote}`.trim());
     } else {
-      const imagePages = parsedImagePages(parsed);
-      if (!imagePages.length) {
-        throw new Error("Parser service не нашел текст и не вернул изображения страниц для vision-анализа.");
+      const parsed = await parseDocumentWithService(env, file);
+      const parsedText = parsedDocumentText(parsed);
+      const warningsText = parsed.warnings?.length
+        ? `\n\nПредупреждения parser-service:\n${parsed.warnings.join("\n")}`
+        : "";
+      originalText = `${context}Файл: ${fileName}\nParser: ${parsed.parser || "parser-service"}${warningsText}`;
+      if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
+
+      if (parsedText) {
+        originalText += `\n\nИзвлеченный текст:\n${limitText(parsedText, 120000)}`;
+        aiResult = await analyzeText(env, originalText);
+      } else {
+        const imagePages = parsedImagePages(parsed);
+        if (!imagePages.length) {
+          throw new Error("Parser service не нашел текст и не вернул изображения страниц для vision-анализа.");
+        }
+        originalText += `\n\nДокумент похож на скан. Parser service вернул ${imagePages.length} страниц для vision-анализа.`;
+        aiResult = await analyzeDocumentImages(env, imagePages, fileName, `${context}${managerNote}`.trim());
       }
-      originalText += `\n\nДокумент похож на скан. Parser service вернул ${imagePages.length} страниц для vision-анализа.`;
-      aiResult = await analyzeDocumentImages(env, imagePages, fileName, `${context}${managerNote}`.trim());
     }
   } else {
     const text = await file.text().catch(() => "");
@@ -836,6 +843,33 @@ async function analyzeImageGemini(env: Env, filePayload: FilePayload, fileName: 
   return readGeminiText(response);
 }
 
+async function analyzePdfGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+  requireGemini(env);
+  if (filePayload.base64.length > 28_000_000) {
+    throw new Error("PDF слишком большой для прямой обработки через Gemini. Настройте parser-service или загрузите файл меньше 20 МБ.");
+  }
+
+  const response = await fetch(geminiInteractionsUrl(), {
+    method: "POST",
+    headers: geminiHeaders(env),
+    body: JSON.stringify({
+      model: env.GEMINI_MODEL || "gemini-3.5-flash",
+      input: [
+        {
+          type: "text",
+          text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+        },
+        {
+          type: "document",
+          data: filePayload.base64,
+          mime_type: "application/pdf",
+        },
+      ],
+    }),
+  });
+  return readGeminiInteractionText(response);
+}
+
 async function analyzeDocumentImagesGemini(
   env: Env,
   pages: ParsedImagePage[],
@@ -918,6 +952,27 @@ async function readGeminiText(response: Response): Promise<string> {
     ?.trim();
   if (!text) throw new Error("Gemini API вернул пустой ответ.");
   return text;
+}
+
+async function readGeminiInteractionText(response: Response): Promise<string> {
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`Ошибка Gemini Interactions API: ${raw}`);
+  const data = JSON.parse(raw);
+  if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
+  if (typeof data.outputText === "string" && data.outputText.trim()) return data.outputText.trim();
+
+  const lastStep = Array.isArray(data.steps) ? data.steps[data.steps.length - 1] : null;
+  const stepText = Array.isArray(lastStep?.content)
+    ? lastStep.content.map((part: any) => part?.text || "").join("\n").trim()
+    : "";
+  if (stepText) return stepText;
+
+  const outputText = Array.isArray(data.outputs)
+    ? data.outputs.map((part: any) => part?.text || "").join("\n").trim()
+    : "";
+  if (outputText) return outputText;
+
+  throw new Error("Gemini Interactions API вернул пустой ответ.");
 }
 
 async function listRequests(env: Env) {
@@ -1725,6 +1780,14 @@ function isDocument(fileName: string): boolean {
   return [".pdf", ".docx", ".xlsx"].some((extension) => fileName.endsWith(extension));
 }
 
+function isPdf(fileName: string): boolean {
+  return fileName.endsWith(".pdf");
+}
+
+function isParserServiceConfigured(env: Env): boolean {
+  return Boolean((env.PARSER_SERVICE_URL || "").trim());
+}
+
 type FilePayload = {
   mimeType: string;
   base64: string;
@@ -1749,7 +1812,7 @@ async function parseDocumentWithService(env: Env, file: File): Promise<ParsedDoc
   const baseUrl = (env.PARSER_SERVICE_URL || "").trim().replace(/\/+$/, "");
   if (!baseUrl) {
     throw new Error(
-      "PARSER_SERVICE_URL не задан. Для обработки PDF/DOCX/XLSX запустите parser-service и укажите его URL в настройках Worker.",
+      "PARSER_SERVICE_URL не задан. Для DOCX/XLSX запустите parser-service и укажите его URL в настройках Worker. PDF при AI_PROVIDER=gemini обрабатывается напрямую.",
     );
   }
 
@@ -1864,6 +1927,10 @@ function openAIHeaders(env: Env): HeadersInit {
 function geminiGenerateUrl(env: Env): string {
   const model = env.GEMINI_MODEL || "gemini-3.5-flash";
   return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+}
+
+function geminiInteractionsUrl(): string {
+  return "https://generativelanguage.googleapis.com/v1beta/interactions";
 }
 
 function geminiHeaders(env: Env): HeadersInit {

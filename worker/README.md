@@ -23,16 +23,17 @@
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
 - Gemini/OpenAI audio transcription для голосовых
-- PDF/DOCX/XLSX через внешний `parser-service`
+- PDF напрямую через Gemini, если `AI_PROVIDER=gemini` и `PARSER_SERVICE_URL` не задан
+- DOCX/XLSX и расширенный PDF-разбор через внешний `parser-service`
 - KBI Energy как VIP-клиент: счет от ТОО Michael + приложение к годовому договору
 
 ## Что пока не перенесено
 
 - IMAP-проверка mailcow/Yandex.
 - Встроенная SMTP-отправка из самого Worker.
-- Парсинг PDF/DOCX/XLSX внутри самого Worker.
+- Парсинг DOCX/XLSX внутри самого Worker.
 
-Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для документов уже добавлен Python-сервис `../parser-service`.
+Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
 
 ## Приложение к договору KBI Energy
 
@@ -129,9 +130,9 @@ notepad .dev.vars
 пароль: ACCESS_PASSWORD
 ```
 
-## Parser-service для PDF/DOCX/XLSX
+## Parser-service для DOCX/XLSX и расширенного PDF-разбора
 
-Worker вызывает внешний FastAPI-сервис, потому что Cloudflare Worker не запускает Python-библиотеки `PyMuPDF`, `python-docx` и `openpyxl`.
+PDF-счета могут обрабатываться напрямую через Gemini без parser-service. Worker вызывает внешний FastAPI-сервис для DOCX/XLSX и для случаев, где нужен Python-разбор PDF, потому что Cloudflare Worker не запускает библиотеки `PyMuPDF`, `python-docx` и `openpyxl`.
 
 Локально:
 

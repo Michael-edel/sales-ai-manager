@@ -560,7 +560,7 @@ export default function App() {
     ? "подключен"
     : parserStatus?.configured
       ? "ошибка"
-      : "не настроен";
+      : "PDF через Gemini";
   const smtpHealthClass = smtpStatus?.reachable
     ? "ok"
     : smtpStatus?.configured
@@ -858,6 +858,9 @@ export default function App() {
             <div>
               <strong>Parser-service</strong>
               <span>{parserLoading ? "проверяется" : parserHealthText}</span>
+              {!parserStatus?.configured && !parserLoading ? (
+                <small>DOCX/XLSX требуют внешний сервис</small>
+              ) : null}
             </div>
             <button
               className="icon-button"

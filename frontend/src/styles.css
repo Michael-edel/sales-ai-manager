@@ -474,6 +474,11 @@ button:disabled,
   font-size: 12px;
 }
 
+.service-status small {
+  color: #6b756e;
+  font-size: 11px;
+}
+
 .service-status-ok {
   background: #eef8f1;
   border-color: #b9d9c4;

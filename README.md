@@ -23,7 +23,7 @@ https://ai.michael.kz
 - сессии хранятся в D1 `auth_sessions`;
 - пользователи хранятся в D1 `app_users`;
 - история заявок, CRM, задачи, документы сделки и журнал действий сохраняются в D1.
-- `.pdf`, `.docx` и `.xlsx` в Cloudflare-версии обрабатываются через отдельный `parser-service`, если задан `PARSER_SERVICE_URL`;
+- `.pdf` в Cloudflare-версии может обрабатываться напрямую через Gemini; `.docx` и `.xlsx` требуют отдельный `parser-service`, если задан `PARSER_SERVICE_URL`;
 - деплой выполняется через GitHub Actions на Node.js 24 с секретами `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GEMINI_API_KEY`.
 
 ## Роли и доступ
@@ -46,7 +46,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Python + FastAPI backend.
 - PostgreSQL для истории заявок.
 - Загрузка `.xlsx`, `.pdf`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.mp3`, `.m4a`, `.wav`, `.ogg`, `.opus`, `.webm`.
-- Извлечение текста из `.pdf`, `.docx`, `.xlsx`; в Cloudflare-версии это делает отдельный Python `parser-service`.
+- Обработка `.pdf` напрямую через Gemini, если `AI_PROVIDER=gemini` и `PARSER_SERVICE_URL` не задан.
+- Извлечение текста из `.docx`, `.xlsx` и расширенный разбор `.pdf`; в Cloudflare-версии это делает отдельный Python `parser-service`.
 - Vision-анализ сканированных PDF, если parser-service не нашел текст и вернул изображения страниц.
 - Vision-анализ скриншотов WhatsApp/Telegram и фото товара через OpenAI API.
 - Транскрибация голосовых сообщений WhatsApp/Telegram через OpenAI API.
@@ -94,7 +95,7 @@ cd ..\worker
 npm run dev
 ```
 
-Для обработки `.pdf`, `.docx` и `.xlsx` в Cloudflare-версии отдельно запустите `parser-service` и задайте `PARSER_SERVICE_URL`.
+Для `.pdf` в Cloudflare-версии достаточно Gemini. Для `.docx`, `.xlsx` и расширенного разбора PDF отдельно запустите `parser-service` и задайте `PARSER_SERVICE_URL`.
 Для отправки email через SMTP отдельно запустите `email-bridge` и задайте `EMAIL_BRIDGE_URL`.
 
 ## Legacy Docker запуск
@@ -296,9 +297,15 @@ npm run d1:migrate:remote
 5. Нажмите «Обработать».
 6. Система отправит изображение и пояснение в OpenAI vision-анализ и сохранит результат в историю.
 
-## Проверка PDF/DOCX/XLSX через parser-service
+## Проверка PDF/DOCX/XLSX
 
-Cloudflare Worker не может напрямую запускать Python-библиотеки для офисных документов. Для этого добавлен отдельный сервис:
+Cloudflare Worker не может напрямую запускать Python-библиотеки для офисных документов. Поэтому:
+
+- `.pdf` может обрабатываться напрямую через Gemini без `parser-service`;
+- `.docx` и `.xlsx` требуют внешний `parser-service`;
+- для более точного извлечения текста/сканов PDF тоже можно подключить `parser-service`.
+
+Сервис находится здесь:
 
 ```text
 parser-service/
@@ -339,9 +346,10 @@ npx wrangler secret put PARSER_SERVICE_TOKEN
 
 Что поддерживается:
 
+- `.pdf`: напрямую через Gemini, если `AI_PROVIDER=gemini` и `PARSER_SERVICE_URL` не задан;
 - `.docx`: текст параграфов и таблиц;
 - `.xlsx`: строки всех листов;
-- `.pdf`: текстовый слой через PyMuPDF;
+- `.pdf`: текстовый слой через PyMuPDF при подключенном parser-service;
 - сканированный `.pdf`: первые страницы рендерятся в JPEG и отправляются в vision-анализ.
 
 Parser-service также проверяется в GitHub Actions перед деплоем Worker.
@@ -349,7 +357,7 @@ Parser-service также проверяется в GitHub Actions перед д
 В интерфейсе в блоке новой обработки отображается статус `Parser-service`:
 
 - `подключен` — Worker успешно получил ответ от `PARSER_SERVICE_URL`;
-- `не настроен` — `PARSER_SERVICE_URL` не задан;
+- `PDF через Gemini` — `PARSER_SERVICE_URL` не задан, PDF будет обработан напрямую, DOCX/XLSX пока недоступны;
 - `ошибка` — URL задан, но сервис не отвечает или вернул ошибку.
 
 Проверить статус через API можно так:
