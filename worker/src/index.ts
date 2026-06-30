@@ -211,6 +211,13 @@ export default {
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
 
+      const appendixMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/contract-appendix$/);
+      if (request.method === "POST" && appendixMatch) {
+        if (!canManageDocuments(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const appendix = await generateContractAppendix(env, Number(appendixMatch[1]), currentUser);
+        return appendix ? json(appendix) : json({ detail: "Заявка не найдена." }, 404);
+      }
+
       const tasksMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/tasks$/);
       if (tasksMatch) {
         const requestId = Number(tasksMatch[1]);
@@ -1173,6 +1180,170 @@ async function updateDealDocuments(request: Request, env: Env, id: number) {
   });
 
   return getRequest(env, id);
+}
+
+async function generateContractAppendix(env: Env, id: number, currentUser: CurrentUser) {
+  const existing = await getRequest(env, id) as Record<string, any> | null;
+  if (!existing) return null;
+
+  const appendix = buildContractAppendix(existing);
+  const actor = currentUser.display_name || currentUser.username || existing.michael_manager || "system";
+  const generatedAt = new Date().toISOString();
+  const eventNote = `Приложение сформировано ${generatedAt} по заявке #${id}.`;
+  const previousNote = normalizeOptionalText(existing.contract_appendix_note);
+  const nextNote = previousNote ? `${previousNote}\n${eventNote}` : eventNote;
+
+  await env.DB.prepare(`
+    UPDATE requests
+    SET contract_appendix_status = ?,
+        contract_appendix_note = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).bind("prepared", nextNote, id).run();
+
+  await createRequestEvent(env, id, "request.contract_appendix_generated", actor, {
+    file_name: appendix.file_name,
+    invoice_number: existing.invoice_number || null,
+    invoice_date: existing.invoice_date || null,
+    generated_at: generatedAt,
+  });
+
+  return {
+    ...appendix,
+    request: await getRequest(env, id),
+  };
+}
+
+function buildContractAppendix(item: Record<string, any>) {
+  const requestId = Number(item.id || 0);
+  const clientCompany = normalizeOptionalText(item.client_company) || "ТОО KBI Energy";
+  const invoiceNumber = normalizeOptionalText(item.invoice_number) || "уточняется";
+  const invoiceDate = normalizeOptionalText(item.invoice_date) || "уточняется";
+  const documentDate = invoiceDate === "уточняется" ? new Date().toISOString().slice(0, 10) : invoiceDate;
+  const sourceSummary = buildAppendixSourceSummary(item);
+  const appendixSubject = invoiceNumber === "уточняется"
+    ? `заявке № ${requestId}`
+    : `счету на оплату № ${invoiceNumber} от ${invoiceDate}`;
+  const appendixTitle = `к ${appendixSubject}`;
+
+  const text = [
+    "ПРИЛОЖЕНИЕ № ____",
+    "к Договору поставки № ____ от __.__.____ г.",
+    "",
+    appendixTitle,
+    "",
+    `Дата приложения: ${documentDate}`,
+    "",
+    "1. Стороны",
+    "Поставщик: ТОО Michael.",
+    `Покупатель: ${clientCompany}.`,
+    "",
+    "2. Предмет приложения",
+    `Поставщик обязуется поставить, а Покупатель принять и оплатить товар по ${appendixSubject}.`,
+    "Приложение оформляется к годовому договору с VIP/оптовым клиентом KBI Energy.",
+    "",
+    "3. Спецификация и коммерческие условия",
+    sourceSummary,
+    "",
+    "4. Цена, НДС и документы",
+    "Все цены для клиента указываются с НДС от ТОО Michael.",
+    `Счет на оплату: № ${invoiceNumber} от ${invoiceDate}.`,
+    "Счет и настоящее приложение направляются клиенту вместе по рабочему каналу связи.",
+    "",
+    "5. Прочие условия",
+    "Условия оплаты, поставки, приемки товара и документооборота применяются согласно годовому договору поставки между сторонами.",
+    "Настоящее приложение является неотъемлемой частью договора и действует до полного исполнения обязательств по соответствующему счету.",
+    "",
+    "6. Подписи сторон",
+    "",
+    "Поставщик: ТОО Michael __________________ /____________/",
+    "Покупатель: _____________________________ /____________/",
+  ].join("\n");
+
+  return {
+    appendix_text: text,
+    appendix_html: buildAppendixHtml(text, requestId),
+    file_name: buildAppendixFileName(requestId, invoiceNumber, clientCompany),
+  };
+}
+
+function buildAppendixSourceSummary(item: Record<string, any>): string {
+  const extractedData = extractAiSection(normalizeOptionalText(item.ai_result), "B");
+  const oneCDecision = extractAiSection(normalizeOptionalText(item.ai_result), "C");
+  const sourceParts = [
+    extractedData ? cleanAiSectionTitle(extractedData) : "",
+    oneCDecision ? cleanAiSectionTitle(oneCDecision) : "",
+  ].filter(Boolean);
+
+  if (sourceParts.length > 0) return sourceParts.join("\n\n");
+
+  const originalText = normalizeOptionalText(item.original_text);
+  if (originalText) return limitText(originalText, 4000);
+
+  return "Спецификация товара, количество, цена с НДС и срок поставки заполняются по счету и подтвержденной заявке клиента.";
+}
+
+function extractAiSection(value: string, letter: string): string {
+  if (!value) return "";
+  const escapedLetter = letter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^${escapedLetter}\\.\\s[\\s\\S]*?(?=^[A-F]\\.\\s|$)`, "m");
+  const match = value.match(pattern);
+  return match ? match[0].trim() : "";
+}
+
+function cleanAiSectionTitle(value: string): string {
+  return value.replace(/^[A-F]\.\s+[^\n]+\n*/u, "").trim();
+}
+
+function buildAppendixHtml(text: string, requestId: number): string {
+  const paragraphs = text
+    .split("\n")
+    .map((line) => {
+      if (!line.trim()) return "<p>&nbsp;</p>";
+      return `<p>${escapeHtml(line)}</p>`;
+    })
+    .join("\n");
+
+  return [
+    "<!doctype html>",
+    '<html lang="ru">',
+    "<head>",
+    '<meta charset="utf-8">',
+    `<title>Приложение к договору - заявка ${requestId}</title>`,
+    "<style>",
+    "body { font-family: Arial, sans-serif; color: #111; line-height: 1.35; margin: 40px; }",
+    "p { margin: 0 0 8px; }",
+    "p:first-child { font-weight: 700; text-align: center; }",
+    "</style>",
+    "</head>",
+    "<body>",
+    paragraphs,
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+function buildAppendixFileName(requestId: number, invoiceNumber: string, clientCompany: string): string {
+  const invoicePart = invoiceNumber === "уточняется" ? `request-${requestId}` : `invoice-${invoiceNumber}`;
+  return sanitizeFileName(`appendix-${clientCompany}-${invoicePart}.doc`);
+}
+
+function sanitizeFileName(value: string): string {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 async function listRequestEvents(env: Env, requestId: number) {

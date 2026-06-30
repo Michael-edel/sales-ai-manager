@@ -18,11 +18,13 @@
 - `POST /api/requests/upload`
 - `POST /api/email/messages/:id/process`
 - `POST /api/email/send` через внешний `email-bridge`
+- `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
 - D1 таблицы `requests` и `email_messages`
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
 - Gemini/OpenAI audio transcription для голосовых
 - PDF/DOCX/XLSX через внешний `parser-service`
+- KBI Energy как VIP-клиент: счет от ТОО Michael + приложение к годовому договору
 
 ## Что пока не перенесено
 
@@ -31,6 +33,29 @@
 - Парсинг PDF/DOCX/XLSX внутри самого Worker.
 
 Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для документов уже добавлен Python-сервис `../parser-service`.
+
+## Приложение к договору KBI Energy
+
+Endpoint:
+
+```text
+POST /api/requests/:id/contract-appendix
+```
+
+Доступ: `admin`, `manager`, `accountant`.
+
+Worker берет выбранную заявку, номер/дату счета из `requests`, разделы B/C ответа ИИ и формирует:
+
+- `appendix_text` — текст черновика;
+- `appendix_html` — HTML, который frontend скачивает как Word-совместимый `.doc`;
+- `file_name` — имя файла;
+- `request` — обновленную заявку.
+
+После генерации:
+
+- `contract_appendix_status` становится `prepared`;
+- в `contract_appendix_note` добавляется отметка о формировании;
+- в `request_events` пишется `request.contract_appendix_generated`.
 
 ## Подготовка
 

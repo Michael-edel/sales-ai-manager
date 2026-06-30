@@ -620,6 +620,7 @@ button:disabled,
 
 .deal-documents-actions {
   display: flex;
+  gap: 10px;
   justify-content: flex-end;
 }
 

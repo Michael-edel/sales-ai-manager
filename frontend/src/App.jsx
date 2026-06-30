@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Clipboard, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Upload, UserPlus } from "lucide-react";
+import { CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createUser,
   createRequestTask,
+  generateContractAppendix,
   getCrmSummary,
   getCurrentUser,
   getEmailSmtpHealth,
@@ -453,6 +454,41 @@ export default function App() {
       await refreshHistory(item);
       const events = await listRequestEvents(item.id);
       setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function downloadAppendix(fileName, html) {
+    const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName || `appendix-request-${selected?.id || "draft"}.doc`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleGenerateAppendix() {
+    if (!selected || !canManageDocuments) return;
+    setError("");
+    setLoading(true);
+    try {
+      const savedItem = await updateDealDocuments(selected.id, {
+        ...dealDraft,
+        actor: metadata.michael_manager || selected.michael_manager || "manager",
+      });
+      const result = await generateContractAppendix(savedItem.id);
+      downloadAppendix(result.file_name, result.appendix_html);
+      if (result.request) {
+        await refreshHistory(result.request);
+        const events = await listRequestEvents(result.request.id);
+        setRequestEvents(events);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1137,6 +1173,9 @@ export default function App() {
                   <div className="role-note">Ваша роль не позволяет сохранять документы сделки.</div>
                 ) : null}
                 <div className="deal-documents-actions">
+                  <button className="secondary-button" onClick={handleGenerateAppendix} disabled={loading || !canManageDocuments || !selected}>
+                    <FilePlus2 size={18} /> Создать приложение
+                  </button>
                   <button className="secondary-button" onClick={handleDealDocumentsSave} disabled={loading || !canManageDocuments}>
                     Сохранить документы
                   </button>

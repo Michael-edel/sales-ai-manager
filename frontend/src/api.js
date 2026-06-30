@@ -113,6 +113,10 @@ export function updateDealDocuments(requestId, payload) {
   });
 }
 
+export function generateContractAppendix(requestId) {
+  return request(`/requests/${requestId}/contract-appendix`, { method: "POST" });
+}
+
 export function processText(originalText, metadata = {}) {
   return request("/requests/text", {
     method: "POST",
