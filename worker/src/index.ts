@@ -190,7 +190,7 @@ async function ensureInitialUser(env: Env): Promise<void> {
   const username = normalizeUsername(env.ACCESS_USERNAME || "manager");
   const password = await hashPassword(env.ACCESS_PASSWORD);
   await env.DB.prepare(`
-    INSERT INTO app_users (username, display_name, role, password_hash, password_salt)
+    INSERT OR IGNORE INTO app_users (username, display_name, role, password_hash, password_salt)
     VALUES (?, ?, ?, ?, ?)
   `).bind(username, "Администратор", "admin", password.hash, password.salt).run();
 }
