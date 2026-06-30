@@ -7,6 +7,10 @@ export interface Env {
   OPENAI_TRANSCRIBE_MODEL: string;
   GEMINI_API_KEY: string;
   GEMINI_MODEL: string;
+  GEMINI_TRANSCRIBE_MODEL: string;
+  GEMINI_FALLBACK_MODELS: string;
+  GEMINI_RETRY_ATTEMPTS: string;
+  GEMINI_RETRY_BASE_DELAY_MS: string;
   PARSER_SERVICE_URL: string;
   PARSER_SERVICE_TOKEN: string;
   EMAIL_BRIDGE_URL: string;
@@ -800,48 +804,40 @@ async function transcribeAudio(env: Env, file: File, managerNote: string): Promi
 
 async function analyzeTextGemini(env: Env, originalText: string): Promise<string> {
   requireGemini(env);
-  const response = await fetch(geminiGenerateUrl(env), {
-    method: "POST",
-    headers: geminiHeaders(env),
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [
-        {
-          parts: [
-            {
-              text: `Проанализируй входящую заявку менеджера по продажам.\n\nЗаявка:\n${originalText}`,
-            },
-          ],
-        },
-      ],
-    }),
+  const response = await fetchGeminiGenerateContent(env, {
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [
+      {
+        parts: [
+          {
+            text: `Проанализируй входящую заявку менеджера по продажам.\n\nЗаявка:\n${originalText}`,
+          },
+        ],
+      },
+    ],
   });
   return readGeminiText(response);
 }
 
 async function analyzeImageGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
   requireGemini(env);
-  const response = await fetch(geminiGenerateUrl(env), {
-    method: "POST",
-    headers: geminiHeaders(env),
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [
-        {
-          parts: [
-            {
-              text: `Проанализируй изображение как входящую заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+  const response = await fetchGeminiGenerateContent(env, {
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [
+      {
+        parts: [
+          {
+            text: `Проанализируй изображение как входящую заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+          },
+          {
+            inline_data: {
+              mime_type: filePayload.mimeType,
+              data: filePayload.base64,
             },
-            {
-              inline_data: {
-                mime_type: filePayload.mimeType,
-                data: filePayload.base64,
-              },
-            },
-          ],
-        },
-      ],
-    }),
+          },
+        ],
+      },
+    ],
   });
   return readGeminiText(response);
 }
@@ -852,23 +848,18 @@ async function analyzePdfGemini(env: Env, filePayload: FilePayload, fileName: st
     throw new Error("PDF слишком большой для прямой обработки через Gemini. Настройте parser-service или загрузите файл меньше 20 МБ.");
   }
 
-  const response = await fetch(geminiInteractionsUrl(), {
-    method: "POST",
-    headers: geminiHeaders(env),
-    body: JSON.stringify({
-      model: env.GEMINI_MODEL || "gemini-3.5-flash",
-      input: [
-        {
-          type: "text",
-          text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Если это счет на оплату, точно извлеки все строки товара: код, наименование, единицу измерения, количество, цену с НДС 16%, сумму с НДС 16% и гарантию. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
-        },
-        {
-          type: "document",
-          data: filePayload.base64,
-          mime_type: "application/pdf",
-        },
-      ],
-    }),
+  const response = await fetchGeminiInteractions(env, {
+    input: [
+      {
+        type: "text",
+        text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Если это счет на оплату, точно извлеки все строки товара: код, наименование, единицу измерения, количество, цену с НДС 16%, сумму с НДС 16% и гарантию. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+      },
+      {
+        type: "document",
+        data: filePayload.base64,
+        mime_type: "application/pdf",
+      },
+    ],
   });
   return readGeminiInteractionText(response);
 }
@@ -895,23 +886,18 @@ async function analyzeDocumentImagesGemini(
     });
   }
 
-  const response = await fetch(geminiGenerateUrl(env), {
-    method: "POST",
-    headers: geminiHeaders(env),
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ parts }],
-    }),
+  const response = await fetchGeminiGenerateContent(env, {
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{ parts }],
   });
   return readGeminiText(response);
 }
 
 async function transcribeAudioGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
   requireGemini(env);
-  const response = await fetch(geminiGenerateUrl(env), {
-    method: "POST",
-    headers: geminiHeaders(env),
-    body: JSON.stringify({
+  const response = await fetchGeminiGenerateContent(
+    env,
+    {
       contents: [
         {
           parts: [
@@ -927,8 +913,9 @@ async function transcribeAudioGemini(env: Env, filePayload: FilePayload, fileNam
           ],
         },
       ],
-    }),
-  });
+    },
+    env.GEMINI_TRANSCRIBE_MODEL,
+  );
   return readGeminiText(response);
 }
 
@@ -947,7 +934,7 @@ async function readOpenAIText(response: Response): Promise<string> {
 
 async function readGeminiText(response: Response): Promise<string> {
   const raw = await response.text();
-  if (!response.ok) throw new Error(`Ошибка Gemini API: ${raw}`);
+  if (!response.ok) throw new Error(formatGeminiError("Gemini API", response.status, raw));
   const data = JSON.parse(raw);
   const text = data.candidates?.flatMap((candidate: any) => candidate.content?.parts || [])
     ?.map((part: any) => part.text || "")
@@ -959,7 +946,7 @@ async function readGeminiText(response: Response): Promise<string> {
 
 async function readGeminiInteractionText(response: Response): Promise<string> {
   const raw = await response.text();
-  if (!response.ok) throw new Error(`Ошибка Gemini Interactions API: ${raw}`);
+  if (!response.ok) throw new Error(formatGeminiError("Gemini Interactions API", response.status, raw));
   const data = JSON.parse(raw);
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
   if (typeof data.outputText === "string" && data.outputText.trim()) return data.outputText.trim();
@@ -2500,6 +2487,131 @@ function useGemini(env: Env): boolean {
   return (env.AI_PROVIDER || "").toLowerCase() === "gemini";
 }
 
+async function fetchGeminiGenerateContent(
+  env: Env,
+  body: Record<string, unknown>,
+  preferredModel = env.GEMINI_MODEL,
+): Promise<Response> {
+  return fetchGeminiWithRetry(env, "generateContent", body, preferredModel);
+}
+
+async function fetchGeminiInteractions(
+  env: Env,
+  body: Record<string, unknown>,
+  preferredModel = env.GEMINI_MODEL,
+): Promise<Response> {
+  return fetchGeminiWithRetry(env, "interactions", body, preferredModel);
+}
+
+async function fetchGeminiWithRetry(
+  env: Env,
+  endpoint: "generateContent" | "interactions",
+  body: Record<string, unknown>,
+  preferredModel: string,
+): Promise<Response> {
+  const attempts = geminiRetryAttempts(env);
+  const baseDelayMs = geminiRetryBaseDelayMs(env);
+  let lastResponse: Response | null = null;
+  let lastNetworkError = "";
+
+  for (const model of geminiModelCandidates(env, preferredModel)) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const url = endpoint === "interactions" ? geminiInteractionsUrl() : geminiGenerateUrl(model);
+        const requestBody = endpoint === "interactions" ? { ...body, model } : body;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: geminiHeaders(env),
+          body: JSON.stringify(requestBody),
+        });
+        const raw = await response.text();
+        lastResponse = cloneTextResponse(response, raw);
+
+        if (response.ok) return lastResponse;
+        if (!isGeminiRetryable(response.status, raw)) break;
+        if (attempt < attempts) await sleep(geminiBackoffDelayMs(baseDelayMs, attempt));
+      } catch (error) {
+        lastNetworkError = error instanceof Error ? error.message : String(error);
+        if (attempt < attempts) await sleep(geminiBackoffDelayMs(baseDelayMs, attempt));
+      }
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  throw new Error(`Не удалось соединиться с Gemini API после автоматических повторов: ${lastNetworkError || "нет ответа"}.`);
+}
+
+function cloneTextResponse(response: Response, raw: string): Response {
+  return new Response(raw, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: {
+      "Content-Type": response.headers.get("Content-Type") || "application/json; charset=utf-8",
+    },
+  });
+}
+
+function geminiModelCandidates(env: Env, preferredModel: string): string[] {
+  const primary = (preferredModel || env.GEMINI_MODEL || "gemini-3.5-flash").trim();
+  const fallbackModels = (env.GEMINI_FALLBACK_MODELS || "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return Array.from(new Set([primary, ...fallbackModels].filter(Boolean)));
+}
+
+function geminiRetryAttempts(env: Env): number {
+  const value = Number(env.GEMINI_RETRY_ATTEMPTS || 3);
+  if (!Number.isFinite(value)) return 3;
+  return Math.min(Math.max(Math.trunc(value), 1), 5);
+}
+
+function geminiRetryBaseDelayMs(env: Env): number {
+  const value = Number(env.GEMINI_RETRY_BASE_DELAY_MS || 800);
+  if (!Number.isFinite(value)) return 800;
+  return Math.min(Math.max(Math.trunc(value), 100), 5_000);
+}
+
+function geminiBackoffDelayMs(baseDelayMs: number, attempt: number): number {
+  return Math.min(baseDelayMs * 2 ** Math.max(0, attempt - 1), 8_000);
+}
+
+function isGeminiRetryable(status: number, raw: string): boolean {
+  if (status === 429 || [500, 502, 503, 504].includes(status)) return true;
+  const text = `${extractGeminiErrorMessage(raw)} ${raw}`.toLowerCase();
+  return text.includes("high demand")
+    || text.includes("spikes in demand")
+    || text.includes("try again later")
+    || text.includes("overloaded")
+    || text.includes("temporarily unavailable")
+    || text.includes("resource exhausted")
+    || text.includes("rate limit");
+}
+
+function formatGeminiError(apiName: string, status: number, raw: string): string {
+  const message = extractGeminiErrorMessage(raw);
+  if (isGeminiRetryable(status, raw)) {
+    return `${apiName} временно перегружен или ограничил запросы. Программа уже выполнила автоматические повторы, но ответ не получен. Повторите обработку через 1-2 минуты или укажите резервные модели в GEMINI_FALLBACK_MODELS. Детали: ${message}`;
+  }
+  return `Ошибка ${apiName}: ${message}`;
+}
+
+function extractGeminiErrorMessage(raw: string): string {
+  try {
+    const data = JSON.parse(raw);
+    if (typeof data?.error?.message === "string") return data.error.message;
+    if (typeof data?.message === "string") return data.message;
+    if (typeof data?.error === "string") return data.error;
+  } catch {
+    // Use raw text below.
+  }
+  return raw || "пустой ответ";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function openAIHeaders(env: Env): HeadersInit {
   return {
     Authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -2507,8 +2619,7 @@ function openAIHeaders(env: Env): HeadersInit {
   };
 }
 
-function geminiGenerateUrl(env: Env): string {
-  const model = env.GEMINI_MODEL || "gemini-3.5-flash";
+function geminiGenerateUrl(model: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 }
 

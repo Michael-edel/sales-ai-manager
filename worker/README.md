@@ -254,6 +254,15 @@ npx wrangler secret put GEMINI_API_KEY
 ```toml
 AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-flash"
+GEMINI_RETRY_ATTEMPTS = "3"
+GEMINI_RETRY_BASE_DELAY_MS = "800"
+```
+
+Если Gemini временно перегружен и отвечает `high demand` / `try again later`, Worker делает автоматические повторы. Для обхода перегрузки конкретной модели можно добавить переменную со списком резервных моделей:
+
+```toml
+GEMINI_FALLBACK_MODELS = "model-one,model-two"
 ```
 
 Чтобы вернуться на OpenAI:

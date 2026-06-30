@@ -12,6 +12,8 @@ custom_domain = true
 AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-flash"
+GEMINI_RETRY_ATTEMPTS = "3"
+GEMINI_RETRY_BASE_DELAY_MS = "800"
 ACCESS_USERNAME = "manager"
 
 [assets]

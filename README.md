@@ -524,9 +524,20 @@ AI_PROVIDER = "openai"
 ```toml
 AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_TRANSCRIBE_MODEL = "gemini-3.5-flash"
+GEMINI_RETRY_ATTEMPTS = "3"
+GEMINI_RETRY_BASE_DELAY_MS = "800"
 ```
 
 `OPENAI_API_KEY` и `GEMINI_API_KEY` задаются как Cloudflare secrets через Wrangler.
+
+Если Gemini возвращает временную ошибку перегрузки вроде `high demand` / `try again later`, Worker автоматически повторяет запрос с экспоненциальной паузой. Для резервных моделей можно добавить переменную:
+
+```toml
+GEMINI_FALLBACK_MODELS = "model-one,model-two"
+```
+
+Значения моделей лучше менять в Cloudflare/GitHub без правки кода, чтобы быстро обходить временную перегрузку конкретной модели.
 
 ## Защита доступа
 
