@@ -203,6 +203,11 @@ export default {
         const item = await getRequest(env, Number(requestMatch[1]));
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
+      if (request.method === "DELETE" && requestMatch) {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const result = await deleteRequest(env, Number(requestMatch[1]));
+        return result ? json(result) : json({ detail: "Заявка не найдена." }, 404);
+      }
 
       const statusMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/status$/);
       if (request.method === "PATCH" && statusMatch) {
@@ -1174,6 +1179,22 @@ async function updateRequestStatus(request: Request, env: Env, id: number) {
   });
 
   return getRequest(env, id);
+}
+
+async function deleteRequest(env: Env, id: number) {
+  const existing = await getRequest(env, id) as Record<string, any> | null;
+  if (!existing) return null;
+
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET processed_request_id = NULL
+    WHERE processed_request_id = ?
+  `).bind(id).run();
+  await env.DB.prepare("DELETE FROM request_tasks WHERE request_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM request_events WHERE request_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(id).run();
+
+  return { ok: true, request_id: id };
 }
 
 async function updateDealDocuments(request: Request, env: Env, id: number) {

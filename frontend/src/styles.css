@@ -163,14 +163,14 @@ textarea {
 }
 
 .history-item {
+  align-items: start;
   background: #ffffff;
   border: 1px solid #d9dfd7;
   border-radius: 8px;
-  cursor: pointer;
   display: grid;
-  gap: 6px;
-  padding: 12px;
-  text-align: left;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
 }
 
 .open-tasks-panel {
@@ -261,13 +261,24 @@ textarea {
   border-color: #277a50;
 }
 
-.history-item span {
+.history-main {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.history-main span {
   color: #17201a;
   font-weight: 650;
   overflow-wrap: anywhere;
 }
 
-.history-item small {
+.history-main small {
   color: #6b756e;
 }
 
@@ -275,6 +286,12 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.history-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .status-pill,

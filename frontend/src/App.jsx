@@ -4,6 +4,7 @@ import {
   checkEmail,
   createUser,
   createRequestTask,
+  deleteRequest,
   deleteRequestTask,
   generateContractAppendix,
   getCrmSummary,
@@ -590,9 +591,56 @@ export default function App() {
     if (!window.confirm(`Удалить задачу "${task.title}"?`)) return;
     setError("");
     setLoading(true);
+    setOpenTasks((current) => current.filter((item) => item.id !== task.id));
+    if (selected?.id === task.request_id) {
+      setRequestTasks((current) => current.filter((item) => item.id !== task.id));
+    }
     try {
       await deleteRequestTask(task.request_id, task.id);
       await refreshOpenTaskState(task.request_id);
+    } catch (err) {
+      setError(err.message);
+      await refreshOpenTaskState(task.request_id);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleHistoryRequestClose(event, item) {
+    event.stopPropagation();
+    if (!canManageRequests) return;
+    setError("");
+    setLoading(true);
+    try {
+      const updated = await updateRequestStatus(item.id, {
+        status: "closed",
+        priority: item.priority || "normal",
+        next_action: item.next_action || "",
+        actor: metadata.michael_manager || item.michael_manager || "manager",
+      });
+      await refreshHistory(updated);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleHistoryRequestDelete(event, item) {
+    event.stopPropagation();
+    if (!canManageRequests) return;
+    if (!window.confirm(`Удалить заявку #${item.id} из истории? Это действие нельзя отменить.`)) return;
+    setError("");
+    setLoading(true);
+    try {
+      await deleteRequest(item.id);
+      const items = await listRequests();
+      setRequests(items);
+      setSelected((current) => current?.id === item.id ? (items[0] || null) : current);
+      await Promise.all([
+        listOpenTasks().then(setOpenTasks).catch(() => {}),
+        getCrmSummary().then(setCrmSummary).catch(() => {}),
+      ]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -771,37 +819,58 @@ export default function App() {
         <h2>История заявок</h2>
         <div className="history-list">
           {requests.length === 0 && <p className="muted">История пока пустая</p>}
-          {requests.map((item) => (
-            <button
-              key={item.id}
-              className={selected?.id === item.id ? "history-item active" : "history-item"}
-              onClick={() => setSelected(item)}
-            >
-              <span>#{item.id} {requestTitle(item)}</span>
-              <div className="history-tags">
-                <small className={`status-pill status-${item.status || "new"}`}>
-                  {STATUS_LABELS[item.status || "new"] || "Новая"}
-                </small>
-                <small className={`priority-pill priority-${item.priority || "normal"}`}>
-                  {PRIORITY_LABELS[item.priority || "normal"] || "Обычный"}
-                </small>
-                {item.requires_contract_appendix ? <small className="vip-pill">KBI договор</small> : null}
-                {item.invoice_status && item.invoice_status !== "not_required" ? (
-                  <small className="doc-pill">{INVOICE_STATUS_LABELS[item.invoice_status] || "Счет"}</small>
-                ) : null}
-                {item.contract_appendix_status && item.contract_appendix_status !== "not_required" ? (
-                  <small className="doc-pill">
-                    {APPENDIX_STATUS_LABELS[item.contract_appendix_status] || "Приложение"}
-                  </small>
-                ) : null}
-                {Number(item.open_task_count || 0) > 0 ? (
-                  <small className="task-pill">{item.open_task_count} задач</small>
+            {requests.map((item) => (
+              <div
+                key={item.id}
+                className={selected?.id === item.id ? "history-item active" : "history-item"}
+              >
+                <button className="history-main" onClick={() => setSelected(item)}>
+                  <span>#{item.id} {requestTitle(item)}</span>
+                  <div className="history-tags">
+                    <small className={`status-pill status-${item.status || "new"}`}>
+                      {STATUS_LABELS[item.status || "new"] || "Новая"}
+                    </small>
+                    <small className={`priority-pill priority-${item.priority || "normal"}`}>
+                      {PRIORITY_LABELS[item.priority || "normal"] || "Обычный"}
+                    </small>
+                    {item.requires_contract_appendix ? <small className="vip-pill">KBI договор</small> : null}
+                    {item.invoice_status && item.invoice_status !== "not_required" ? (
+                      <small className="doc-pill">{INVOICE_STATUS_LABELS[item.invoice_status] || "Счет"}</small>
+                    ) : null}
+                    {item.contract_appendix_status && item.contract_appendix_status !== "not_required" ? (
+                      <small className="doc-pill">
+                        {APPENDIX_STATUS_LABELS[item.contract_appendix_status] || "Приложение"}
+                      </small>
+                    ) : null}
+                    {Number(item.open_task_count || 0) > 0 ? (
+                      <small className="task-pill">{item.open_task_count} задач</small>
+                    ) : null}
+                  </div>
+                  <small>{new Date(item.created_at).toLocaleString()}</small>
+                </button>
+                {canManageRequests ? (
+                  <div className="history-actions">
+                    <button
+                      className="task-action task-action-done"
+                      disabled={loading || ["closed", "done", "lost"].includes(item.status)}
+                      onClick={(event) => handleHistoryRequestClose(event, item)}
+                      title="Закрыть заявку"
+                    >
+                      <Check size={15} />
+                    </button>
+                    <button
+                      className="task-action task-action-danger"
+                      disabled={loading}
+                      onClick={(event) => handleHistoryRequestDelete(event, item)}
+                      title="Удалить заявку"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 ) : null}
               </div>
-              <small>{new Date(item.created_at).toLocaleString()}</small>
-            </button>
-          ))}
-        </div>
+            ))}
+          </div>
       </aside>
 
       <section className="workspace">

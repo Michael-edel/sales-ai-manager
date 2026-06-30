@@ -109,6 +109,10 @@ export function updateRequestStatus(requestId, payload) {
   });
 }
 
+export function deleteRequest(requestId) {
+  return request(`/requests/${requestId}`, { method: "DELETE" });
+}
+
 export function updateDealDocuments(requestId, payload) {
   return request(`/requests/${requestId}/deal-documents`, {
     method: "PATCH",
