@@ -110,6 +110,17 @@ textarea {
   font-size: 12px;
 }
 
+.role-note {
+  background: #fff7e8;
+  border: 1px solid #f1cf9a;
+  border-radius: 8px;
+  color: #7a4f13;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+
 .icon-button {
   align-items: center;
   background: #ffffff;

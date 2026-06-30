@@ -115,9 +115,11 @@ export default {
         return json(await listOpenTasks(env));
       }
       if (request.method === "POST" && url.pathname === "/api/requests/text") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await processText(request, env));
       }
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await processUpload(request, env));
       }
       if (request.method === "GET" && url.pathname === "/api/crm/summary") {
@@ -127,6 +129,7 @@ export default {
         return json(await listEmailMessages(env));
       }
       if (request.method === "POST" && url.pathname === "/api/email/check") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json({
           imported: 0,
           skipped: 0,
@@ -143,12 +146,14 @@ export default {
 
       const statusMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/status$/);
       if (request.method === "PATCH" && statusMatch) {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const item = await updateRequestStatus(request, env, Number(statusMatch[1]));
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
 
       const dealDocsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/deal-documents$/);
       if (request.method === "PATCH" && dealDocsMatch) {
+        if (!canManageDocuments(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const item = await updateDealDocuments(request, env, Number(dealDocsMatch[1]));
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
@@ -158,6 +163,7 @@ export default {
         const requestId = Number(tasksMatch[1]);
         if (request.method === "GET") return json(await listRequestTasks(env, requestId));
         if (request.method === "POST") {
+          if (!canManageTasks(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
           const task = await createRequestTask(request, env, requestId);
           return task ? json(task) : json({ detail: "Заявка не найдена." }, 404);
         }
@@ -165,6 +171,7 @@ export default {
 
       const taskMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/tasks\/(\d+)$/);
       if (request.method === "PATCH" && taskMatch) {
+        if (!canManageTasks(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const task = await updateRequestTask(request, env, Number(taskMatch[1]), Number(taskMatch[2]));
         return task ? json(task) : json({ detail: "Задача не найдена." }, 404);
       }
@@ -1172,6 +1179,18 @@ function geminiHeaders(env: Env): HeadersInit {
 
 function isAdmin(user: CurrentUser): boolean {
   return user.role === "admin";
+}
+
+function canManageRequests(user: CurrentUser): boolean {
+  return ["admin", "manager"].includes(user.role);
+}
+
+function canManageDocuments(user: CurrentUser): boolean {
+  return ["admin", "manager", "accountant"].includes(user.role);
+}
+
+function canManageTasks(user: CurrentUser): boolean {
+  return ["admin", "manager", "accountant"].includes(user.role);
 }
 
 function userToCurrentUser(row: Record<string, any>): CurrentUser {

@@ -156,6 +156,9 @@ export default function App() {
 
   const resultSections = useMemo(() => splitSections(selected?.ai_result), [selected]);
   const clientBlock = useMemo(() => extractClientBlock(selected?.ai_result || ""), [selected]);
+  const canManageRequests = ["admin", "manager"].includes(authUser?.role);
+  const canManageDocuments = ["admin", "manager", "accountant"].includes(authUser?.role);
+  const canManageTasks = ["admin", "manager", "accountant"].includes(authUser?.role);
 
   async function refreshUsers() {
     if (authUser?.role !== "admin") return;
@@ -279,6 +282,7 @@ export default function App() {
   }, [selected]);
 
   async function handleProcess() {
+    if (!canManageRequests) return;
     setError("");
     setCopied(false);
     setLoading(true);
@@ -304,6 +308,7 @@ export default function App() {
   }
 
   async function handleCheckEmail() {
+    if (!canManageRequests) return;
     setEmailStatus("");
     setLoading(true);
     try {
@@ -318,6 +323,7 @@ export default function App() {
   }
 
   async function handleProcessEmail(emailId) {
+    if (!canManageRequests) return;
     setEmailStatus("");
     setLoading(true);
     try {
@@ -332,7 +338,7 @@ export default function App() {
   }
 
   async function handleStatusSave() {
-    if (!selected) return;
+    if (!selected || !canManageRequests) return;
     setError("");
     setLoading(true);
     try {
@@ -351,7 +357,7 @@ export default function App() {
   }
 
   async function handleDealDocumentsSave() {
-    if (!selected) return;
+    if (!selected || !canManageDocuments) return;
     setError("");
     setLoading(true);
     try {
@@ -382,7 +388,7 @@ export default function App() {
   }
 
   async function handleTaskToggle(task) {
-    if (!selected) return;
+    if (!selected || !canManageTasks) return;
     setError("");
     setLoading(true);
     try {
@@ -403,7 +409,7 @@ export default function App() {
   }
 
   async function handleTaskCreate() {
-    if (!selected || !newTaskTitle.trim()) return;
+    if (!selected || !canManageTasks || !newTaskTitle.trim()) return;
     setError("");
     setLoading(true);
     try {
@@ -422,7 +428,7 @@ export default function App() {
     }
   }
 
-  const canProcess = Boolean(text.trim() || file) && !loading;
+  const canProcess = canManageRequests && Boolean(text.trim() || file) && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
 
   function updateMetadata(field, value) {
@@ -504,6 +510,10 @@ export default function App() {
             <LogOut size={18} />
           </button>
         </div>
+
+        {!canManageRequests && !canManageDocuments ? (
+          <div className="role-note">Режим просмотра: изменение заявок недоступно.</div>
+        ) : null}
 
         <div className="crm-summary">
           <div>
@@ -594,6 +604,7 @@ export default function App() {
                 value={metadata.client_company}
                 onChange={(event) => updateMetadata("client_company", event.target.value)}
                 placeholder="Например: ТОО KBI Energy"
+                disabled={!canManageRequests}
               />
             </label>
             <label>
@@ -602,6 +613,7 @@ export default function App() {
                 value={metadata.client_contact_name}
                 onChange={(event) => updateMetadata("client_contact_name", event.target.value)}
                 placeholder="Имя из WhatsApp/Telegram"
+                disabled={!canManageRequests}
               />
             </label>
             <label>
@@ -610,6 +622,7 @@ export default function App() {
                 value={metadata.michael_manager}
                 onChange={(event) => updateMetadata("michael_manager", event.target.value)}
                 placeholder="Имя ответственного менеджера"
+                disabled={!canManageRequests}
               />
             </label>
             <label>
@@ -617,6 +630,7 @@ export default function App() {
               <select
                 value={metadata.communication_channel}
                 onChange={(event) => updateMetadata("communication_channel", event.target.value)}
+                disabled={!canManageRequests}
               >
                 <option value="WhatsApp">WhatsApp</option>
                 <option value="Telegram">Telegram</option>
@@ -627,7 +641,11 @@ export default function App() {
             </label>
             <label>
               <span>Приоритет</span>
-              <select value={metadata.priority} onChange={(event) => updateMetadata("priority", event.target.value)}>
+              <select
+                value={metadata.priority}
+                onChange={(event) => updateMetadata("priority", event.target.value)}
+                disabled={!canManageRequests}
+              >
                 {PRIORITY_OPTIONS.map(([value, label]) => (
                   <option key={value} value={value}>{label}</option>
                 ))}
@@ -639,6 +657,7 @@ export default function App() {
                 value={metadata.next_action}
                 onChange={(event) => updateMetadata("next_action", event.target.value)}
                 placeholder="Например: уточнить цену, выставить счет, отправить приложение"
+                disabled={!canManageRequests}
               />
             </label>
           </div>
@@ -656,6 +675,7 @@ export default function App() {
                 : "Текст или расшифровка заявки: Добрый день, нужен кабель ВВГнг-LS 3х2.5, 200 м..."
             }
             disabled={loading}
+            readOnly={!canManageRequests}
           />
 
           <div className="input-controls">
@@ -669,6 +689,7 @@ export default function App() {
                 onChange={(event) => {
                   setFile(event.target.files?.[0] || null);
                 }}
+                disabled={!canManageRequests}
               />
             </label>
 
@@ -679,7 +700,7 @@ export default function App() {
                   setFile(null);
                   setFileInputKey((value) => value + 1);
                 }}
-                disabled={loading}
+                disabled={loading || !canManageRequests}
               >
                 Очистить файл
               </button>
@@ -698,6 +719,7 @@ export default function App() {
             </div>
           )}
 
+          {!canManageRequests && <div className="role-note">Ваша роль не позволяет создавать новые AI-обработки.</div>}
           {error && <div className="error-box">{error}</div>}
         </section>
 
@@ -708,7 +730,7 @@ export default function App() {
           </div>
 
           <div className="email-controls">
-            <button className="secondary-button" onClick={handleCheckEmail} disabled={loading}>
+            <button className="secondary-button" onClick={handleCheckEmail} disabled={loading || !canManageRequests}>
               <Mail size={18} />
               Проверить почту
             </button>
@@ -729,7 +751,7 @@ export default function App() {
                 <button
                   className="secondary-button"
                   onClick={() => handleProcessEmail(email.id)}
-                  disabled={loading || Boolean(email.processed_request_id)}
+                  disabled={loading || !canManageRequests || Boolean(email.processed_request_id)}
                 >
                   {email.processed_request_id ? `Заявка #${email.processed_request_id}` : "Обработать письмо"}
                 </button>
@@ -857,6 +879,7 @@ export default function App() {
                   <select
                     value={statusDraft.status}
                     onChange={(event) => setStatusDraft((current) => ({ ...current, status: event.target.value }))}
+                    disabled={loading || !canManageRequests}
                   >
                     {STATUS_OPTIONS.map(([value, label]) => (
                       <option key={value} value={value}>{label}</option>
@@ -868,6 +891,7 @@ export default function App() {
                   <select
                     value={statusDraft.priority}
                     onChange={(event) => setStatusDraft((current) => ({ ...current, priority: event.target.value }))}
+                    disabled={loading || !canManageRequests}
                   >
                     {PRIORITY_OPTIONS.map(([value, label]) => (
                       <option key={value} value={value}>{label}</option>
@@ -880,12 +904,16 @@ export default function App() {
                     value={statusDraft.next_action}
                     onChange={(event) => setStatusDraft((current) => ({ ...current, next_action: event.target.value }))}
                     placeholder="Что сделать дальше"
+                    disabled={loading || !canManageRequests}
                   />
                 </label>
-                <button className="secondary-button" onClick={handleStatusSave} disabled={loading}>
+                <button className="secondary-button" onClick={handleStatusSave} disabled={loading || !canManageRequests}>
                   Сохранить статус
                 </button>
               </div>
+              {!canManageRequests ? (
+                <div className="role-note">Ваша роль не позволяет менять статус и приоритет заявки.</div>
+              ) : null}
 
               <div className="deal-documents">
                 <div className="deal-documents-title">
@@ -899,6 +927,7 @@ export default function App() {
                       value={dealDraft.invoice_number}
                       onChange={(event) => updateDealDraft("invoice_number", event.target.value)}
                       placeholder="Например: 5262"
+                      disabled={loading || !canManageDocuments}
                     />
                   </label>
                   <label>
@@ -907,6 +936,7 @@ export default function App() {
                       type="date"
                       value={dealDraft.invoice_date}
                       onChange={(event) => updateDealDraft("invoice_date", event.target.value)}
+                      disabled={loading || !canManageDocuments}
                     />
                   </label>
                   <label>
@@ -914,6 +944,7 @@ export default function App() {
                     <select
                       value={dealDraft.invoice_status}
                       onChange={(event) => updateDealDraft("invoice_status", event.target.value)}
+                      disabled={loading || !canManageDocuments}
                     >
                       {INVOICE_STATUS_OPTIONS.map(([value, label]) => (
                         <option key={value} value={value}>{label}</option>
@@ -925,6 +956,7 @@ export default function App() {
                     <select
                       value={dealDraft.contract_appendix_status}
                       onChange={(event) => updateDealDraft("contract_appendix_status", event.target.value)}
+                      disabled={loading || !canManageDocuments}
                     >
                       {APPENDIX_STATUS_OPTIONS.map(([value, label]) => (
                         <option key={value} value={value}>{label}</option>
@@ -937,6 +969,7 @@ export default function App() {
                       type="date"
                       value={dealDraft.customer_sent_at}
                       onChange={(event) => updateDealDraft("customer_sent_at", event.target.value)}
+                      disabled={loading || !canManageDocuments}
                     />
                   </label>
                   <label className="deal-note">
@@ -945,11 +978,15 @@ export default function App() {
                       value={dealDraft.contract_appendix_note}
                       onChange={(event) => updateDealDraft("contract_appendix_note", event.target.value)}
                       placeholder="Например: счет и приложение отправлены в WhatsApp"
+                      disabled={loading || !canManageDocuments}
                     />
                   </label>
                 </div>
+                {!canManageDocuments ? (
+                  <div className="role-note">Ваша роль не позволяет сохранять документы сделки.</div>
+                ) : null}
                 <div className="deal-documents-actions">
-                  <button className="secondary-button" onClick={handleDealDocumentsSave} disabled={loading}>
+                  <button className="secondary-button" onClick={handleDealDocumentsSave} disabled={loading || !canManageDocuments}>
                     Сохранить документы
                   </button>
                 </div>
@@ -974,7 +1011,7 @@ export default function App() {
                         type="checkbox"
                         checked={task.status === "done"}
                         onChange={() => handleTaskToggle(task)}
-                        disabled={loading}
+                        disabled={loading || !canManageTasks}
                       />
                       <CheckSquare size={18} />
                       <div>
@@ -994,16 +1031,20 @@ export default function App() {
                     value={newTaskTitle}
                     onChange={(event) => setNewTaskTitle(event.target.value)}
                     placeholder="Добавить задачу: отправить счет и приложение в WhatsApp"
+                    disabled={loading || !canManageTasks}
                   />
                   <button
                     className="secondary-button"
                     onClick={handleTaskCreate}
-                    disabled={loading || !newTaskTitle.trim()}
+                    disabled={loading || !canManageTasks || !newTaskTitle.trim()}
                   >
                     <Plus size={18} />
                     Добавить
                   </button>
                 </div>
+                {!canManageTasks ? (
+                  <div className="role-note">Ваша роль не позволяет менять задачи по заявке.</div>
+                ) : null}
               </div>
             </div>
 
