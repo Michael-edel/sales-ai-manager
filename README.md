@@ -423,15 +423,16 @@ Cloudflare Worker сохраняет письмо в D1 email_messages
 POST /api/email/messages/:id/process
 ```
 
-Настройка mailcow для одного ящика `direktor@edel.kz`: в user `sieve_before` добавьте пересылку копии на технический адрес Cloudflare:
+Текущая настройка mailcow для ящика `direktor@edel.kz`: создан recipient BCC map.
 
-```sieve
-require ["copy"];
-
-redirect :copy "ai-inbox@michael.kz";
+```text
+local_dest: direktor@edel.kz
+type: rcpt
+bcc_dest: ai-inbox@michael.kz
+active: 1
 ```
 
-`redirect :copy` оставляет письмо в `direktor@edel.kz` и отправляет копию в Worker. Не меняйте MX записи домена `edel.kz`, если рабочая почта остается на mailcow.
+BCC map оставляет письмо в `direktor@edel.kz` и отправляет копию в Worker через Cloudflare Email Routing. Не меняйте MX записи домена `edel.kz`, если рабочая почта остается на mailcow.
 
 ## SMTP-отправка через email-bridge
 

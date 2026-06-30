@@ -239,12 +239,13 @@ Worker содержит `email()` handler. Он получает письмо и
 
 Маршрут доставки настраивается в Cloudflare Email Routing: технический адрес, например `ai-inbox@michael.kz`, должен быть связан с Worker `sales-ai-manager`.
 
-Для ящика mailcow `direktor@edel.kz` используйте Sieve-правило с копией:
+Для ящика mailcow `direktor@edel.kz` используется recipient BCC map:
 
-```sieve
-require ["copy"];
-
-redirect :copy "ai-inbox@michael.kz";
+```text
+local_dest: direktor@edel.kz
+type: rcpt
+bcc_dest: ai-inbox@michael.kz
+active: 1
 ```
 
 После доставки письма появятся в интерфейсе в блоке «Входящая почта». Кнопка «Обновить письма» только перечитывает список из D1, она не подключается к IMAP.
