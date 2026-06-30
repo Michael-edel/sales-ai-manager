@@ -49,6 +49,14 @@ export function resetUserPassword(userId, password) {
   });
 }
 
+export function updateUserActive(userId, isActive) {
+  return request(`/users/${userId}/active`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_active: isActive }),
+  });
+}
+
 export function listRequests() {
   return request("/requests");
 }

@@ -18,6 +18,7 @@ import {
   processText,
   resetUserPassword,
   updateDealDocuments,
+  updateUserActive,
   updateRequestTask,
   updateRequestStatus,
   uploadFile,
@@ -248,6 +249,20 @@ export default function App() {
     setLoading(true);
     try {
       await resetUserPassword(user.id, password);
+      await refreshUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleToggleUserActive(user) {
+    const nextActive = !Boolean(user.is_active);
+    setError("");
+    setLoading(true);
+    try {
+      await updateUserActive(user.id, nextActive);
       await refreshUsers();
     } catch (err) {
       setError(err.message);
@@ -820,10 +835,21 @@ export default function App() {
                   <Shield size={18} />
                   <div>
                     <strong>{user.display_name}</strong>
-                    <span>{user.username} · {ROLE_LABELS[user.role] || user.role}</span>
+                    <span>
+                      {user.username} · {ROLE_LABELS[user.role] || user.role} ·{" "}
+                      {user.is_active ? "активен" : "отключен"}
+                    </span>
                   </div>
                   <button className="secondary-button" onClick={() => handleResetUserPassword(user)} disabled={loading}>
                     Сбросить пароль
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => handleToggleUserActive(user)}
+                    disabled={loading || Number(user.id) === Number(authUser.id)}
+                    title={Number(user.id) === Number(authUser.id) ? "Нельзя отключить текущий аккаунт" : ""}
+                  >
+                    {user.is_active ? "Отключить" : "Включить"}
                   </button>
                 </article>
               ))}

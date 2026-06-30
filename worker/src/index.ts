@@ -108,6 +108,16 @@ export default {
         const user = await resetUserPassword(request, env, Number(userPasswordMatch[1]));
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
+      const userActiveMatch = url.pathname.match(/^\/api\/users\/(\d+)\/active$/);
+      if (request.method === "PATCH" && userActiveMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const userId = Number(userActiveMatch[1]);
+        if (userId === currentUser.id) return json({ detail: "Нельзя отключить текущего пользователя." }, 400);
+        const payload = (await request.json()) as { is_active?: unknown };
+        if (typeof payload.is_active !== "boolean") return json({ detail: "Передайте is_active true/false." }, 400);
+        const user = await updateUserActive(env, userId, payload.is_active);
+        return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
+      }
       if (request.method === "GET" && url.pathname === "/api/requests") {
         return json(await listRequests(env));
       }
@@ -314,6 +324,24 @@ async function resetUserPassword(request: Request, env: Env, userId: number) {
   `).bind(password.hash, password.salt, userId).run();
   if (!result.meta.changes) return null;
   await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
+  return env.DB.prepare(`
+    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    FROM app_users WHERE id = ?
+  `).bind(userId).first();
+}
+
+async function updateUserActive(env: Env, userId: number, isActive: boolean) {
+  const result = await env.DB.prepare(`
+    UPDATE app_users
+    SET is_active = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(isActive ? 1 : 0, userId).run();
+  if (!result.meta.changes) return null;
+
+  if (!isActive) {
+    await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
+  }
+
   return env.DB.prepare(`
     SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
