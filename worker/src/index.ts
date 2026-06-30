@@ -1507,9 +1507,8 @@ function parseMarkdownTableRows(sourceText: string): AppendixTableRow[] {
   for (const line of tableLines) {
     const cells = line.split("|").map((cell) => normalizeTableCell(cell)).filter(Boolean);
     if (cells.length < 6) continue;
-    if (cells.some((cell) => /^-+$/.test(cell.replace(/\s/g, "")))) continue;
-    const normalizedLine = cells.join(" ").toLowerCase();
-    if (normalizedLine.includes("наименование") || normalizedLine.includes("цена за")) continue;
+    if (isMarkdownSeparatorRow(cells)) continue;
+    if (isAppendixTableHeaderRow(cells)) continue;
 
     const row = cells.length >= 8
       ? makeAppendixRow(rows.length + 1, {
@@ -1530,9 +1529,55 @@ function parseMarkdownTableRows(sourceText: string): AppendixTableRow[] {
           sum: cells[5],
           warranty: cells[6] || KBI_DEFAULT_WARRANTY,
         });
+    if (isAppendixHeaderLikeRow(row)) continue;
     rows.push(row);
   }
   return rows;
+}
+
+function isMarkdownSeparatorRow(cells: string[]): boolean {
+  return cells.some((cell) => /^:?-{2,}:?$/.test(cell.replace(/\s/g, "")));
+}
+
+function isAppendixTableHeaderRow(cells: string[]): boolean {
+  const normalizedCells = cells.map(normalizeHeaderCell);
+  const firstCell = normalizedCells[0] || "";
+  if (firstCell.startsWith("№") || ["#", "n", "no"].includes(firstCell)) return true;
+
+  const headerHits = normalizedCells.filter((cell) => {
+    return cell === "код"
+      || cell.includes("товар")
+      || cell.includes("работ")
+      || cell.includes("услуг")
+      || cell.includes("наименование")
+      || cell.includes("ед")
+      || cell.includes("кол")
+      || cell.includes("цена")
+      || cell.includes("ставка ндс")
+      || cell.includes("сумма")
+      || cell.includes("гарантия");
+  }).length;
+
+  return headerHits >= 2;
+}
+
+function isAppendixHeaderLikeRow(row: AppendixTableRow): boolean {
+  const code = normalizeHeaderCell(row.code);
+  const name = normalizeHeaderCell(row.name);
+  return code === "код"
+    || name.startsWith("№")
+    || name === "товары"
+    || name.includes("товары работы")
+    || name.includes("работы услуги")
+    || name.includes("наименование");
+}
+
+function normalizeHeaderCell(value: string): string {
+  return cleanAppendixValue(value)
+    .toLowerCase()
+    .replace(/[().,;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function makeAppendixRow(number: number, raw: Partial<AppendixTableRow>): AppendixTableRow {
@@ -1597,16 +1642,16 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     '<meta charset="utf-8">',
     `<title>Приложение к договору - заявка ${data.requestId}</title>`,
     "<style>",
-    "@page { size: A4; margin: 18mm 17mm 15mm 17mm; }",
+    "@page { size: A4; margin: 17mm 14mm 14mm 14mm; }",
     "body { font-family: 'Times New Roman', Times, serif; color: #111; font-size: 12pt; line-height: 1.18; }",
     "p { margin: 0 0 8px; }",
     ".appendix-title { font-weight: 700; margin-left: auto; margin-bottom: 42px; text-align: center; width: 360px; }",
     ".appendix-title p { margin: 0; }",
-    "table.items { border-collapse: collapse; margin: 0 auto 0; table-layout: fixed; width: 100%; }",
-    ".items th, .items td { border: 1px solid #333; padding: 6px 7px; vertical-align: middle; }",
+    "table.items { border-collapse: collapse; margin: 0 auto 0; mso-table-lspace: 0pt; mso-table-rspace: 0pt; table-layout: fixed; width: 100%; }",
+    ".items th, .items td { border: 1px solid #333; font-size: 9pt; overflow-wrap: anywhere; padding: 3px 4px; vertical-align: middle; word-break: break-word; word-wrap: break-word; }",
     ".items th { font-weight: 700; text-align: center; }",
     ".center { text-align: center; }",
-    ".money { text-align: right; white-space: nowrap; }",
+    ".money { text-align: right; }",
     ".summary { margin-top: 0; }",
     ".terms { margin-top: 18px; }",
     ".sign-title { font-weight: 700; margin: 54px 0 16px; text-align: center; }",
@@ -1617,7 +1662,7 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     ".party p { margin: 0; }",
     ".party p:nth-child(1), .party p:nth-child(2), .party .bold { font-weight: 700; }",
     ".party .italic { font-style: italic; }",
-    ".party-signature { margin-top: 72px; }",
+    ".signature-cell { padding-top: 56px !important; }",
     ".signature-role { font-weight: 700; margin-bottom: 54px; }",
     ".signature-line { align-items: baseline; display: grid; gap: 8px; grid-template-columns: auto 1fr auto; }",
     ".line { border-bottom: 1px solid #111; height: 1px; }",
@@ -1631,14 +1676,14 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     "</div>",
     '<table class="items">',
     "<colgroup>",
-    '<col style="width: 5%">',
+    '<col style="width: 4.5%">',
+    '<col style="width: 12.5%">',
+    '<col style="width: 31%">',
+    '<col style="width: 7%">',
+    '<col style="width: 7%">',
+    '<col style="width: 13%">',
     '<col style="width: 14%">',
-    '<col style="width: 28%">',
-    '<col style="width: 8%">',
-    '<col style="width: 8%">',
-    '<col style="width: 14%">',
-    '<col style="width: 14%">',
-    '<col style="width: 9%">',
+    '<col style="width: 11%">',
     "</colgroup>",
     "<thead>",
     "<tr>",
@@ -1662,8 +1707,12 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     '<p class="sign-title">Подписи Сторон:</p>',
     '<table class="requisites-table">',
     "<tr>",
-    `<td class="party">${buyerRequisites}${renderPartySignature(KBI_BUYER_SIGNATORY)}</td>`,
-    `<td class="party">${supplierRequisites}${renderPartySignature(MICHAEL_SUPPLIER_SIGNATORY)}</td>`,
+    `<td class="party">${buyerRequisites}</td>`,
+    `<td class="party">${supplierRequisites}</td>`,
+    "</tr>",
+    "<tr>",
+    `<td class="signature-cell">${renderPartySignature(KBI_BUYER_SIGNATORY)}</td>`,
+    `<td class="signature-cell">${renderPartySignature(MICHAEL_SUPPLIER_SIGNATORY)}</td>`,
     "</tr>",
     "</table>",
     "</body>",
@@ -1673,7 +1722,7 @@ function buildAppendixHtml(data: KbiAppendixData): string {
 
 function renderPartySignature(name: string): string {
   return [
-    '<div class="party-signature">',
+    '<div>',
     '<p class="signature-role">Директор</p>',
     `<div class="signature-line"><span>М.П.</span><span class="line"></span><span>${escapeHtml(name)}</span></div>`,
     "</div>",
