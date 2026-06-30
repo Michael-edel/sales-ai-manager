@@ -23,6 +23,7 @@ https://ai.michael.kz
 - сессии хранятся в D1 `auth_sessions`;
 - пользователи хранятся в D1 `app_users`;
 - история заявок, CRM, задачи, документы сделки и журнал действий сохраняются в D1.
+- деплой выполняется через GitHub Actions на Node.js 24 с секретами `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GEMINI_API_KEY`.
 
 ## Роли и доступ
 
