@@ -98,8 +98,8 @@ const TASK_STATUS_LABELS = {
 
 const ROLE_OPTIONS = [
   ["admin", "Администратор"],
-  ["manager", "Менеджер"],
-  ["accountant", "Бухгалтер"],
+  ["manager", "Менеджер: заявки + счета"],
+  ["accountant", "Бухгалтер: счета"],
   ["viewer", "Просмотр"],
 ];
 
