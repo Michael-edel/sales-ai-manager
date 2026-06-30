@@ -90,6 +90,9 @@ const SYSTEM_PROMPT = `
 - В каждой заявке фиксировать компанию клиента, контакт/менеджера клиента, ответственного менеджера Michael и канал связи.
 - Канал связи важен: WhatsApp, Telegram и Email считаются основными рабочими каналами. В разделе D готовить текст под указанный канал.
 - Голосовые сообщения после транскрибации считать полноценным входящим запросом.
+- Если входящий документ является счетом на оплату, в разделе B обязательно извлечь все строки табличной части без сокращений.
+- Для счета в разделе B обязательно указать таблицу с колонками: Код, Наименование, Ед. изм., Кол-во, Цена с НДС 16%, Сумма с НДС 16%, Гарантия.
+- Код товара, количество, цена и сумма из счета являются юридически значимыми данными для приложения к договору; нельзя заменять их словом «уточняется», если они видны в документе.
 
 ${REQUIRED_OUTPUT}
 `;
@@ -857,7 +860,7 @@ async function analyzePdfGemini(env: Env, filePayload: FilePayload, fileName: st
       input: [
         {
           type: "text",
-          text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+          text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Если это счет на оплату, точно извлеки все строки товара: код, наименование, единицу измерения, количество, цену с НДС 16%, сумму с НДС 16% и гарантию. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
         },
         {
           type: "document",
@@ -1271,8 +1274,12 @@ async function generateContractAppendix(env: Env, id: number, currentUser: Curre
 
 function buildContractAppendix(item: Record<string, any>) {
   const requestId = Number(item.id || 0);
-  const invoiceNumber = normalizeOptionalText(item.invoice_number) || "уточняется";
-  const invoiceDate = normalizeOptionalText(item.invoice_date) || "уточняется";
+  const sourceText = [
+    normalizeOptionalText(item.ai_result),
+    normalizeOptionalText(item.original_text),
+  ].filter(Boolean).join("\n\n");
+  const invoiceNumber = normalizeOptionalText(item.invoice_number) || extractInvoiceNumber(sourceText) || "уточняется";
+  const invoiceDate = normalizeOptionalText(item.invoice_date) || extractInvoiceDate(sourceText) || "уточняется";
   const data = buildKbiAppendixData(item, requestId, invoiceNumber, invoiceDate);
 
   return {
@@ -1397,6 +1404,9 @@ function cleanAiSectionTitle(value: string): string {
 }
 
 function parseAppendixRows(sourceText: string): AppendixTableRow[] {
+  const numberedRows = parseNumberedSpecificationRows(sourceText);
+  if (numberedRows.length) return numberedRows;
+
   const markdownRows = parseMarkdownTableRows(sourceText);
   if (markdownRows.length) return markdownRows;
 
@@ -1443,6 +1453,50 @@ function parseAppendixRows(sourceText: string): AppendixTableRow[] {
       warranty,
     }),
   ];
+}
+
+function parseNumberedSpecificationRows(sourceText: string): AppendixTableRow[] {
+  const codeRows = parseCodeRows(sourceText);
+  const rows: AppendixTableRow[] = [];
+  const linePattern = /^\s*(\d+)\.\s+\*?(.+?)\*?\s+—\s+\*\*?([0-9\s.,]+)\s*([A-Za-zА-Яа-я.]+)\.?\*?\*?\s+—\s+Цена:\s*([0-9\s.,]+)[^\n—]*(?:—\s+Сумма:\s*([0-9\s.,]+))?/gim;
+  for (const match of sourceText.matchAll(linePattern)) {
+    const index = rows.length;
+    const name = cleanAppendixValue(match[2]).replace(/,\s*$/, "");
+    const quantity = cleanAppendixValue(match[3]);
+    const unit = cleanAppendixValue(match[4]);
+    const price = cleanAppendixValue(match[5]);
+    const sum = cleanAppendixValue(match[6]) || computeRowSum(quantity, price);
+    const codeRow = codeRows[index] || null;
+
+    rows.push(makeAppendixRow(rows.length + 1, {
+      code: codeRow?.code || "",
+      name,
+      unit: codeRow?.unit || normalizeUnit(unit),
+      quantity: codeRow?.quantity || quantity,
+      price: codeRow?.price || price,
+      sum: codeRow?.sum || sum,
+      warranty: KBI_DEFAULT_WARRANTY,
+    }));
+  }
+  return rows;
+}
+
+function parseCodeRows(sourceText: string): Array<Partial<AppendixTableRow>> {
+  const rows: Array<Partial<AppendixTableRow>> = [];
+  const codePattern = /Код\s+`?([^`\s—]+)`?\s+—\s+Количество:\s*([0-9\s.,]+)\s*([A-Za-zА-Яа-я.]+)?\s*—\s+Цена:\s*([0-9\s.,]+)/gim;
+  for (const match of sourceText.matchAll(codePattern)) {
+    const quantity = cleanAppendixValue(match[2]);
+    const unit = normalizeUnit(match[3] || "шт");
+    const price = cleanAppendixValue(match[4]);
+    rows.push({
+      code: cleanAppendixValue(match[1]),
+      unit,
+      quantity,
+      price,
+      sum: computeRowSum(quantity, price),
+    });
+  }
+  return rows;
 }
 
 function parseMarkdownTableRows(sourceText: string): AppendixTableRow[] {
@@ -1564,7 +1618,7 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     ".party p { margin: 0; }",
     ".party p:nth-child(1), .party p:nth-child(2), .party .bold { font-weight: 700; }",
     ".party .italic { font-style: italic; }",
-    ".signatures { display: grid; gap: 58px; grid-template-columns: 1fr 1fr; margin-top: 72px; }",
+    ".party-signature { margin-top: 72px; }",
     ".signature-role { font-weight: 700; margin-bottom: 54px; }",
     ".signature-line { align-items: baseline; display: grid; gap: 8px; grid-template-columns: auto 1fr auto; }",
     ".line { border-bottom: 1px solid #111; height: 1px; }",
@@ -1608,16 +1662,21 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     "</div>",
     '<p class="sign-title">Подписи Сторон:</p>',
     '<div class="requisites">',
-    `<div class="party">${buyerRequisites}</div>`,
-    `<div class="party">${supplierRequisites}</div>`,
-    "</div>",
-    '<div class="signatures">',
-    '<div><p class="signature-role">Директор</p><div class="signature-line"><span>М.П.</span><span class="line"></span><span>Абдрахманов Д.Е.</span></div></div>',
-    '<div><p class="signature-role">Директор</p><div class="signature-line"><span>М.П.</span><span class="line"></span><span>Ширин М.М.</span></div></div>',
+    `<div class="party">${buyerRequisites}${renderPartySignature("Абдрахманов Д.Е.")}</div>`,
+    `<div class="party">${supplierRequisites}${renderPartySignature("Ширин М.М.")}</div>`,
     "</div>",
     "</body>",
     "</html>",
   ].join("\n");
+}
+
+function renderPartySignature(name: string): string {
+  return [
+    '<div class="party-signature">',
+    '<p class="signature-role">Директор</p>',
+    `<div class="signature-line"><span>М.П.</span><span class="line"></span><span>${escapeHtml(name)}</span></div>`,
+    "</div>",
+  ].join("");
 }
 
 function renderRequisites(lines: string[]): string {
@@ -1643,6 +1702,7 @@ function cleanAppendixValue(value: unknown): string {
   if (typeof value !== "string") return "";
   return value
     .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
     .replace(/`/g, "")
     .replace(/^\s*[-•]\s*/, "")
     .replace(/\s+/g, " ")
@@ -1658,6 +1718,16 @@ function cleanQuantity(value: unknown): string {
   if (!text) return "";
   const match = text.match(/([0-9]+(?:[,.][0-9]+)?)/);
   return match ? match[1].replace(".", ",") : text;
+}
+
+function normalizeUnit(value: string): string {
+  const normalized = cleanAppendixValue(value).toLowerCase().replace(/\.$/, "");
+  if (!normalized) return "";
+  if (normalized === "шт" || normalized.includes("штук")) return "шт.";
+  if (normalized === "м" || normalized.includes("метр")) return "м";
+  if (normalized === "кг") return "кг";
+  if (normalized.includes("компл")) return "компл.";
+  return cleanAppendixValue(value);
 }
 
 function unitFromQuantity(value: string): string {
@@ -1723,11 +1793,12 @@ function formatRuDate(value: string): string {
 }
 
 function extractDeliveryPlace(sourceText: string): string {
-  return firstMatch(sourceText, [
+  const delivery = firstMatch(sourceText, [
     /Условия поставки и место\s*[:\-]\s*([^\n]+)/i,
     /Место поставки\s*[:\-]\s*([^\n]+)/i,
     /Доставка\s*[:\-]\s*([^\n]+)/i,
   ]);
+  return delivery.toLowerCase().includes("ddp") ? delivery : "";
 }
 
 function extractPaymentTerm(sourceText: string): string {
@@ -1800,6 +1871,38 @@ function pluralRu(value: number, forms: string[]): string {
 
 function capitalizeFirst(value: string): string {
   return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function extractInvoiceNumber(value: string): string {
+  return firstMatch(value, [
+    /счет(?:а|у)?\s+на\s+оплату\s*№\s*([0-9A-Za-zА-Яа-я._/-]+)/i,
+    /счет\s*№\s*([0-9A-Za-zА-Яа-я._/-]+)/i,
+    /№\s*([0-9]{3,})\s+от\s+\d{1,2}[.\s]/i,
+  ]);
+}
+
+function extractInvoiceDate(value: string): string {
+  const numeric = value.match(/(?:счет(?:а|у)?(?:\s+на\s+оплату)?\s*№\s*[0-9A-Za-zА-Яа-я._/-]+\s*от\s*)(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (numeric) return `${numeric[3]}-${numeric[2].padStart(2, "0")}-${numeric[1].padStart(2, "0")}`;
+
+  const ru = value.match(/(?:счет(?:а|у)?(?:\s+на\s+оплату)?\s*№\s*[0-9A-Za-zА-Яа-я._/-]+\s*от\s*)(\d{1,2})\s+([а-яё]+)\s+(\d{4})/i);
+  if (!ru) return "";
+  const months: Record<string, string> = {
+    января: "01",
+    февраля: "02",
+    марта: "03",
+    апреля: "04",
+    мая: "05",
+    июня: "06",
+    июля: "07",
+    августа: "08",
+    сентября: "09",
+    октября: "10",
+    ноября: "11",
+    декабря: "12",
+  };
+  const month = months[ru[2].toLowerCase()];
+  return month ? `${ru[3]}-${month}-${ru[1].padStart(2, "0")}` : "";
 }
 
 function buildAppendixFileName(requestId: number, invoiceNumber: string, clientCompany: string): string {
