@@ -324,6 +324,7 @@ GEMINI_MODEL = "gemini-3.5-flash"
 ## Защита доступа
 
 Cloudflare-версия закрыта HTTP Basic Auth до выдачи интерфейса и API.
+В `worker/wrangler.toml` включено `assets.run_worker_first = true`, поэтому Worker проверяет пароль до отдачи `index.html` и остальных статических файлов.
 
 Логин по умолчанию:
 

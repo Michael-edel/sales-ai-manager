@@ -14,6 +14,7 @@ ACCESS_USERNAME = "manager"
 directory = "../frontend/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
