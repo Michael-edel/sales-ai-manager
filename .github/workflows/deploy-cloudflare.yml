@@ -22,6 +22,23 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            parser-service/requirements.txt
+            parser-service/requirements-dev.txt
+
+      - name: Install parser-service dependencies
+        working-directory: parser-service
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Test parser-service
+        working-directory: parser-service
+        run: python -m pytest -q
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm install

@@ -288,6 +288,14 @@ $env:PARSER_SERVICE_TOKEN="change-this-parser-token"
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
+Тест parser-service:
+
+```powershell
+cd parser-service
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q
+```
+
 В `worker/.dev.vars` для локального запуска укажите:
 
 ```env
@@ -308,6 +316,8 @@ npx wrangler secret put PARSER_SERVICE_TOKEN
 - `.xlsx`: строки всех листов;
 - `.pdf`: текстовый слой через PyMuPDF;
 - сканированный `.pdf`: первые страницы рендерятся в JPEG и отправляются в vision-анализ.
+
+Parser-service также проверяется в GitHub Actions перед деплоем Worker.
 
 ## Проверка голосового WhatsApp
 

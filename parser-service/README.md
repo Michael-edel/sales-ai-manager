@@ -21,6 +21,16 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 Invoke-RestMethod http://127.0.0.1:8080/health
 ```
 
+## Тесты
+
+```powershell
+cd parser-service
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q
+```
+
+Тесты создают временные `.docx`, `.xlsx` и `.pdf` файлы и проверяют извлечение текста, рендер сканированного PDF в изображение и защиту `PARSER_SERVICE_TOKEN`.
+
 ## Подключение к Worker
 
 Для локального `wrangler dev` добавьте в `worker/.dev.vars`:
