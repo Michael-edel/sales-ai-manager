@@ -16,6 +16,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Vision-анализ скриншотов WhatsApp/Telegram и фото товара через OpenAI API.
 - Транскрибация голосовых сообщений WhatsApp/Telegram через OpenAI API.
 - Фиксация компании клиента, менеджера клиента, менеджера Michael и канала связи.
+- CRM-ядро: клиенты, контакты, менеджеры Michael, статусы заявок, приоритеты и журнал действий.
+- Автоматическое определение `ТОО KBI Energy` как VIP-клиента с требованием приложения к годовому договору.
 - Проверка входящей почты mailcow через IMAP.
 - Отправка заявки в OpenAI API.
 - Сохранение исходного текста и ответа ИИ в таблицу `requests`.
@@ -119,6 +121,44 @@ docker compose restart backend
 3. Нажмите «Обработать».
 4. Проверьте, что результат содержит разделы A-F.
 5. Нажмите «Копировать D», чтобы скопировать клиентский текст.
+
+## CRM-ядро
+
+Cloudflare-версия теперь сохраняет не только результат ИИ, но и CRM-данные:
+
+- карточки клиентов в `crm_clients`;
+- контакты клиента в `crm_contacts`;
+- менеджеров Michael в `michael_managers`;
+- статус, приоритет и следующее действие в `requests`;
+- журнал действий в `request_events`.
+
+Статусы заявок:
+
+```text
+new
+in_progress
+need_clarification
+reply_ready
+quote_sent
+invoice_required
+invoice_sent
+done
+closed
+lost
+```
+
+Если компания клиента указана как `ТОО KBI Energy`, `KBI Energy` или `КБИ Энерджи`, заявка автоматически получает:
+
+- `client_type = vip`;
+- `requires_contract_appendix = 1`;
+- напоминание в интерфейсе: счет отправлять вместе с приложением к годовому договору.
+
+После деплоя примените D1 migrations:
+
+```powershell
+cd worker
+npm run d1:migrate:remote
+```
 
 ## Проверка WhatsApp-скриншота или фото товара
 

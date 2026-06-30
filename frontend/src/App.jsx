@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Clipboard, FileText, Loader2, Mail, Upload } from "lucide-react";
-import { checkEmail, listEmailMessages, listRequests, processEmailMessage, processText, uploadFile } from "./api";
+import {
+  checkEmail,
+  getCrmSummary,
+  listEmailMessages,
+  listRequestEvents,
+  listRequests,
+  processEmailMessage,
+  processText,
+  updateRequestStatus,
+  uploadFile,
+} from "./api";
 import "./styles.css";
 
 function splitSections(result) {
@@ -25,6 +35,29 @@ function requestTitle(item) {
   return item.uploaded_file_name || "Файл заявки";
 }
 
+const STATUS_OPTIONS = [
+  ["new", "Новая"],
+  ["in_progress", "В работе"],
+  ["need_clarification", "Нужно уточнение"],
+  ["reply_ready", "Ответ готов"],
+  ["quote_sent", "КП отправлено"],
+  ["invoice_required", "Нужен счет"],
+  ["invoice_sent", "Счет отправлен"],
+  ["done", "Выполнено"],
+  ["closed", "Закрыта"],
+  ["lost", "Потеряна"],
+];
+
+const PRIORITY_OPTIONS = [
+  ["low", "Низкий"],
+  ["normal", "Обычный"],
+  ["high", "Высокий"],
+  ["urgent", "Срочно"],
+];
+
+const STATUS_LABELS = Object.fromEntries(STATUS_OPTIONS);
+const PRIORITY_LABELS = Object.fromEntries(PRIORITY_OPTIONS);
+
 export default function App() {
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -36,11 +69,20 @@ export default function App() {
   const [emails, setEmails] = useState([]);
   const [emailStatus, setEmailStatus] = useState("");
   const [fileInputKey, setFileInputKey] = useState(0);
+  const [crmSummary, setCrmSummary] = useState(null);
+  const [requestEvents, setRequestEvents] = useState([]);
+  const [statusDraft, setStatusDraft] = useState({
+    status: "new",
+    priority: "normal",
+    next_action: "",
+  });
   const [metadata, setMetadata] = useState({
     client_company: "ТОО KBI Energy",
     client_contact_name: "",
     michael_manager: "",
     communication_channel: "WhatsApp",
+    priority: "normal",
+    next_action: "Подготовить ответ клиенту",
   });
 
   const resultSections = useMemo(() => splitSections(selected?.ai_result), [selected]);
@@ -49,6 +91,7 @@ export default function App() {
   async function refreshHistory(latestItem = null) {
     const items = await listRequests();
     setRequests(items);
+    getCrmSummary().then(setCrmSummary).catch(() => {});
     if (latestItem) {
       setSelected(latestItem);
     } else if (!selected && items.length > 0) {
@@ -65,6 +108,19 @@ export default function App() {
     refreshHistory().catch((err) => setError(err.message));
     refreshEmails().catch((err) => setEmailStatus(err.message));
   }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setRequestEvents([]);
+      return;
+    }
+    setStatusDraft({
+      status: selected.status || "new",
+      priority: selected.priority || "normal",
+      next_action: selected.next_action || "",
+    });
+    listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
+  }, [selected]);
 
   async function handleProcess() {
     setError("");
@@ -119,6 +175,25 @@ export default function App() {
     }
   }
 
+  async function handleStatusSave() {
+    if (!selected) return;
+    setError("");
+    setLoading(true);
+    try {
+      const item = await updateRequestStatus(selected.id, {
+        ...statusDraft,
+        actor: metadata.michael_manager || selected.michael_manager || "manager",
+      });
+      await refreshHistory(item);
+      const events = await listRequestEvents(item.id);
+      setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const canProcess = Boolean(text.trim() || file) && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
 
@@ -137,6 +212,21 @@ export default function App() {
           </div>
         </div>
 
+        <div className="crm-summary">
+          <div>
+            <strong>{crmSummary?.open_requests ?? requests.length}</strong>
+            <span>открыто</span>
+          </div>
+          <div>
+            <strong>{crmSummary?.vip_requests ?? 0}</strong>
+            <span>VIP</span>
+          </div>
+          <div>
+            <strong>{crmSummary?.clients?.length ?? 0}</strong>
+            <span>клиентов</span>
+          </div>
+        </div>
+
         <h2>История заявок</h2>
         <div className="history-list">
           {requests.length === 0 && <p className="muted">История пока пустая</p>}
@@ -147,6 +237,15 @@ export default function App() {
               onClick={() => setSelected(item)}
             >
               <span>#{item.id} {requestTitle(item)}</span>
+              <div className="history-tags">
+                <small className={`status-pill status-${item.status || "new"}`}>
+                  {STATUS_LABELS[item.status || "new"] || "Новая"}
+                </small>
+                <small className={`priority-pill priority-${item.priority || "normal"}`}>
+                  {PRIORITY_LABELS[item.priority || "normal"] || "Обычный"}
+                </small>
+                {item.requires_contract_appendix ? <small className="vip-pill">KBI договор</small> : null}
+              </div>
               <small>{new Date(item.created_at).toLocaleString()}</small>
             </button>
           ))}
@@ -197,6 +296,22 @@ export default function App() {
                 <option value="Телефон">Телефон</option>
                 <option value="Другое">Другое</option>
               </select>
+            </label>
+            <label>
+              <span>Приоритет</span>
+              <select value={metadata.priority} onChange={(event) => updateMetadata("priority", event.target.value)}>
+                {PRIORITY_OPTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="metadata-wide">
+              <span>Следующее действие</span>
+              <input
+                value={metadata.next_action}
+                onChange={(event) => updateMetadata("next_action", event.target.value)}
+                placeholder="Например: уточнить цену, выставить счет, отправить приложение"
+              />
             </label>
           </div>
 
@@ -310,6 +425,70 @@ export default function App() {
           {!selected && <div className="empty-state">Результат появится здесь после обработки заявки.</div>}
 
           {selected && (
+            <>
+            <div className="request-card">
+              <div className="request-card-main">
+                <div>
+                  <span>Клиент</span>
+                  <strong>{selected.client_company || "не указан"}</strong>
+                </div>
+                <div>
+                  <span>Контакт</span>
+                  <strong>{selected.client_contact_name || "не указан"}</strong>
+                </div>
+                <div>
+                  <span>Менеджер Michael</span>
+                  <strong>{selected.michael_manager || "не указан"}</strong>
+                </div>
+                <div>
+                  <span>Канал</span>
+                  <strong>{selected.communication_channel || "не указан"}</strong>
+                </div>
+              </div>
+
+              {selected.requires_contract_appendix ? (
+                <div className="contract-note">
+                  KBI Energy: счет оформлять от ТОО Michael и отправлять вместе с приложением к годовому договору.
+                </div>
+              ) : null}
+
+              <div className="status-editor">
+                <label>
+                  <span>Статус</span>
+                  <select
+                    value={statusDraft.status}
+                    onChange={(event) => setStatusDraft((current) => ({ ...current, status: event.target.value }))}
+                  >
+                    {STATUS_OPTIONS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Приоритет</span>
+                  <select
+                    value={statusDraft.priority}
+                    onChange={(event) => setStatusDraft((current) => ({ ...current, priority: event.target.value }))}
+                  >
+                    {PRIORITY_OPTIONS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="status-next-action">
+                  <span>Следующее действие</span>
+                  <input
+                    value={statusDraft.next_action}
+                    onChange={(event) => setStatusDraft((current) => ({ ...current, next_action: event.target.value }))}
+                    placeholder="Что сделать дальше"
+                  />
+                </label>
+                <button className="secondary-button" onClick={handleStatusSave} disabled={loading}>
+                  Сохранить статус
+                </button>
+              </div>
+            </div>
+
             <div className="result-grid">
               {resultSections.length > 0 ? (
                 resultSections.map((section) => (
@@ -323,6 +502,19 @@ export default function App() {
                 </article>
               )}
             </div>
+
+            <div className="events-area">
+              <h3>Журнал действий</h3>
+              {requestEvents.length === 0 && <p className="muted">Событий пока нет.</p>}
+              {requestEvents.map((event) => (
+                <article className="event-item" key={event.id}>
+                  <strong>{event.event_type}</strong>
+                  <span>{event.actor || "system"}</span>
+                  <small>{new Date(event.created_at).toLocaleString()}</small>
+                </article>
+              ))}
+            </div>
+            </>
           )}
         </section>
       </section>

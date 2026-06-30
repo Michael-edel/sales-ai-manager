@@ -16,6 +16,16 @@ type Metadata = {
   client_contact_name?: string;
   michael_manager?: string;
   communication_channel?: string;
+  priority?: string;
+  next_action?: string;
+};
+
+type CrmLink = {
+  clientId: number | null;
+  contactId: number | null;
+  michaelManagerId: number | null;
+  clientType: "standard" | "vip";
+  requiresContractAppendix: boolean;
 };
 
 type FormValue = string | File;
@@ -71,6 +81,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
         return json(await processUpload(request, env));
       }
+      if (request.method === "GET" && url.pathname === "/api/crm/summary") {
+        return json(await getCrmSummary(env));
+      }
       if (request.method === "GET" && url.pathname === "/api/email/messages") {
         return json(await listEmailMessages(env));
       }
@@ -87,6 +100,17 @@ export default {
       if (request.method === "GET" && requestMatch) {
         const item = await getRequest(env, Number(requestMatch[1]));
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
+      }
+
+      const statusMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/status$/);
+      if (request.method === "PATCH" && statusMatch) {
+        const item = await updateRequestStatus(request, env, Number(statusMatch[1]));
+        return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
+      }
+
+      const eventsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/events$/);
+      if (request.method === "GET" && eventsMatch) {
+        return json(await listRequestEvents(env, Number(eventsMatch[1])));
       }
 
       return json({ detail: "Endpoint не найден." }, 404);
@@ -123,6 +147,8 @@ async function processUpload(request: Request, env: Env) {
     client_contact_name: stringValue(formData.get("client_contact_name")),
     michael_manager: stringValue(formData.get("michael_manager")),
     communication_channel: stringValue(formData.get("communication_channel")),
+    priority: stringValue(formData.get("priority")),
+    next_action: stringValue(formData.get("next_action")),
   };
   const managerNote = stringValue(formData.get("manager_note"));
   const context = buildContextPrefix(metadata);
@@ -340,11 +366,18 @@ async function getRequest(env: Env, id: number) {
 }
 
 async function insertRequest(env: Env, item: Record<string, any>) {
+  const crm = await ensureCrmLink(env, item);
+  const status = normalizeStatus(item.status);
+  const priority = normalizePriority(item.priority);
+  const nextAction = normalizeOptionalText(item.next_action);
+
   const result = await env.DB.prepare(`
     INSERT INTO requests (
       source_type, client_company, client_contact_name, michael_manager,
-      communication_channel, original_text, uploaded_file_name, ai_result
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      communication_channel, original_text, uploaded_file_name, ai_result,
+      status, priority, client_type, requires_contract_appendix,
+      next_action, client_id, contact_id, michael_manager_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `)
     .bind(
       item.source_type,
@@ -355,9 +388,176 @@ async function insertRequest(env: Env, item: Record<string, any>) {
       item.original_text,
       item.uploaded_file_name || null,
       item.ai_result,
+      status,
+      priority,
+      crm.clientType,
+      crm.requiresContractAppendix ? 1 : 0,
+      nextAction,
+      crm.clientId,
+      crm.contactId,
+      crm.michaelManagerId,
     )
     .run();
-  return getRequest(env, Number(result.meta.last_row_id));
+  const requestId = Number(result.meta.last_row_id);
+  await createRequestEvent(env, requestId, "request.created", item.michael_manager || "system", {
+    source_type: item.source_type,
+    status,
+    priority,
+    client_company: item.client_company || null,
+    client_contact_name: item.client_contact_name || null,
+    michael_manager: item.michael_manager || null,
+    communication_channel: item.communication_channel || null,
+    requires_contract_appendix: crm.requiresContractAppendix,
+  });
+  return getRequest(env, requestId);
+}
+
+async function updateRequestStatus(request: Request, env: Env, id: number) {
+  const existing = await getRequest(env, id) as Record<string, any> | null;
+  if (!existing) return null;
+
+  const payload = (await request.json()) as {
+    status?: string;
+    priority?: string;
+    next_action?: string;
+    actor?: string;
+  };
+  const status = normalizeStatus(payload.status || existing.status || "new");
+  const priority = normalizePriority(payload.priority || existing.priority || "normal");
+  const nextAction = normalizeOptionalText(payload.next_action);
+  const actor = normalizeOptionalText(payload.actor) || existing.michael_manager || "system";
+
+  await env.DB.prepare(`
+    UPDATE requests
+    SET status = ?, priority = ?, next_action = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(status, priority, nextAction, id).run();
+
+  await createRequestEvent(env, id, "request.status_updated", actor, {
+    previous_status: existing.status || "new",
+    status,
+    priority,
+    next_action: nextAction,
+  });
+
+  return getRequest(env, id);
+}
+
+async function listRequestEvents(env: Env, requestId: number) {
+  const result = await env.DB.prepare(`
+    SELECT * FROM request_events
+    WHERE request_id = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 100
+  `).bind(requestId).all();
+  return result.results;
+}
+
+async function getCrmSummary(env: Env) {
+  const [clients, contacts, managers, openRequests, vipRequests, statusCounts] = await Promise.all([
+    env.DB.prepare("SELECT * FROM crm_clients ORDER BY updated_at DESC LIMIT 100").all(),
+    env.DB.prepare("SELECT * FROM crm_contacts ORDER BY updated_at DESC LIMIT 100").all(),
+    env.DB.prepare("SELECT * FROM michael_managers ORDER BY display_name ASC LIMIT 100").all(),
+    env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE status NOT IN ('done', 'closed', 'lost')").first(),
+    env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE client_type = 'vip'").first(),
+    env.DB.prepare("SELECT status, COUNT(*) AS count FROM requests GROUP BY status ORDER BY count DESC").all(),
+  ]);
+
+  return {
+    clients: clients.results,
+    contacts: contacts.results,
+    managers: managers.results,
+    open_requests: Number((openRequests as Record<string, unknown> | null)?.count || 0),
+    vip_requests: Number((vipRequests as Record<string, unknown> | null)?.count || 0),
+    status_counts: statusCounts.results,
+  };
+}
+
+async function ensureCrmLink(env: Env, metadata: Metadata): Promise<CrmLink> {
+  const company = normalizeOptionalText(metadata.client_company);
+  const contactName = normalizeOptionalText(metadata.client_contact_name);
+  const managerName = normalizeOptionalText(metadata.michael_manager);
+  const clientIsKbi = company ? isKbiEnergy(company) : false;
+  const clientType: "standard" | "vip" = clientIsKbi ? "vip" : "standard";
+  const contractNote = clientIsKbi
+    ? "VIP клиент. Работа по годовому договору; каждый счет должен сопровождаться приложением к договору."
+    : null;
+
+  let clientId: number | null = null;
+  let contactId: number | null = null;
+  let michaelManagerId: number | null = null;
+
+  if (company) {
+    const normalized = normalizeKey(company);
+    await env.DB.prepare(`
+      INSERT INTO crm_clients (display_name, normalized_name, client_type, is_vip, contract_note, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(normalized_name) DO UPDATE SET
+        display_name = excluded.display_name,
+        client_type = CASE
+          WHEN crm_clients.client_type = 'vip' OR excluded.client_type = 'vip' THEN 'vip'
+          ELSE excluded.client_type
+        END,
+        is_vip = CASE
+          WHEN crm_clients.is_vip = 1 OR excluded.is_vip = 1 THEN 1
+          ELSE excluded.is_vip
+        END,
+        contract_note = COALESCE(excluded.contract_note, crm_clients.contract_note),
+        updated_at = datetime('now')
+    `).bind(company, normalized, clientType, clientIsKbi ? 1 : 0, contractNote).run();
+    const client = await env.DB.prepare("SELECT id FROM crm_clients WHERE normalized_name = ?").bind(normalized).first();
+    clientId = client ? Number((client as Record<string, unknown>).id) : null;
+  }
+
+  if (clientId && contactName) {
+    const normalized = normalizeKey(contactName);
+    await env.DB.prepare(`
+      INSERT INTO crm_contacts (client_id, display_name, normalized_name, channel_hint, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(client_id, normalized_name) DO UPDATE SET
+        display_name = excluded.display_name,
+        channel_hint = COALESCE(excluded.channel_hint, crm_contacts.channel_hint),
+        updated_at = datetime('now')
+    `).bind(clientId, contactName, normalized, metadata.communication_channel || null).run();
+    const contact = await env.DB.prepare(`
+      SELECT id FROM crm_contacts WHERE client_id = ? AND normalized_name = ?
+    `).bind(clientId, normalized).first();
+    contactId = contact ? Number((contact as Record<string, unknown>).id) : null;
+  }
+
+  if (managerName) {
+    const normalized = normalizeKey(managerName);
+    await env.DB.prepare(`
+      INSERT INTO michael_managers (display_name, normalized_name, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(normalized_name) DO UPDATE SET
+        display_name = excluded.display_name,
+        updated_at = datetime('now')
+    `).bind(managerName, normalized).run();
+    const manager = await env.DB.prepare("SELECT id FROM michael_managers WHERE normalized_name = ?").bind(normalized).first();
+    michaelManagerId = manager ? Number((manager as Record<string, unknown>).id) : null;
+  }
+
+  return {
+    clientId,
+    contactId,
+    michaelManagerId,
+    clientType,
+    requiresContractAppendix: clientIsKbi,
+  };
+}
+
+async function createRequestEvent(
+  env: Env,
+  requestId: number,
+  eventType: string,
+  actor: string,
+  payload: Record<string, unknown>,
+) {
+  await env.DB.prepare(`
+    INSERT INTO request_events (request_id, event_type, actor, payload_json)
+    VALUES (?, ?, ?, ?)
+  `).bind(requestId, eventType, actor, JSON.stringify(payload)).run();
 }
 
 function buildContextPrefix(metadata: Metadata): string {
@@ -366,8 +566,49 @@ function buildContextPrefix(metadata: Metadata): string {
     metadata.client_contact_name ? `Контакт/менеджер клиента: ${metadata.client_contact_name}` : "",
     metadata.michael_manager ? `Менеджер Michael: ${metadata.michael_manager}` : "",
     metadata.communication_channel ? `Канал связи: ${metadata.communication_channel}` : "",
+    metadata.priority ? `Приоритет: ${metadata.priority}` : "",
+    metadata.next_action ? `Следующее действие: ${metadata.next_action}` : "",
   ].filter(Boolean);
   return parts.length ? `Контекст заявки:\n${parts.join("\n")}\n\n` : "";
+}
+
+function normalizeOptionalText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ");
+}
+
+function isKbiEnergy(company: string): boolean {
+  const normalized = normalizeKey(company);
+  return normalized.includes("kbi energy") || normalized.includes("кби энерджи");
+}
+
+function normalizeStatus(value: unknown): string {
+  const normalized = normalizeOptionalText(value) || "new";
+  const allowed = new Set([
+    "new",
+    "in_progress",
+    "need_clarification",
+    "reply_ready",
+    "quote_sent",
+    "invoice_required",
+    "invoice_sent",
+    "done",
+    "closed",
+    "lost",
+  ]);
+  return allowed.has(normalized) ? normalized : "new";
+}
+
+function normalizePriority(value: unknown): string {
+  const normalized = normalizeOptionalText(value) || "normal";
+  return ["low", "normal", "high", "urgent"].includes(normalized) ? normalized : "normal";
 }
 
 function isImage(fileName: string): boolean {

@@ -15,6 +15,22 @@ export function listRequests() {
   return request("/requests");
 }
 
+export function getCrmSummary() {
+  return request("/crm/summary");
+}
+
+export function listRequestEvents(requestId) {
+  return request(`/requests/${requestId}/events`);
+}
+
+export function updateRequestStatus(requestId, payload) {
+  return request(`/requests/${requestId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function processText(originalText, metadata = {}) {
   return request("/requests/text", {
     method: "POST",
