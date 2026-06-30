@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Check, CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
+  createWhatsAppTemplate,
   createUser,
   createRequestTask,
   deleteRequest,
@@ -11,12 +12,14 @@ import {
   getCurrentUser,
   getEmailSmtpHealth,
   getParserHealth,
+  getWhatsAppHealth,
   listAiRules,
   listEmailMessages,
   listOpenTasks,
   listRequestEvents,
   listRequestTasks,
   listRequests,
+  listWhatsAppTemplates,
   listUsers,
   login,
   logout,
@@ -24,8 +27,10 @@ import {
   processText,
   resetUserPassword,
   sendEmailReply,
+  sendWhatsAppTemplate,
   updateDealDocuments,
   updateAiRules,
+  updateWhatsAppTemplates,
   updateUserActive,
   updateRequestTask,
   updateRequestStatus,
@@ -45,6 +50,13 @@ function splitSections(result) {
 function extractClientBlock(result) {
   const match = result.match(/^D\.\s[\s\S]*?(?=^E\.\s|$)/m);
   return match ? match[0].trim() : "";
+}
+
+function normalizePhoneCandidate(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("8")) digits = `7${digits.slice(1)}`;
+  return digits.length >= 8 && digits.length <= 15 ? digits : "";
 }
 
 function requestTitle(item) {
@@ -114,6 +126,12 @@ const ROLE_OPTIONS = [
 
 const ROLE_LABELS = Object.fromEntries(ROLE_OPTIONS);
 
+const WHATSAPP_TEMPLATE_CATEGORY_OPTIONS = [
+  ["UTILITY", "Utility"],
+  ["MARKETING", "Marketing"],
+  ["AUTHENTICATION", "Authentication"],
+];
+
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState(null);
@@ -122,6 +140,22 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [aiRules, setAiRules] = useState([]);
   const [aiRulesStatus, setAiRulesStatus] = useState("");
+  const [whatsappTemplates, setWhatsAppTemplates] = useState([]);
+  const [whatsappTemplatesStatus, setWhatsAppTemplatesStatus] = useState("");
+  const [whatsappHealth, setWhatsAppHealth] = useState(null);
+  const [whatsappSendStatus, setWhatsAppSendStatus] = useState("");
+  const [whatsappDraft, setWhatsAppDraft] = useState({
+    to_phone: "",
+    template_key: "",
+    body_parameters_text: "",
+  });
+  const [whatsappTemplateDraft, setWhatsAppTemplateDraft] = useState({
+    display_name: "",
+    template_name: "",
+    language_code: "ru",
+    category: "UTILITY",
+    body_text: "",
+  });
   const [userDraft, setUserDraft] = useState({
     username: "",
     display_name: "",
@@ -184,6 +218,20 @@ export default function App() {
   async function refreshAiRules() {
     const items = await listAiRules();
     setAiRules(items);
+  }
+
+  async function refreshWhatsAppTemplates() {
+    const items = await listWhatsAppTemplates();
+    setWhatsAppTemplates(items);
+    setWhatsAppDraft((current) => ({
+      ...current,
+      template_key: current.template_key || items.find((item) => item.is_enabled)?.template_key || "",
+    }));
+  }
+
+  async function refreshWhatsAppHealth() {
+    const status = await getWhatsAppHealth();
+    setWhatsAppHealth(status);
   }
 
   async function refreshHistory(latestItem = null) {
@@ -251,6 +299,8 @@ export default function App() {
     refreshSmtpStatus().catch(() => {});
     refreshUsers().catch(() => {});
     refreshAiRules().catch((err) => setAiRulesStatus(err.message));
+    refreshWhatsAppTemplates().catch((err) => setWhatsAppTemplatesStatus(err.message));
+    refreshWhatsAppHealth().catch(() => setWhatsAppHealth({ configured: false, status: "error" }));
   }, [authUser]);
 
   useEffect(() => {
@@ -354,6 +404,59 @@ export default function App() {
     }
   }
 
+  function updateWhatsAppTemplateDraft(templateKey, field, value) {
+    setWhatsAppTemplates((current) => current.map((template) => (
+      template.template_key === templateKey ? { ...template, [field]: value } : template
+    )));
+  }
+
+  async function handleWhatsAppTemplatesSave() {
+    if (authUser?.role !== "admin") return;
+    setError("");
+    setWhatsAppTemplatesStatus("");
+    setLoading(true);
+    try {
+      const saved = await updateWhatsAppTemplates(whatsappTemplates.map((template) => ({
+        template_key: template.template_key,
+        display_name: template.display_name,
+        template_name: template.template_name,
+        language_code: template.language_code,
+        category: template.category,
+        body_text: template.body_text,
+        is_enabled: Boolean(template.is_enabled),
+      })));
+      setWhatsAppTemplates(saved);
+      setWhatsAppTemplatesStatus("Шаблоны сохранены. Используйте только имена, уже утвержденные в Meta.");
+    } catch (err) {
+      setWhatsAppTemplatesStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCreateWhatsAppTemplate() {
+    if (authUser?.role !== "admin") return;
+    setError("");
+    setWhatsAppTemplatesStatus("");
+    setLoading(true);
+    try {
+      const saved = await createWhatsAppTemplate(whatsappTemplateDraft);
+      setWhatsAppTemplates(saved);
+      setWhatsAppTemplateDraft({
+        display_name: "",
+        template_name: "",
+        language_code: "ru",
+        category: "UTILITY",
+        body_text: "",
+      });
+      setWhatsAppTemplatesStatus("Новый локальный шаблон добавлен. Проверьте, что template_name уже утвержден в Meta.");
+    } catch (err) {
+      setWhatsAppTemplatesStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!selected) {
       setRequestEvents([]);
@@ -375,6 +478,8 @@ export default function App() {
       contract_appendix_note: selected.contract_appendix_note || "",
       customer_sent_at: selected.customer_sent_at || "",
     });
+    const phone = normalizePhoneCandidate(selected.client_contact_name);
+    setWhatsAppDraft((current) => ({ ...current, to_phone: phone || current.to_phone }));
     listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
     listRequestTasks(selected.id).then(setRequestTasks).catch(() => setRequestTasks([]));
   }, [selected]);
@@ -456,6 +561,43 @@ export default function App() {
         body: clientBlock,
       });
       setEmailSendStatus(`Письмо отправлено: ${to}`);
+      const events = await listRequestEvents(selected.id);
+      setRequestEvents(events);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSendWhatsAppTemplate() {
+    if (!selected || !canManageRequests) return;
+    setError("");
+    setWhatsAppSendStatus("");
+    if (!whatsappHealth?.configured) {
+      setError("WhatsApp Cloud API не настроен: нужны WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID.");
+      return;
+    }
+    const bodyParameters = whatsappDraft.body_parameters_text
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const selectedTemplate = whatsappTemplates.find((template) => template.template_key === whatsappDraft.template_key);
+    if (!selectedTemplate) {
+      setError("Выберите утвержденный Meta шаблон.");
+      return;
+    }
+    if (!window.confirm(`Отправить WhatsApp шаблон "${selectedTemplate.display_name}" на ${whatsappDraft.to_phone}?`)) return;
+
+    setLoading(true);
+    try {
+      const result = await sendWhatsAppTemplate({
+        request_id: selected.id,
+        to: whatsappDraft.to_phone,
+        template_key: whatsappDraft.template_key,
+        body_parameters: bodyParameters,
+      });
+      setWhatsAppSendStatus(`WhatsApp шаблон отправлен: ${result.template_name}`);
       const events = await listRequestEvents(selected.id);
       setRequestEvents(events);
     } catch (err) {
@@ -1232,6 +1374,165 @@ export default function App() {
           </section>
         )}
 
+        {authUser.role === "admin" && (
+          <section className="input-area whatsapp-templates-area">
+            <div className="section-title">
+              <h2>Meta WhatsApp шаблоны</h2>
+              <p>Укажите точные имена шаблонов, которые уже утверждены в Meta Business Manager.</p>
+            </div>
+
+            <div className="integration-status">
+              <MessageCircle size={18} />
+              <span>
+                {whatsappHealth?.configured
+                  ? `Cloud API настроен, Phone Number ID ${whatsappHealth.phone_number_id}`
+                  : "Cloud API не настроен: добавьте secrets WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID"}
+              </span>
+              <button className="icon-button" onClick={refreshWhatsAppHealth} disabled={loading} title="Проверить WhatsApp Cloud API">
+                <RefreshCw size={16} />
+              </button>
+            </div>
+
+            <div className="whatsapp-template-create">
+              <label>
+                <span>Название</span>
+                <input
+                  value={whatsappTemplateDraft.display_name}
+                  onChange={(event) => setWhatsAppTemplateDraft((current) => ({ ...current, display_name: event.target.value }))}
+                  disabled={loading}
+                  placeholder="Например: Счет KBI отправлен"
+                />
+              </label>
+              <label>
+                <span>Meta template name</span>
+                <input
+                  value={whatsappTemplateDraft.template_name}
+                  onChange={(event) => setWhatsAppTemplateDraft((current) => ({ ...current, template_name: event.target.value }))}
+                  disabled={loading}
+                  placeholder="kbi_invoice_sent"
+                />
+              </label>
+              <label>
+                <span>Язык</span>
+                <input
+                  value={whatsappTemplateDraft.language_code}
+                  onChange={(event) => setWhatsAppTemplateDraft((current) => ({ ...current, language_code: event.target.value }))}
+                  disabled={loading}
+                  placeholder="ru"
+                />
+              </label>
+              <label>
+                <span>Категория</span>
+                <select
+                  value={whatsappTemplateDraft.category}
+                  onChange={(event) => setWhatsAppTemplateDraft((current) => ({ ...current, category: event.target.value }))}
+                  disabled={loading}
+                >
+                  {WHATSAPP_TEMPLATE_CATEGORY_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="whatsapp-template-create-body">
+                <span>Текст-подсказка</span>
+                <input
+                  value={whatsappTemplateDraft.body_text}
+                  onChange={(event) => setWhatsAppTemplateDraft((current) => ({ ...current, body_text: event.target.value }))}
+                  disabled={loading}
+                  placeholder="Кратко, что отправляет этот шаблон"
+                />
+              </label>
+              <button
+                className="secondary-button"
+                onClick={handleCreateWhatsAppTemplate}
+                disabled={loading || !whatsappTemplateDraft.display_name || !whatsappTemplateDraft.template_name || !whatsappTemplateDraft.body_text}
+              >
+                <Plus size={18} />
+                Добавить шаблон
+              </button>
+            </div>
+
+            <div className="whatsapp-template-list">
+              {whatsappTemplates.map((template) => (
+                <article className="whatsapp-template-card" key={template.template_key}>
+                  <div className="rule-card-header">
+                    <label className="rule-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(template.is_enabled)}
+                        disabled={loading}
+                        onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "is_enabled", event.target.checked ? 1 : 0)}
+                      />
+                      <span>{template.display_name}</span>
+                    </label>
+                    <small>{template.category || "UTILITY"}</small>
+                  </div>
+                  <div className="whatsapp-template-grid">
+                    <label>
+                      <span>Название в программе</span>
+                      <input
+                        value={template.display_name || ""}
+                        onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "display_name", event.target.value)}
+                        disabled={loading}
+                      />
+                    </label>
+                    <label>
+                      <span>Meta template name</span>
+                      <input
+                        value={template.template_name || ""}
+                        onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "template_name", event.target.value)}
+                        disabled={loading}
+                        placeholder="invoice_appendix_ready"
+                      />
+                    </label>
+                    <label>
+                      <span>Язык</span>
+                      <input
+                        value={template.language_code || "ru"}
+                        onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "language_code", event.target.value)}
+                        disabled={loading}
+                        placeholder="ru"
+                      />
+                    </label>
+                    <label>
+                      <span>Категория</span>
+                      <select
+                        value={template.category || "UTILITY"}
+                        onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "category", event.target.value)}
+                        disabled={loading}
+                      >
+                        {WHATSAPP_TEMPLATE_CATEGORY_OPTIONS.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <textarea
+                    value={template.body_text || ""}
+                    onChange={(event) => updateWhatsAppTemplateDraft(template.template_key, "body_text", event.target.value)}
+                    disabled={loading}
+                    rows={2}
+                    placeholder="Текст для понимания менеджером. Реальный текст должен совпадать с утвержденным шаблоном Meta."
+                  />
+                </article>
+              ))}
+              {whatsappTemplates.length === 0 && <p className="muted">Шаблоны еще не загружены.</p>}
+            </div>
+
+            <div className="rules-actions">
+              <button className="secondary-button" onClick={refreshWhatsAppTemplates} disabled={loading}>
+                <RefreshCw size={18} />
+                Обновить
+              </button>
+              <button className="primary-button" onClick={handleWhatsAppTemplatesSave} disabled={loading || whatsappTemplates.length === 0}>
+                {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                Сохранить шаблоны
+              </button>
+              {whatsappTemplatesStatus && <span className="email-status">{whatsappTemplatesStatus}</span>}
+            </div>
+          </section>
+        )}
+
         <section className="result-area">
           <div className="result-header">
             <div>
@@ -1261,11 +1562,70 @@ export default function App() {
           </div>
 
           {emailSendStatus && <div className="email-send-status">{emailSendStatus}</div>}
+          {whatsappSendStatus && <div className="email-send-status">{whatsappSendStatus}</div>}
 
           {!selected && <div className="empty-state">Результат появится здесь после обработки заявки.</div>}
 
           {selected && (
             <>
+            <div className="whatsapp-send-panel">
+              <div className="section-title">
+                <h3>WhatsApp Meta</h3>
+                <p>Отправка только утвержденного template message через Cloud API.</p>
+              </div>
+              <div className="whatsapp-send-grid">
+                <label>
+                  <span>Номер WhatsApp</span>
+                  <input
+                    value={whatsappDraft.to_phone}
+                    onChange={(event) => setWhatsAppDraft((current) => ({ ...current, to_phone: event.target.value }))}
+                    placeholder="77001234567"
+                    disabled={loading || !canManageRequests}
+                  />
+                </label>
+                <label>
+                  <span>Шаблон Meta</span>
+                  <select
+                    value={whatsappDraft.template_key}
+                    onChange={(event) => setWhatsAppDraft((current) => ({ ...current, template_key: event.target.value }))}
+                    disabled={loading || !canManageRequests}
+                  >
+                    <option value="">Выберите шаблон</option>
+                    {whatsappTemplates.filter((template) => template.is_enabled).map((template) => (
+                      <option key={template.template_key} value={template.template_key}>
+                        {template.display_name} · {template.template_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="whatsapp-params-field">
+                  <span>Переменные BODY по строкам</span>
+                  <textarea
+                    value={whatsappDraft.body_parameters_text}
+                    onChange={(event) => setWhatsAppDraft((current) => ({ ...current, body_parameters_text: event.target.value }))}
+                    placeholder={"Если в шаблоне есть {{1}}, {{2}}, укажите значения по строкам.\nНапример:\n5940\n392 400,00 KZT"}
+                    rows={3}
+                    disabled={loading || !canManageRequests}
+                  />
+                </label>
+                <button
+                  className="primary-button"
+                  onClick={handleSendWhatsAppTemplate}
+                  disabled={
+                    loading ||
+                    !canManageRequests ||
+                    !whatsappHealth?.configured ||
+                    !whatsappDraft.to_phone ||
+                    !whatsappDraft.template_key
+                  }
+                  title={!whatsappHealth?.configured ? "WhatsApp Cloud API не настроен" : "Отправить утвержденный шаблон"}
+                >
+                  <Send size={18} />
+                  Отправить WhatsApp
+                </button>
+              </div>
+            </div>
+
             <div className="request-card">
               <div className="request-card-main">
                 <div>

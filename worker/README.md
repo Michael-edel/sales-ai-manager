@@ -16,13 +16,18 @@
 - `GET /api/requests/:id`
 - `GET /api/ai/rules`
 - `PATCH /api/ai/rules` для администратора
+- `GET /api/whatsapp/health`
+- `GET /api/whatsapp/templates`
+- `POST /api/whatsapp/templates` для администратора
+- `PATCH /api/whatsapp/templates` для администратора
+- `POST /api/whatsapp/send-template`
 - `POST /api/requests/text`
 - `POST /api/requests/upload`
 - `POST /api/email/messages/:id/process`
 - `POST /api/email/send` через внешний `email-bridge`
 - входящие письма через Cloudflare Email Routing `email()` handler с сохранением в D1
 - `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
-- D1 таблицы `requests`, `email_messages`, `ai_rules`
+- D1 таблицы `requests`, `email_messages`, `ai_rules`, `whatsapp_templates`, `whatsapp_template_messages`
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
 - Gemini/OpenAI audio transcription для голосовых
@@ -30,11 +35,13 @@
 - DOCX/XLSX и расширенный PDF-разбор через внешний `parser-service`
 - KBI Energy как VIP-клиент: счет от ТОО Michael + приложение к годовому договору
 - настройки ИИ и 1С в D1: цены с НДС, счет от ТОО Michael, данные из 1С/документа, запрет придумывать цены
+- утвержденные Meta WhatsApp template messages через Cloud API
 
 ## Что пока не перенесено
 
 - Встроенная SMTP-отправка из самого Worker.
 - Парсинг DOCX/XLSX внутри самого Worker.
+- Прием входящих WhatsApp-сообщений через Meta webhook.
 
 Для входящей почты Worker принимает письма через Cloudflare Email Routing. Если основной ящик остается на mailcow, настройте в mailcow recipient BCC map, чтобы письмо оставалось в рабочем ящике и копия уходила на технический адрес Email Routing. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
 
@@ -260,6 +267,54 @@ GET /api/email/smtp/health
 ```text
 POST /api/email/send
 ```
+
+## Meta WhatsApp Cloud API templates
+
+Worker отправляет только уже утвержденные Meta WhatsApp template messages.
+
+Secrets:
+
+```powershell
+npx wrangler secret put WHATSAPP_ACCESS_TOKEN
+npx wrangler secret put WHATSAPP_PHONE_NUMBER_ID
+```
+
+Не секретная переменная в `wrangler.toml`:
+
+```toml
+WHATSAPP_API_VERSION = "v24.0"
+```
+
+Endpoints:
+
+```text
+GET /api/whatsapp/health
+GET /api/whatsapp/templates
+POST /api/whatsapp/templates
+PATCH /api/whatsapp/templates
+POST /api/whatsapp/send-template
+```
+
+`GET /api/whatsapp/templates` возвращает локальный справочник шаблонов из D1. `POST` и `PATCH /api/whatsapp/templates` доступны только администратору и используются для добавления или сохранения точных `template_name`, `language_code`, категории и текста-подсказки. Реальное утверждение шаблона выполняется в Meta Business Manager, не в этом приложении.
+
+Отправка:
+
+```json
+{
+  "request_id": 9,
+  "to": "77001234567",
+  "template_key": "invoice_appendix_ready",
+  "body_parameters": ["5940", "392 400,00 KZT"]
+}
+```
+
+Worker вызывает:
+
+```text
+POST https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages
+```
+
+Все попытки отправки записываются в `whatsapp_template_messages`; успешные и неуспешные отправки по заявке дополнительно попадают в `request_events`.
 
 ## Входящая почта через Cloudflare Email Routing
 

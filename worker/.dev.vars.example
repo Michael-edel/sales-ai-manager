@@ -1,3 +1,5 @@
 ACCESS_PASSWORD=change-this-local-password
 GEMINI_API_KEY=your-gemini-key-here
 OPENAI_API_KEY=sk-your-key-here
+WHATSAPP_ACCESS_TOKEN=your-meta-whatsapp-cloud-api-token
+WHATSAPP_PHONE_NUMBER_ID=your-meta-phone-number-id

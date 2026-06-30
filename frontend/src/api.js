@@ -81,6 +81,38 @@ export function updateAiRules(rules) {
   });
 }
 
+export function listWhatsAppTemplates() {
+  return request("/whatsapp/templates");
+}
+
+export function createWhatsAppTemplate(payload) {
+  return request("/whatsapp/templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWhatsAppTemplates(templates) {
+  return request("/whatsapp/templates", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ templates }),
+  });
+}
+
+export function getWhatsAppHealth() {
+  return request("/whatsapp/health");
+}
+
+export function sendWhatsAppTemplate(payload) {
+  return request("/whatsapp/send-template", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listOpenTasks() {
   return request("/tasks/open");
 }

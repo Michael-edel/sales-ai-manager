@@ -17,6 +17,9 @@ export interface Env {
   PARSER_SERVICE_TOKEN: string;
   EMAIL_BRIDGE_URL: string;
   EMAIL_BRIDGE_TOKEN: string;
+  WHATSAPP_ACCESS_TOKEN: string;
+  WHATSAPP_PHONE_NUMBER_ID: string;
+  WHATSAPP_API_VERSION: string;
   ACCESS_USERNAME: string;
   ACCESS_PASSWORD: string;
 }
@@ -75,6 +78,17 @@ type AiRuleDefinition = {
   rule_text: string;
   is_enabled: number;
   is_required: number;
+  sort_order: number;
+};
+
+type WhatsAppTemplateDefinition = {
+  template_key: string;
+  display_name: string;
+  template_name: string;
+  language_code: string;
+  category: string;
+  body_text: string;
+  is_enabled: number;
   sort_order: number;
 };
 
@@ -163,6 +177,49 @@ const DEFAULT_AI_RULES: AiRuleDefinition[] = [
   },
 ];
 
+const DEFAULT_WHATSAPP_TEMPLATES: WhatsAppTemplateDefinition[] = [
+  {
+    template_key: "order_received",
+    display_name: "Заявка получена",
+    template_name: "order_received",
+    language_code: "ru",
+    category: "UTILITY",
+    body_text: "Здравствуйте! Получили вашу заявку. Проверим данные и подготовим ответ от ТОО Michael.",
+    is_enabled: 1,
+    sort_order: 10,
+  },
+  {
+    template_key: "need_clarification",
+    display_name: "Нужно уточнение",
+    template_name: "need_clarification",
+    language_code: "ru",
+    category: "UTILITY",
+    body_text: "Здравствуйте! Для подготовки точного предложения нужно уточнить детали по заявке.",
+    is_enabled: 1,
+    sort_order: 20,
+  },
+  {
+    template_key: "price_ready",
+    display_name: "Цена готова",
+    template_name: "price_ready",
+    language_code: "ru",
+    category: "UTILITY",
+    body_text: "Здравствуйте! Подготовили цену с НДС по вашей заявке. Отправляем детали.",
+    is_enabled: 1,
+    sort_order: 30,
+  },
+  {
+    template_key: "invoice_appendix_ready",
+    display_name: "Счет и приложение KBI готовы",
+    template_name: "invoice_appendix_ready",
+    language_code: "ru",
+    category: "UTILITY",
+    body_text: "Здравствуйте! Счет от ТОО Michael и приложение к договору подготовлены.",
+    is_enabled: 1,
+    sort_order: 40,
+  },
+];
+
 export default {
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     await storeRoutedEmail(env, message);
@@ -202,6 +259,20 @@ export default {
       if (request.method === "PATCH" && url.pathname === "/api/ai/rules") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await updateAiRules(request, env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/whatsapp/templates") {
+        return json(await listWhatsAppTemplates(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/whatsapp/templates") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await createWhatsAppTemplate(request, env));
+      }
+      if (request.method === "PATCH" && url.pathname === "/api/whatsapp/templates") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await updateWhatsAppTemplates(request, env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/whatsapp/health") {
+        return json(checkWhatsAppCloudApi(env));
       }
       if (request.method === "GET" && url.pathname === "/api/users") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -263,6 +334,10 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/email/send") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await sendEmailReply(request, env, currentUser));
+      }
+      if (request.method === "POST" && url.pathname === "/api/whatsapp/send-template") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await sendWhatsAppTemplateMessage(request, env, currentUser));
       }
 
       const emailProcessMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)\/process$/);
@@ -553,6 +628,116 @@ async function updateAiRules(request: Request, env: Env) {
 
   if (statements.length) await env.DB.batch(statements);
   return listAiRules(env);
+}
+
+async function ensureDefaultWhatsAppTemplates(env: Env): Promise<void> {
+  const statements = DEFAULT_WHATSAPP_TEMPLATES.map((template) => env.DB.prepare(`
+    INSERT OR IGNORE INTO whatsapp_templates (
+      template_key, display_name, template_name, language_code, category, body_text, is_enabled, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    template.template_key,
+    template.display_name,
+    template.template_name,
+    template.language_code,
+    template.category,
+    template.body_text,
+    template.is_enabled,
+    template.sort_order,
+  ));
+  if (statements.length) await env.DB.batch(statements);
+}
+
+async function listWhatsAppTemplates(env: Env) {
+  await ensureDefaultWhatsAppTemplates(env);
+  const result = await env.DB.prepare(`
+    SELECT id, template_key, display_name, template_name, language_code, category, body_text, is_enabled, sort_order, updated_at
+    FROM whatsapp_templates
+    ORDER BY sort_order ASC, id ASC
+  `).all();
+  return result.results;
+}
+
+async function updateWhatsAppTemplates(request: Request, env: Env) {
+  const payload = (await request.json()) as {
+    templates?: Array<{
+      template_key?: unknown;
+      display_name?: unknown;
+      template_name?: unknown;
+      language_code?: unknown;
+      category?: unknown;
+      body_text?: unknown;
+      is_enabled?: unknown;
+    }>;
+  };
+  const templates = Array.isArray(payload.templates) ? payload.templates : [];
+  if (!templates.length) throw new Error("Нет шаблонов для сохранения.");
+
+  await ensureDefaultWhatsAppTemplates(env);
+  const existingTemplates = await listWhatsAppTemplates(env) as Array<Record<string, any>>;
+  const existingByKey = new Map(existingTemplates.map((template) => [String(template.template_key), template]));
+  const statements: D1PreparedStatement[] = [];
+
+  for (const incoming of templates) {
+    const templateKey = typeof incoming.template_key === "string" ? incoming.template_key : "";
+    if (!existingByKey.has(templateKey)) continue;
+
+    const displayName = normalizeOptionalText(incoming.display_name);
+    const templateName = normalizeWhatsAppTemplateName(incoming.template_name);
+    const languageCode = normalizeWhatsAppLanguageCode(incoming.language_code);
+    const category = normalizeWhatsAppTemplateCategory(incoming.category);
+    const bodyText = normalizeOptionalText(incoming.body_text);
+    const isEnabled = incoming.is_enabled === false ? 0 : 1;
+
+    if (!displayName) throw new Error("Название шаблона не может быть пустым.");
+    if (!templateName) throw new Error(`Укажите точное имя Meta template для "${displayName}".`);
+    if (!bodyText) throw new Error(`Текст-подсказка шаблона "${displayName}" не может быть пустым.`);
+
+    statements.push(env.DB.prepare(`
+      UPDATE whatsapp_templates
+      SET display_name = ?, template_name = ?, language_code = ?, category = ?, body_text = ?, is_enabled = ?, updated_at = datetime('now')
+      WHERE template_key = ?
+    `).bind(displayName, templateName, languageCode, category, bodyText, isEnabled, templateKey));
+  }
+
+  if (statements.length) await env.DB.batch(statements);
+  return listWhatsAppTemplates(env);
+}
+
+async function createWhatsAppTemplate(request: Request, env: Env) {
+  const payload = (await request.json()) as {
+    template_key?: unknown;
+    display_name?: unknown;
+    template_name?: unknown;
+    language_code?: unknown;
+    category?: unknown;
+    body_text?: unknown;
+  };
+  const displayName = normalizeOptionalText(payload.display_name);
+  const templateName = normalizeWhatsAppTemplateName(payload.template_name);
+  const templateKey = normalizeWhatsAppTemplateKey(payload.template_key) || templateName;
+  const languageCode = normalizeWhatsAppLanguageCode(payload.language_code);
+  const category = normalizeWhatsAppTemplateCategory(payload.category);
+  const bodyText = normalizeOptionalText(payload.body_text);
+
+  if (!displayName) throw new Error("Название шаблона не может быть пустым.");
+  if (!templateName) throw new Error("Укажите точное имя утвержденного Meta template.");
+  if (!bodyText) throw new Error("Текст-подсказка шаблона не может быть пустым.");
+
+  await ensureDefaultWhatsAppTemplates(env);
+  const sortRow = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order FROM whatsapp_templates").first() as Record<string, unknown> | null;
+  const sortOrder = Number(sortRow?.next_order || 100);
+  try {
+    await env.DB.prepare(`
+      INSERT INTO whatsapp_templates (
+        template_key, display_name, template_name, language_code, category, body_text, is_enabled, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    `).bind(templateKey, displayName, templateName, languageCode, category, bodyText, sortOrder).run();
+  } catch {
+    throw new Error("Шаблон с таким ключом или именем уже есть в программе.");
+  }
+
+  return listWhatsAppTemplates(env);
 }
 
 async function processText(request: Request, env: Env) {
@@ -849,6 +1034,135 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
     to,
     subject,
     detail: data?.detail || "Письмо отправлено через email-bridge.",
+  };
+}
+
+function checkWhatsAppCloudApi(env: Env) {
+  const phoneNumberId = normalizeOptionalText(env.WHATSAPP_PHONE_NUMBER_ID);
+  const hasToken = Boolean(normalizeOptionalText(env.WHATSAPP_ACCESS_TOKEN));
+  return {
+    configured: Boolean(phoneNumberId && hasToken),
+    status: phoneNumberId && hasToken ? "configured" : "missing",
+    phone_number_id: phoneNumberId ? maskIdentifier(phoneNumberId) : null,
+    api_version: normalizeWhatsAppApiVersion(env.WHATSAPP_API_VERSION),
+    detail: phoneNumberId && hasToken
+      ? "Meta WhatsApp Cloud API настроен для отправки утвержденных шаблонов."
+      : "Для WhatsApp нужны secrets WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID.",
+  };
+}
+
+async function sendWhatsAppTemplateMessage(request: Request, env: Env, currentUser: CurrentUser) {
+  const payload = (await request.json()) as {
+    request_id?: number;
+    to?: unknown;
+    template_key?: unknown;
+    body_parameters?: unknown;
+  };
+  const requestId = Number(payload.request_id || 0);
+  const toPhone = normalizeWhatsAppPhone(payload.to);
+  const templateKey = normalizeOptionalText(payload.template_key);
+  const bodyParameters = normalizeWhatsAppBodyParameters(payload.body_parameters);
+
+  if (!toPhone) throw new Error("Укажите номер WhatsApp в международном формате, например 77001234567.");
+  if (!templateKey) throw new Error("Выберите утвержденный Meta шаблон.");
+
+  const phoneNumberId = normalizeOptionalText(env.WHATSAPP_PHONE_NUMBER_ID);
+  const accessToken = normalizeOptionalText(env.WHATSAPP_ACCESS_TOKEN);
+  if (!phoneNumberId || !accessToken) {
+    throw new Error("WhatsApp Cloud API не настроен. Добавьте WHATSAPP_ACCESS_TOKEN и WHATSAPP_PHONE_NUMBER_ID в secrets Worker.");
+  }
+
+  await ensureDefaultWhatsAppTemplates(env);
+  const template = await env.DB.prepare(`
+    SELECT *
+    FROM whatsapp_templates
+    WHERE template_key = ? AND is_enabled = 1
+  `).bind(templateKey).first() as Record<string, any> | null;
+  if (!template) throw new Error("Шаблон не найден или отключен.");
+
+  const templateName = normalizeWhatsAppTemplateName(template.template_name);
+  const languageCode = normalizeWhatsAppLanguageCode(template.language_code);
+  const apiVersion = normalizeWhatsAppApiVersion(env.WHATSAPP_API_VERSION);
+  const actor = currentUser.display_name || currentUser.username || "manager";
+  const metaPayload: Record<string, unknown> = {
+    messaging_product: "whatsapp",
+    to: toPhone,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: languageCode },
+      ...(bodyParameters.length ? {
+        components: [
+          {
+            type: "body",
+            parameters: bodyParameters.map((text) => ({ type: "text", text })),
+          },
+        ],
+      } : {}),
+    },
+  };
+
+  const response = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(metaPayload),
+  });
+  const raw = await response.text();
+  let data: any = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+
+  const metaMessageId = normalizeOptionalText(data?.messages?.[0]?.id);
+  const errorDetail = response.ok ? "" : normalizeMetaError(data, raw, response.statusText);
+  await env.DB.prepare(`
+    INSERT INTO whatsapp_template_messages (
+      request_id, to_phone, template_key, template_name, language_code, parameters_json, meta_message_id, status, error_detail, sent_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    requestId || null,
+    toPhone,
+    templateKey,
+    templateName,
+    languageCode,
+    JSON.stringify(bodyParameters),
+    metaMessageId || null,
+    response.ok ? "sent" : "failed",
+    errorDetail || null,
+    actor,
+  ).run();
+
+  if (requestId) {
+    const existing = await getRequest(env, requestId);
+    if (existing) {
+      await createRequestEvent(env, requestId, response.ok ? "whatsapp.template_sent" : "whatsapp.template_failed", actor, {
+        to_phone: toPhone,
+        template_key: templateKey,
+        template_name: templateName,
+        language_code: languageCode,
+        meta_message_id: metaMessageId || null,
+        error_detail: errorDetail || null,
+      });
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Ошибка Meta WhatsApp Cloud API: ${errorDetail}`);
+  }
+
+  return {
+    sent: true,
+    to_phone: toPhone,
+    template_key: templateKey,
+    template_name: templateName,
+    language_code: languageCode,
+    meta_message_id: metaMessageId || null,
+    detail: "Шаблон WhatsApp отправлен через Meta Cloud API.",
   };
 }
 
@@ -2662,6 +2976,57 @@ function isAudio(fileName: string): boolean {
 
 function isDocument(fileName: string): boolean {
   return [".pdf", ".docx", ".xlsx"].some((extension) => fileName.endsWith(extension));
+}
+
+function normalizeWhatsAppTemplateName(value: unknown): string {
+  return normalizeOptionalText(value).toLowerCase().replace(/[^a-z0-9_]/g, "");
+}
+
+function normalizeWhatsAppTemplateKey(value: unknown): string {
+  return normalizeWhatsAppTemplateName(value);
+}
+
+function normalizeWhatsAppLanguageCode(value: unknown): string {
+  const normalized = normalizeOptionalText(value).replace(/[^A-Za-z0-9_-]/g, "");
+  return normalized || "ru";
+}
+
+function normalizeWhatsAppTemplateCategory(value: unknown): string {
+  const normalized = normalizeOptionalText(value).toUpperCase();
+  return ["UTILITY", "MARKETING", "AUTHENTICATION"].includes(normalized) ? normalized : "UTILITY";
+}
+
+function normalizeWhatsAppApiVersion(value: unknown): string {
+  const normalized = normalizeOptionalText(value);
+  return /^v\d+\.\d+$/.test(normalized) ? normalized : "v24.0";
+}
+
+function normalizeWhatsAppPhone(value: unknown): string {
+  let digits = normalizeOptionalText(value).replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("8")) digits = `7${digits.slice(1)}`;
+  return digits.length >= 8 && digits.length <= 15 ? digits : "";
+}
+
+function normalizeWhatsAppBodyParameters(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeOptionalText(item).slice(0, 1024))
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function normalizeMetaError(data: any, raw: string, fallback: string): string {
+  return normalizeOptionalText(data?.error?.message)
+    || normalizeOptionalText(data?.error?.error_user_msg)
+    || normalizeOptionalText(raw)
+    || fallback
+    || "неизвестная ошибка";
+}
+
+function maskIdentifier(value: string): string {
+  if (value.length <= 4) return "****";
+  return `${"*".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`;
 }
 
 function isPdf(fileName: string): boolean {

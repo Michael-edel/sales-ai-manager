@@ -64,6 +64,7 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Прием входящей почты через Cloudflare Email Routing с сохранением писем в D1.
 - Обработка сохраненного письма в заявку через `/api/email/messages/:id/process`.
 - SMTP-отправка блока D через отдельный `email-bridge`.
+- Отправка утвержденных Meta WhatsApp template messages через Cloud API.
 - Отправка заявки в OpenAI API.
 - Сохранение исходного текста и ответа ИИ в таблицу `requests`.
 - Копирование раздела D «Черновик для клиента».
@@ -87,6 +88,8 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put PARSER_SERVICE_TOKEN
 npx wrangler secret put EMAIL_BRIDGE_TOKEN
+npx wrangler secret put WHATSAPP_ACCESS_TOKEN
+npx wrangler secret put WHATSAPP_PHONE_NUMBER_ID
 npm run d1:migrate:local
 
 cd ..\frontend
@@ -499,6 +502,54 @@ npx wrangler secret put EMAIL_BRIDGE_TOKEN
 
 После настройки в интерфейсе можно отправить блок D «Черновик для клиента» по email, если в контакте заявки указан email-адрес.
 
+## Meta WhatsApp шаблоны
+
+Cloudflare-версия поддерживает ручную отправку только утвержденных Meta WhatsApp template messages. Это не WhatsApp Web и не неофициальная автоматизация.
+
+Что нужно получить в Meta:
+
+- WhatsApp Business Account;
+- подключенный номер WhatsApp Business;
+- `Phone Number ID`;
+- permanent access token с правами `whatsapp_business_messaging` и `whatsapp_business_management`;
+- заранее утвержденные templates в WhatsApp Manager.
+
+Secrets Worker:
+
+```powershell
+cd worker
+npx wrangler secret put WHATSAPP_ACCESS_TOKEN
+npx wrangler secret put WHATSAPP_PHONE_NUMBER_ID
+```
+
+Версия Graph API задается не секретной переменной в `worker/wrangler.toml`:
+
+```toml
+WHATSAPP_API_VERSION = "v24.0"
+```
+
+В интерфейсе администратор видит блок `Meta WhatsApp шаблоны`. Там нужно указать точные `template_name` и `language_code`, которые уже утверждены в Meta. Если имя в программе не совпадает с именем утвержденного шаблона Meta, отправка будет отклонена Meta API.
+
+Отправка из заявки:
+
+1. Откройте заявку.
+2. В блоке `WhatsApp Meta` укажите номер клиента в международном формате, например `77001234567`.
+3. Выберите шаблон.
+4. Если в BODY шаблона есть переменные `{{1}}`, `{{2}}`, укажите значения по строкам.
+5. Нажмите `Отправить WhatsApp`.
+
+API:
+
+```text
+GET /api/whatsapp/health
+GET /api/whatsapp/templates
+POST /api/whatsapp/templates
+PATCH /api/whatsapp/templates
+POST /api/whatsapp/send-template
+```
+
+Все отправки сохраняются в D1 `whatsapp_template_messages` и в журнале заявки `request_events`.
+
 ## Полезные команды PowerShell
 
 ```powershell
@@ -523,7 +574,7 @@ docker compose down -v
 
 ## Ограничения MVP
 
-В этой версии нет интеграции с 1С, Telegram, WhatsApp, счетами, остатками и ценами. Приложение не проводит документы и не меняет учетные данные.
+В этой версии нет прямой интеграции с 1С, Telegram, входящими WhatsApp-сообщениями, остатками и ценами. Приложение не проводит документы и не меняет учетные данные. WhatsApp сейчас поддерживается только для ручной отправки утвержденных Meta template messages из заявки.
 
 ## Cloudflare Workers + D1
 

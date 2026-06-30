@@ -782,6 +782,27 @@ button:disabled,
   gap: 14px;
 }
 
+.whatsapp-templates-area {
+  display: grid;
+  gap: 14px;
+}
+
+.integration-status {
+  align-items: center;
+  background: #f8fbf7;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  color: #4f5b53;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.integration-status span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
 .user-create-grid {
   align-items: end;
   display: grid;
@@ -886,6 +907,84 @@ button:disabled,
   justify-content: flex-end;
 }
 
+.whatsapp-template-list {
+  display: grid;
+  gap: 10px;
+}
+
+.whatsapp-template-create {
+  align-items: end;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr 0.5fr 0.7fr 1.4fr auto;
+  padding: 12px;
+}
+
+.whatsapp-template-create label {
+  display: grid;
+  gap: 5px;
+}
+
+.whatsapp-template-create span {
+  color: #6b756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.whatsapp-template-card {
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.whatsapp-template-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1.4fr 1.4fr 0.6fr 0.8fr;
+}
+
+.whatsapp-template-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.whatsapp-template-grid span,
+.whatsapp-send-grid span {
+  color: #6b756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.whatsapp-send-panel {
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+}
+
+.whatsapp-send-grid {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1fr) minmax(260px, 1.4fr) auto;
+}
+
+.whatsapp-send-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.whatsapp-params-field textarea {
+  margin-top: 0;
+  min-height: 72px;
+}
+
 .email-controls {
   justify-content: flex-start;
 }
@@ -980,6 +1079,7 @@ pre {
   .result-actions,
   .email-controls,
   .rules-actions,
+  .integration-status,
   .email-item {
     align-items: stretch;
     flex-direction: column;
@@ -998,6 +1098,9 @@ pre {
   .deal-documents-grid,
   .task-create,
   .user-create-grid,
+  .whatsapp-template-create,
+  .whatsapp-template-grid,
+  .whatsapp-send-grid,
   .user-row,
   .event-item {
     grid-template-columns: 1fr;
