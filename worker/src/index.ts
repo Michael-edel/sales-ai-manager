@@ -28,7 +28,17 @@ type CrmLink = {
   requiresContractAppendix: boolean;
 };
 
+type CurrentUser = {
+  id: number;
+  username: string;
+  display_name: string;
+  role: string;
+};
+
 type FormValue = string | File;
+
+const SESSION_COOKIE_NAME = "sales_ai_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
 const REQUIRED_OUTPUT = `
 Вывод должен строго содержать разделы:
@@ -62,15 +72,41 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (!(await isAuthorized(request, env))) {
-      return unauthorizedResponse(env);
-    }
-
     if (!url.pathname.startsWith("/api")) return env.ASSETS.fetch(request);
 
     try {
+      await ensureInitialUser(env);
+
+      if (request.method === "GET" && url.pathname === "/api/auth/me") {
+        const user = await authenticateRequest(request, env);
+        return json({ user });
+      }
+      if (request.method === "POST" && url.pathname === "/api/auth/login") {
+        return login(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+        return logout(request, env);
+      }
+
+      const currentUser = await authenticateRequest(request, env);
+      if (!currentUser) return json({ detail: "Нужно войти в программу." }, 401);
+
       if (request.method === "GET" && url.pathname === "/api/health") {
         return json({ status: "ok", runtime: "cloudflare-workers" });
+      }
+      if (request.method === "GET" && url.pathname === "/api/users") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await listUsers(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/users") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await createUser(request, env));
+      }
+      const userPasswordMatch = url.pathname.match(/^\/api\/users\/(\d+)\/password$/);
+      if (request.method === "PATCH" && userPasswordMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const user = await resetUserPassword(request, env, Number(userPasswordMatch[1]));
+        return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
       if (request.method === "GET" && url.pathname === "/api/requests") {
         return json(await listRequests(env));
@@ -145,6 +181,137 @@ export default {
     }
   },
 };
+
+async function ensureInitialUser(env: Env): Promise<void> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_users").first() as Record<string, unknown> | null;
+  if (Number(row?.count || 0) > 0) return;
+  if (!env.ACCESS_PASSWORD) throw new Error("ACCESS_PASSWORD не задан. Нельзя создать первого пользователя.");
+
+  const username = normalizeUsername(env.ACCESS_USERNAME || "manager");
+  const password = await hashPassword(env.ACCESS_PASSWORD);
+  await env.DB.prepare(`
+    INSERT INTO app_users (username, display_name, role, password_hash, password_salt)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(username, "Администратор", "admin", password.hash, password.salt).run();
+}
+
+async function login(request: Request, env: Env): Promise<Response> {
+  const payload = (await request.json()) as { username?: string; password?: string };
+  const username = normalizeUsername(payload.username || "");
+  const password = typeof payload.password === "string" ? payload.password : "";
+  if (!username || !password) return json({ detail: "Введите имя пользователя и пароль." }, 400);
+
+  const user = await env.DB.prepare(`
+    SELECT * FROM app_users WHERE username = ? AND is_active = 1
+  `).bind(username).first() as Record<string, any> | null;
+
+  if (!user || !(await verifyPassword(password, String(user.password_salt), String(user.password_hash)))) {
+    return json({ detail: "Неверное имя пользователя или пароль." }, 401);
+  }
+
+  const token = generateSessionToken();
+  const tokenHash = await sha256Base64(token);
+  const expiresAt = toSqlDateTime(new Date(Date.now() + SESSION_TTL_SECONDS * 1000));
+
+  await env.DB.prepare(`
+    INSERT INTO auth_sessions (user_id, token_hash, expires_at)
+    VALUES (?, ?, ?)
+  `).bind(Number(user.id), tokenHash, expiresAt).run();
+  await env.DB.prepare(`
+    UPDATE app_users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
+  `).bind(Number(user.id)).run();
+
+  const currentUser = userToCurrentUser(user);
+  return jsonWithHeaders({ user: currentUser }, 200, {
+    "Set-Cookie": buildSessionCookie(request, token, SESSION_TTL_SECONDS),
+  });
+}
+
+async function logout(request: Request, env: Env): Promise<Response> {
+  const token = getCookie(request, SESSION_COOKIE_NAME);
+  if (token) {
+    await env.DB.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").bind(await sha256Base64(token)).run();
+  }
+  return jsonWithHeaders({ ok: true }, 200, {
+    "Set-Cookie": buildSessionCookie(request, "", 0),
+  });
+}
+
+async function authenticateRequest(request: Request, env: Env): Promise<CurrentUser | null> {
+  const token = getCookie(request, SESSION_COOKIE_NAME);
+  if (!token) return null;
+
+  const tokenHash = await sha256Base64(token);
+  const row = await env.DB.prepare(`
+    SELECT u.id, u.username, u.display_name, u.role
+    FROM auth_sessions s
+    INNER JOIN app_users u ON u.id = s.user_id
+    WHERE s.token_hash = ?
+      AND s.expires_at > datetime('now')
+      AND u.is_active = 1
+  `).bind(tokenHash).first() as Record<string, any> | null;
+  if (!row) return null;
+
+  await env.DB.prepare(`
+    UPDATE auth_sessions SET last_seen_at = datetime('now') WHERE token_hash = ?
+  `).bind(tokenHash).run();
+
+  return userToCurrentUser(row);
+}
+
+async function listUsers(env: Env) {
+  const result = await env.DB.prepare(`
+    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    FROM app_users
+    ORDER BY id ASC
+  `).all();
+  return result.results;
+}
+
+async function createUser(request: Request, env: Env) {
+  const payload = (await request.json()) as {
+    username?: string;
+    display_name?: string;
+    role?: string;
+    password?: string;
+  };
+  const username = normalizeUsername(payload.username || "");
+  const displayName = normalizeOptionalText(payload.display_name) || username;
+  const role = normalizeRole(payload.role);
+  const passwordValue = typeof payload.password === "string" ? payload.password : "";
+  if (!username) throw new Error("Имя пользователя пустое.");
+  if (passwordValue.length < 8) throw new Error("Пароль должен быть не короче 8 символов.");
+
+  const password = await hashPassword(passwordValue);
+  const result = await env.DB.prepare(`
+    INSERT INTO app_users (username, display_name, role, password_hash, password_salt)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(username, displayName, role, password.hash, password.salt).run();
+  const id = Number(result.meta.last_row_id);
+  return env.DB.prepare(`
+    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    FROM app_users WHERE id = ?
+  `).bind(id).first();
+}
+
+async function resetUserPassword(request: Request, env: Env, userId: number) {
+  const payload = (await request.json()) as { password?: string };
+  const passwordValue = typeof payload.password === "string" ? payload.password : "";
+  if (passwordValue.length < 8) throw new Error("Пароль должен быть не короче 8 символов.");
+
+  const password = await hashPassword(passwordValue);
+  const result = await env.DB.prepare(`
+    UPDATE app_users
+    SET password_hash = ?, password_salt = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(password.hash, password.salt, userId).run();
+  if (!result.meta.changes) return null;
+  await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
+  return env.DB.prepare(`
+    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    FROM app_users WHERE id = ?
+  `).bind(userId).first();
+}
 
 async function processText(request: Request, env: Env) {
   const payload = (await request.json()) as Metadata & { original_text?: string };
@@ -1003,61 +1170,116 @@ function geminiHeaders(env: Env): HeadersInit {
   };
 }
 
-async function isAuthorized(request: Request, env: Env): Promise<boolean> {
-  if (!env.ACCESS_PASSWORD) return false;
-
-  const authorization = request.headers.get("Authorization") || "";
-  const [scheme, encoded] = authorization.split(" ");
-  if (scheme !== "Basic" || !encoded) return false;
-
-  let decoded = "";
-  try {
-    decoded = atob(encoded);
-  } catch {
-    return false;
-  }
-
-  const separatorIndex = decoded.indexOf(":");
-  if (separatorIndex < 0) return false;
-
-  const username = decoded.slice(0, separatorIndex);
-  const password = decoded.slice(separatorIndex + 1);
-  const expectedUsername = env.ACCESS_USERNAME || "manager";
-
-  return (await safeEquals(username, expectedUsername)) && (await safeEquals(password, env.ACCESS_PASSWORD));
+function isAdmin(user: CurrentUser): boolean {
+  return user.role === "admin";
 }
 
-async function safeEquals(actual: string, expected: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const actualHash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(actual)));
-  const expectedHash = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(expected)));
+function userToCurrentUser(row: Record<string, any>): CurrentUser {
+  return {
+    id: Number(row.id),
+    username: String(row.username),
+    display_name: String(row.display_name),
+    role: String(row.role),
+  };
+}
 
-  let diff = actualHash.length ^ expectedHash.length;
-  const length = Math.max(actualHash.length, expectedHash.length);
+function normalizeUsername(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
+}
+
+function normalizeRole(value: unknown): string {
+  const role = normalizeOptionalText(value) || "manager";
+  return ["admin", "manager", "accountant", "viewer"].includes(role) ? role : "manager";
+}
+
+async function hashPassword(password: string, saltBase64 = ""): Promise<{ hash: string; salt: string }> {
+  const salt = saltBase64 ? base64ToBytes(saltBase64) : crypto.getRandomValues(new Uint8Array(16));
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt,
+      iterations: 120000,
+    },
+    key,
+    256,
+  );
+  return {
+    hash: bytesToBase64(new Uint8Array(bits)),
+    salt: bytesToBase64(salt),
+  };
+}
+
+async function verifyPassword(password: string, salt: string, expectedHash: string): Promise<boolean> {
+  const actual = await hashPassword(password, salt);
+  return timingSafeEqualBytes(base64ToBytes(actual.hash), base64ToBytes(expectedHash));
+}
+
+function timingSafeEqualBytes(actual: Uint8Array, expected: Uint8Array): boolean {
+  let diff = actual.length ^ expected.length;
+  const length = Math.max(actual.length, expected.length);
   for (let index = 0; index < length; index += 1) {
-    diff |= (actualHash[index] || 0) ^ (expectedHash[index] || 0);
+    diff |= (actual[index] || 0) ^ (expected[index] || 0);
   }
   return diff === 0;
 }
 
-function unauthorizedResponse(env: Env): Response {
-  const body = env.ACCESS_PASSWORD
-    ? "Нужен логин и пароль для доступа к ИИ-менеджеру."
-    : "ACCESS_PASSWORD не задан. Установите Cloudflare Worker secret ACCESS_PASSWORD.";
+function generateSessionToken(): string {
+  return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
 
-  return new Response(body, {
-    status: 401,
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "WWW-Authenticate": 'Basic realm="Sales AI Manager", charset="UTF-8"',
-      "Cache-Control": "no-store",
-    },
-  });
+async function sha256Base64(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return bytesToBase64(new Uint8Array(digest));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function getCookie(request: Request, name: string): string {
+  const cookie = request.headers.get("Cookie") || "";
+  const parts = cookie.split(";").map((part) => part.trim());
+  for (const part of parts) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex < 0) continue;
+    if (part.slice(0, separatorIndex) === name) return decodeURIComponent(part.slice(separatorIndex + 1));
+  }
+  return "";
+}
+
+function buildSessionCookie(request: Request, token: string, maxAge: number): string {
+  const url = new URL(request.url);
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function toSqlDateTime(date: Date): string {
+  return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
 function json(data: unknown, status = 200): Response {
+  return jsonWithHeaders(data, status);
+}
+
+function jsonWithHeaders(data: unknown, status = 200, extraHeaders: HeadersInit = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: { "Content-Type": "application/json; charset=utf-8", ...extraHeaders },
   });
 }

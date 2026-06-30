@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Clipboard, FileText, Loader2, Mail, Plus, Upload } from "lucide-react";
+import { CheckSquare, Clipboard, FileText, Loader2, LogOut, Mail, Plus, Shield, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
+  createUser,
   createRequestTask,
   getCrmSummary,
+  getCurrentUser,
   listEmailMessages,
   listOpenTasks,
   listRequestEvents,
   listRequestTasks,
   listRequests,
+  listUsers,
+  login,
+  logout,
   processEmailMessage,
   processText,
+  resetUserPassword,
   updateDealDocuments,
   updateRequestTask,
   updateRequestStatus,
@@ -90,7 +96,27 @@ const TASK_STATUS_LABELS = {
   cancelled: "Отменена",
 };
 
+const ROLE_OPTIONS = [
+  ["admin", "Администратор"],
+  ["manager", "Менеджер"],
+  ["accountant", "Бухгалтер"],
+  ["viewer", "Просмотр"],
+];
+
+const ROLE_LABELS = Object.fromEntries(ROLE_OPTIONS);
+
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authUser, setAuthUser] = useState(null);
+  const [loginDraft, setLoginDraft] = useState({ username: "manager", password: "" });
+  const [loginError, setLoginError] = useState("");
+  const [users, setUsers] = useState([]);
+  const [userDraft, setUserDraft] = useState({
+    username: "",
+    display_name: "",
+    role: "manager",
+    password: "",
+  });
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [requests, setRequests] = useState([]);
@@ -131,6 +157,12 @@ export default function App() {
   const resultSections = useMemo(() => splitSections(selected?.ai_result), [selected]);
   const clientBlock = useMemo(() => extractClientBlock(selected?.ai_result || ""), [selected]);
 
+  async function refreshUsers() {
+    if (authUser?.role !== "admin") return;
+    const items = await listUsers();
+    setUsers(items);
+  }
+
   async function refreshHistory(latestItem = null) {
     const items = await listRequests();
     setRequests(items);
@@ -149,9 +181,77 @@ export default function App() {
   }
 
   useEffect(() => {
+    getCurrentUser()
+      .then(({ user }) => {
+        setAuthUser(user);
+        setAuthLoading(false);
+      })
+      .catch(() => setAuthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
     refreshHistory().catch((err) => setError(err.message));
     refreshEmails().catch((err) => setEmailStatus(err.message));
-  }, []);
+    refreshUsers().catch(() => {});
+  }, [authUser]);
+
+  useEffect(() => {
+    refreshUsers().catch(() => {});
+  }, [authUser?.role]);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    setLoginError("");
+    setAuthLoading(true);
+    try {
+      const { user } = await login(loginDraft.username, loginDraft.password);
+      setAuthUser(user);
+      setLoginDraft((current) => ({ ...current, password: "" }));
+    } catch (err) {
+      setLoginError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    await logout().catch(() => {});
+    setAuthUser(null);
+    setRequests([]);
+    setSelected(null);
+    setOpenTasks([]);
+    setCrmSummary(null);
+  }
+
+  async function handleCreateUser() {
+    setError("");
+    setLoading(true);
+    try {
+      await createUser(userDraft);
+      setUserDraft({ username: "", display_name: "", role: "manager", password: "" });
+      await refreshUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResetUserPassword(user) {
+    const password = window.prompt(`Новый пароль для ${user.username}`);
+    if (!password) return;
+    setError("");
+    setLoading(true);
+    try {
+      await resetUserPassword(user.id, password);
+      await refreshUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!selected) {
@@ -338,6 +438,52 @@ export default function App() {
     if (requestItem) setSelected(requestItem);
   }
 
+  if (authLoading && !authUser) {
+    return (
+      <main className="auth-shell">
+        <Loader2 className="spin" size={28} />
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <main className="auth-shell">
+        <form className="login-card" onSubmit={handleLogin}>
+          <div className="brand">
+            <FileText size={24} />
+            <div>
+              <h1>ИИ-менеджер</h1>
+              <p>ТОО Michael</p>
+            </div>
+          </div>
+          <label>
+            <span>Имя пользователя</span>
+            <input
+              value={loginDraft.username}
+              onChange={(event) => setLoginDraft((current) => ({ ...current, username: event.target.value }))}
+              autoComplete="username"
+            />
+          </label>
+          <label>
+            <span>Пароль</span>
+            <input
+              type="password"
+              value={loginDraft.password}
+              onChange={(event) => setLoginDraft((current) => ({ ...current, password: event.target.value }))}
+              autoComplete="current-password"
+            />
+          </label>
+          {loginError && <div className="error-box">{loginError}</div>}
+          <button className="primary-button" disabled={authLoading || !loginDraft.username || !loginDraft.password}>
+            {authLoading ? <Loader2 className="spin" size={18} /> : null}
+            Войти
+          </button>
+        </form>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <aside className="history-panel">
@@ -347,6 +493,16 @@ export default function App() {
             <h1>ИИ-менеджер</h1>
             <p>ТОО Michael</p>
           </div>
+        </div>
+
+        <div className="user-card">
+          <div>
+            <strong>{authUser.display_name || authUser.username}</strong>
+            <span>{ROLE_LABELS[authUser.role] || authUser.role}</span>
+          </div>
+          <button className="icon-button" onClick={handleLogout} title="Выйти">
+            <LogOut size={18} />
+          </button>
         </div>
 
         <div className="crm-summary">
@@ -581,6 +737,77 @@ export default function App() {
             ))}
           </div>
         </section>
+
+        {authUser.role === "admin" && (
+          <section className="input-area users-area">
+            <div className="section-title">
+              <h2>Пользователи</h2>
+              <p>Аккаунты менеджеров Michael и бухгалтерии</p>
+            </div>
+
+            <div className="user-create-grid">
+              <label>
+                <span>Логин</span>
+                <input
+                  value={userDraft.username}
+                  onChange={(event) => setUserDraft((current) => ({ ...current, username: event.target.value }))}
+                  placeholder="manager1"
+                />
+              </label>
+              <label>
+                <span>Имя</span>
+                <input
+                  value={userDraft.display_name}
+                  onChange={(event) => setUserDraft((current) => ({ ...current, display_name: event.target.value }))}
+                  placeholder="Менеджер Michael"
+                />
+              </label>
+              <label>
+                <span>Роль</span>
+                <select
+                  value={userDraft.role}
+                  onChange={(event) => setUserDraft((current) => ({ ...current, role: event.target.value }))}
+                >
+                  {ROLE_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Пароль</span>
+                <input
+                  type="password"
+                  value={userDraft.password}
+                  onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="минимум 8 символов"
+                />
+              </label>
+              <button
+                className="secondary-button"
+                onClick={handleCreateUser}
+                disabled={loading || !userDraft.username || !userDraft.password}
+              >
+                <UserPlus size={18} />
+                Добавить
+              </button>
+            </div>
+
+            <div className="users-list">
+              {users.map((user) => (
+                <article className="user-row" key={user.id}>
+                  <Shield size={18} />
+                  <div>
+                    <strong>{user.display_name}</strong>
+                    <span>{user.username} · {ROLE_LABELS[user.role] || user.role}</span>
+                  </div>
+                  <button className="secondary-button" onClick={() => handleResetUserPassword(user)} disabled={loading}>
+                    Сбросить пароль
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="result-area">
           <div className="result-header">

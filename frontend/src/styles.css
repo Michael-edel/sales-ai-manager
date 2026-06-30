@@ -25,6 +25,36 @@ textarea {
   min-height: 100vh;
 }
 
+.auth-shell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-card {
+  background: #ffffff;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  max-width: 420px;
+  padding: 24px;
+  width: 100%;
+}
+
+.login-card label {
+  display: grid;
+  gap: 6px;
+}
+
+.login-card span {
+  color: #4f5b53;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .history-panel {
   background: #ffffff;
   border-right: 1px solid #d9dfd7;
@@ -51,6 +81,45 @@ textarea {
 .muted {
   color: #6b756e;
   margin: 4px 0 0;
+}
+
+.user-card {
+  align-items: center;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 10px;
+}
+
+.user-card div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-card strong,
+.user-card span {
+  overflow-wrap: anywhere;
+}
+
+.user-card span {
+  color: #6b756e;
+  font-size: 12px;
+}
+
+.icon-button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #cbd3c8;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
 }
 
 .history-list {
@@ -576,6 +645,54 @@ button:disabled,
   gap: 14px;
 }
 
+.users-area {
+  display: grid;
+  gap: 14px;
+}
+
+.user-create-grid {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+}
+
+.user-create-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.user-create-grid span {
+  color: #6b756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.users-list {
+  display: grid;
+  gap: 8px;
+}
+
+.user-row {
+  align-items: center;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.user-row div {
+  display: grid;
+  gap: 3px;
+}
+
+.user-row span {
+  color: #6b756e;
+  overflow-wrap: anywhere;
+}
+
 .email-controls {
   justify-content: flex-start;
 }
@@ -664,6 +781,8 @@ pre {
   .status-editor,
   .deal-documents-grid,
   .task-create,
+  .user-create-grid,
+  .user-row,
   .event-item {
     grid-template-columns: 1fr;
   }

@@ -1,14 +1,52 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, options);
+  const response = await fetch(`${API_BASE_URL}${path}`, { credentials: "include", ...options });
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(data?.detail || "Ошибка запроса к серверу");
+    const error = new Error(data?.detail || "Ошибка запроса к серверу");
+    error.status = response.status;
+    throw error;
   }
 
   return data;
+}
+
+export function getCurrentUser() {
+  return request("/auth/me");
+}
+
+export function login(username, password) {
+  return request("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout() {
+  return request("/auth/logout", { method: "POST" });
+}
+
+export function listUsers() {
+  return request("/users");
+}
+
+export function createUser(payload) {
+  return request("/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resetUserPassword(userId, password) {
+  return request(`/users/${userId}/password`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
 }
 
 export function listRequests() {
