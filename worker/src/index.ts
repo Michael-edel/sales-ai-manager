@@ -1271,71 +1271,117 @@ async function generateContractAppendix(env: Env, id: number, currentUser: Curre
 
 function buildContractAppendix(item: Record<string, any>) {
   const requestId = Number(item.id || 0);
-  const clientCompany = normalizeOptionalText(item.client_company) || "ТОО KBI Energy";
   const invoiceNumber = normalizeOptionalText(item.invoice_number) || "уточняется";
   const invoiceDate = normalizeOptionalText(item.invoice_date) || "уточняется";
-  const documentDate = invoiceDate === "уточняется" ? new Date().toISOString().slice(0, 10) : invoiceDate;
-  const sourceSummary = buildAppendixSourceSummary(item);
-  const appendixSubject = invoiceNumber === "уточняется"
-    ? `заявке № ${requestId}`
-    : `счету на оплату № ${invoiceNumber} от ${invoiceDate}`;
-  const appendixTitle = `к ${appendixSubject}`;
-
-  const text = [
-    "ПРИЛОЖЕНИЕ № ____",
-    "к Договору поставки № ____ от __.__.____ г.",
-    "",
-    appendixTitle,
-    "",
-    `Дата приложения: ${documentDate}`,
-    "",
-    "1. Стороны",
-    "Поставщик: ТОО Michael.",
-    `Покупатель: ${clientCompany}.`,
-    "",
-    "2. Предмет приложения",
-    `Поставщик обязуется поставить, а Покупатель принять и оплатить товар по ${appendixSubject}.`,
-    "Приложение оформляется к годовому договору с VIP/оптовым клиентом KBI Energy.",
-    "",
-    "3. Спецификация и коммерческие условия",
-    sourceSummary,
-    "",
-    "4. Цена, НДС и документы",
-    "Все цены для клиента указываются с НДС от ТОО Michael.",
-    `Счет на оплату: № ${invoiceNumber} от ${invoiceDate}.`,
-    "Счет и настоящее приложение направляются клиенту вместе по рабочему каналу связи.",
-    "",
-    "5. Прочие условия",
-    "Условия оплаты, поставки, приемки товара и документооборота применяются согласно годовому договору поставки между сторонами.",
-    "Настоящее приложение является неотъемлемой частью договора и действует до полного исполнения обязательств по соответствующему счету.",
-    "",
-    "6. Подписи сторон",
-    "",
-    "Поставщик: ТОО Michael __________________ /____________/",
-    "Покупатель: _____________________________ /____________/",
-  ].join("\n");
+  const data = buildKbiAppendixData(item, requestId, invoiceNumber, invoiceDate);
 
   return {
-    appendix_text: text,
-    appendix_html: buildAppendixHtml(text, requestId),
-    file_name: buildAppendixFileName(requestId, invoiceNumber, clientCompany),
+    appendix_text: buildKbiAppendixText(data),
+    appendix_html: buildAppendixHtml(data),
+    file_name: buildAppendixFileName(requestId, invoiceNumber, "KBI-Energy-Group"),
   };
 }
 
-function buildAppendixSourceSummary(item: Record<string, any>): string {
-  const extractedData = extractAiSection(normalizeOptionalText(item.ai_result), "B");
-  const oneCDecision = extractAiSection(normalizeOptionalText(item.ai_result), "C");
-  const sourceParts = [
-    extractedData ? cleanAiSectionTitle(extractedData) : "",
-    oneCDecision ? cleanAiSectionTitle(oneCDecision) : "",
-  ].filter(Boolean);
+type AppendixTableRow = {
+  number: number;
+  code: string;
+  name: string;
+  unit: string;
+  quantity: string;
+  price: string;
+  sum: string;
+  warranty: string;
+  sumValue: number | null;
+};
 
-  if (sourceParts.length > 0) return sourceParts.join("\n\n");
+type KbiAppendixData = {
+  requestId: number;
+  appendixDateRu: string;
+  contractNumber: string;
+  contractDateRu: string;
+  rows: AppendixTableRow[];
+  totalText: string;
+  totalWords: string;
+  paymentTerm: string;
+  deliveryPlace: string;
+};
 
-  const originalText = normalizeOptionalText(item.original_text);
-  if (originalText) return limitText(originalText, 4000);
+const KBI_CONTRACT_NUMBER = "71-02-26/СН";
+const KBI_CONTRACT_DATE_RU = "17 февраля 2026 года";
+const KBI_DEFAULT_DELIVERY_PLACE = "DDP, г. Экибастуз.";
+const KBI_DEFAULT_PAYMENT_TERM = "20 календарных дней с момента получения Товара.";
+const KBI_DEFAULT_WARRANTY = "14 дней";
 
-  return "Спецификация товара, количество, цена с НДС и срок поставки заполняются по счету и подтвержденной заявке клиента.";
+const KBI_BUYER_REQUISITES = [
+  "Покупатель:",
+  "ТОО «KBI Energy Group»",
+  "БИН 060340017540",
+  "юридический адрес:",
+  "010000, Республика Казахстан,",
+  "г. Астана, район Нура",
+  "ул. Кайым Мухамедханова",
+  "здание 5 н.п. 43",
+  "фактический адрес:",
+  "S15F6F4, Павлодарская область,",
+  "г. Экибастуз, ул. Железнодорожная строение 28",
+  "Свидетельство по НДС",
+  "Серии 62001 от 1044193 от 24.07.2023г.",
+  "Банковские реквизиты:",
+  "АО «Народный банк Казахстана»",
+  "ИИК KZ76601A361000707821 KZT",
+  "БИК HSBKKZKX",
+  "тел: 8 (7187) 278-543",
+  "эл.почта: too_kbc@mail.ru",
+];
+
+const MICHAEL_SUPPLIER_REQUISITES = [
+  "Поставщик:",
+  "ТОО «Michael»",
+  "БИН 170940023817",
+  "Юридический и фактический адрес:",
+  "141200, Республика Казахстан,",
+  "Павлодарская обл., г. Экибастуз,",
+  "ул. Абая, здание 60/1, офис 113",
+  "Банковские реквизиты:",
+  "Банк: АО \"ForteBank\"",
+  "БИК IRTYKZKA",
+  "ИИК KZ0396506F0007735246",
+  "Свидетельство НДС Серия 45001 № 0057470 от",
+  "20 сентября 2017 года.",
+  "Телефоны: +7(7187) 74-08-64",
+  "+77775550016",
+  "Эл.почта: direktor@edel.kz",
+];
+
+function buildKbiAppendixData(
+  item: Record<string, any>,
+  requestId: number,
+  invoiceNumber: string,
+  invoiceDate: string,
+): KbiAppendixData {
+  const sourceText = [
+    normalizeOptionalText(item.ai_result),
+    normalizeOptionalText(item.original_text),
+    invoiceNumber !== "уточняется" ? `Номер счета: ${invoiceNumber}` : "",
+    invoiceDate !== "уточняется" ? `Дата счета: ${invoiceDate}` : "",
+  ].filter(Boolean).join("\n\n");
+  const rows = parseAppendixRows(sourceText);
+  const appendixRows = rows.length ? rows : [emptyAppendixRow(1)];
+  const totalValue = appendixRows.reduce((sum, row) => row.sumValue !== null ? sum + row.sumValue : sum, 0);
+  const hasTotal = appendixRows.some((row) => row.sumValue !== null);
+  const totalText = hasTotal ? formatMoney(totalValue) : "________";
+
+  return {
+    requestId,
+    appendixDateRu: formatRuDate(invoiceDate) || formatRuDate(new Date().toISOString().slice(0, 10)) || "____ __________ ____ года",
+    contractNumber: KBI_CONTRACT_NUMBER,
+    contractDateRu: KBI_CONTRACT_DATE_RU,
+    rows: appendixRows,
+    totalText,
+    totalWords: hasTotal ? capitalizeFirst(moneyToRussianWords(totalValue)) : "________________",
+    deliveryPlace: extractDeliveryPlace(sourceText) || KBI_DEFAULT_DELIVERY_PLACE,
+    paymentTerm: extractPaymentTerm(sourceText) || KBI_DEFAULT_PAYMENT_TERM,
+  };
 }
 
 function extractAiSection(value: string, letter: string): string {
@@ -1350,32 +1396,410 @@ function cleanAiSectionTitle(value: string): string {
   return value.replace(/^[A-F]\.\s+[^\n]+\n*/u, "").trim();
 }
 
-function buildAppendixHtml(text: string, requestId: number): string {
-  const paragraphs = text
-    .split("\n")
-    .map((line) => {
-      if (!line.trim()) return "<p>&nbsp;</p>";
-      return `<p>${escapeHtml(line)}</p>`;
-    })
+function parseAppendixRows(sourceText: string): AppendixTableRow[] {
+  const markdownRows = parseMarkdownTableRows(sourceText);
+  if (markdownRows.length) return markdownRows;
+
+  const sectionB = cleanAiSectionTitle(extractAiSection(sourceText, "B"));
+  const source = sectionB || sourceText;
+  const name = firstMatch(source, [
+    /Наименование(?: товара)?\s*[:\-]\s*([^\n]+)/i,
+    /Товар\s*[:\-]\s*([^\n]+)/i,
+    /Номенклатура\s*[:\-]\s*([^\n]+)/i,
+  ]);
+  const quantity = firstMatch(source, [
+    /Кол-?во\s*[:\-]\s*([^\n]+)/i,
+    /Количество(?: по запросу клиента)?\s*[:\-]\s*([^\n]+)/i,
+  ]);
+  const price = firstMatch(source, [
+    /Цена(?: за ед\.? изм\.?)?(?:[^:\n]*НДС[^:\n]*)?\s*[:\-]\s*([0-9][0-9\s.,]*)/i,
+    /Цена с НДС\s*[:\-]\s*([0-9][0-9\s.,]*)/i,
+  ]);
+  const sum = firstMatch(source, [
+    /Сумма(?: с НДС[^:\n]*)?\s*[:\-]\s*([0-9][0-9\s.,]*)/i,
+    /Итого(?: с НДС)?\s*[:\-]\s*([0-9][0-9\s.,]*)/i,
+  ]);
+  const unit = firstMatch(source, [
+    /Ед\.?\s*изм\.?\s*[:\-]\s*([^\n]+)/i,
+    /Единица измерения\s*[:\-]\s*([^\n]+)/i,
+  ]) || unitFromQuantity(quantity);
+  const code = firstMatch(source, [
+    /Код\s*[:\-]\s*([0-9A-Za-zА-Яа-я._/-]+)/i,
+    /Артикул\s*[:\-]\s*([0-9A-Za-zА-Яа-я._/-]+)/i,
+  ]);
+  const warranty = firstMatch(source, [/Гарантия\s*[:\-]\s*([^\n]+)/i]) || KBI_DEFAULT_WARRANTY;
+  const computedSum = sum || computeRowSum(quantity, price);
+
+  if (!name && !quantity && !price && !computedSum && !code) return [];
+
+  return [
+    makeAppendixRow(1, {
+      code,
+      name,
+      unit,
+      quantity,
+      price,
+      sum: computedSum,
+      warranty,
+    }),
+  ];
+}
+
+function parseMarkdownTableRows(sourceText: string): AppendixTableRow[] {
+  const rows: AppendixTableRow[] = [];
+  const tableLines = sourceText.split(/\r?\n/).filter((line) => line.includes("|"));
+  for (const line of tableLines) {
+    const cells = line.split("|").map((cell) => normalizeTableCell(cell)).filter(Boolean);
+    if (cells.length < 6) continue;
+    if (cells.some((cell) => /^-+$/.test(cell.replace(/\s/g, "")))) continue;
+    const normalizedLine = cells.join(" ").toLowerCase();
+    if (normalizedLine.includes("наименование") || normalizedLine.includes("цена за")) continue;
+
+    const row = cells.length >= 8
+      ? makeAppendixRow(rows.length + 1, {
+          code: cells[1],
+          name: cells[2],
+          unit: cells[3],
+          quantity: cells[4],
+          price: cells[5],
+          sum: cells[6],
+          warranty: cells[7],
+        })
+      : makeAppendixRow(rows.length + 1, {
+          code: cells[0],
+          name: cells[1],
+          unit: cells[2],
+          quantity: cells[3],
+          price: cells[4],
+          sum: cells[5],
+          warranty: cells[6] || KBI_DEFAULT_WARRANTY,
+        });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function makeAppendixRow(number: number, raw: Partial<AppendixTableRow>): AppendixTableRow {
+  const sum = cleanAppendixValue(raw.sum) || computeRowSum(raw.quantity || "", raw.price || "");
+  return {
+    number,
+    code: cleanAppendixValue(raw.code) || "уточняется",
+    name: cleanAppendixValue(raw.name) || "Наименование товара уточняется по счету",
+    unit: cleanAppendixValue(raw.unit) || unitFromQuantity(raw.quantity || "") || "шт.",
+    quantity: cleanQuantity(raw.quantity) || "уточняется",
+    price: formatMoneyText(raw.price),
+    sum: formatMoneyText(sum),
+    warranty: cleanAppendixValue(raw.warranty) || KBI_DEFAULT_WARRANTY,
+    sumValue: parseMoneyText(sum),
+  };
+}
+
+function emptyAppendixRow(number: number): AppendixTableRow {
+  return makeAppendixRow(number, {
+    warranty: KBI_DEFAULT_WARRANTY,
+  });
+}
+
+function buildKbiAppendixText(data: KbiAppendixData): string {
+  const rows = data.rows
+    .map((row) => `${row.number}. ${row.code} | ${row.name} | ${row.unit} | ${row.quantity} | ${row.price} | ${row.sum} | ${row.warranty}`)
     .join("\n");
+  return [
+    `Приложение № ____ от ${data.appendixDateRu}`,
+    `к Договору поставки № ${data.contractNumber}`,
+    `от ${data.contractDateRu}`,
+    "",
+    "№ | Код | Наименование | Ед. изм. | Кол-во | Цена за ед. изм., с НДС 16% | Сумма с НДС 16% | Гарантия",
+    rows,
+    "",
+    `Общая стоимость составляет ${data.totalText} (${data.totalWords}) тенге 00 тиын, с учетом НДС 16%.`,
+    `Условия поставки и место: ${data.deliveryPlace}`,
+    `Срок оплаты: ${data.paymentTerm}`,
+    "",
+    "Подписи Сторон:",
+    "",
+    KBI_BUYER_REQUISITES.join("\n"),
+    "",
+    MICHAEL_SUPPLIER_REQUISITES.join("\n"),
+  ].join("\n");
+}
+
+function buildAppendixHtml(data: KbiAppendixData): string {
+  const tableRows = data.rows.map((row) => `
+      <tr>
+        <td class="center">${row.number}</td>
+        <td class="center">${escapeHtml(row.code)}</td>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="center">${escapeHtml(row.unit)}</td>
+        <td class="center">${escapeHtml(row.quantity)}</td>
+        <td class="money">${escapeHtml(row.price)}</td>
+        <td class="money">${escapeHtml(row.sum)}</td>
+        <td class="center">${escapeHtml(row.warranty)}</td>
+      </tr>
+    `).join("");
+  const buyerRequisites = renderRequisites(KBI_BUYER_REQUISITES);
+  const supplierRequisites = renderRequisites(MICHAEL_SUPPLIER_REQUISITES);
 
   return [
     "<!doctype html>",
     '<html lang="ru">',
     "<head>",
     '<meta charset="utf-8">',
-    `<title>Приложение к договору - заявка ${requestId}</title>`,
+    `<title>Приложение к договору - заявка ${data.requestId}</title>`,
     "<style>",
-    "body { font-family: Arial, sans-serif; color: #111; line-height: 1.35; margin: 40px; }",
+    "@page { size: A4; margin: 18mm 17mm 15mm 17mm; }",
+    "body { font-family: 'Times New Roman', Times, serif; color: #111; font-size: 12pt; line-height: 1.18; }",
     "p { margin: 0 0 8px; }",
-    "p:first-child { font-weight: 700; text-align: center; }",
+    ".appendix-title { font-weight: 700; margin-left: auto; margin-bottom: 42px; text-align: center; width: 360px; }",
+    ".appendix-title p { margin: 0; }",
+    "table.items { border-collapse: collapse; margin: 0 auto 0; table-layout: fixed; width: 100%; }",
+    ".items th, .items td { border: 1px solid #333; padding: 6px 7px; vertical-align: middle; }",
+    ".items th { font-weight: 700; text-align: center; }",
+    ".center { text-align: center; }",
+    ".money { text-align: right; white-space: nowrap; }",
+    ".summary { margin-top: 0; }",
+    ".terms { margin-top: 18px; }",
+    ".sign-title { font-weight: 700; margin: 54px 0 16px; text-align: center; }",
+    ".requisites { display: grid; gap: 58px; grid-template-columns: 1fr 1fr; }",
+    ".party p { margin: 0; }",
+    ".party p:nth-child(1), .party p:nth-child(2), .party .bold { font-weight: 700; }",
+    ".party .italic { font-style: italic; }",
+    ".signatures { display: grid; gap: 58px; grid-template-columns: 1fr 1fr; margin-top: 72px; }",
+    ".signature-role { font-weight: 700; margin-bottom: 54px; }",
+    ".signature-line { align-items: baseline; display: grid; gap: 8px; grid-template-columns: auto 1fr auto; }",
+    ".line { border-bottom: 1px solid #111; height: 1px; }",
     "</style>",
     "</head>",
     "<body>",
-    paragraphs,
+    '<div class="appendix-title">',
+    `<p>Приложение №____ от ${escapeHtml(data.appendixDateRu)}</p>`,
+    `<p>к Договору поставки № ${escapeHtml(data.contractNumber)}</p>`,
+    `<p>от ${escapeHtml(data.contractDateRu)}</p>`,
+    "</div>",
+    '<table class="items">',
+    "<colgroup>",
+    '<col style="width: 5%">',
+    '<col style="width: 14%">',
+    '<col style="width: 28%">',
+    '<col style="width: 8%">',
+    '<col style="width: 8%">',
+    '<col style="width: 14%">',
+    '<col style="width: 14%">',
+    '<col style="width: 9%">',
+    "</colgroup>",
+    "<thead>",
+    "<tr>",
+    "<th>№</th>",
+    "<th>Код</th>",
+    "<th>Наименование</th>",
+    "<th>Ед.<br>изм.</th>",
+    "<th>Кол-<br>во</th>",
+    "<th>Цена за ед. изм.,<br>с НДС 16%</th>",
+    "<th>Сумма с<br>НДС 16%</th>",
+    "<th>Гарантия</th>",
+    "</tr>",
+    "</thead>",
+    `<tbody>${tableRows}</tbody>`,
+    "</table>",
+    `<p class="summary">Общая стоимость составляет ${escapeHtml(data.totalText)} (${escapeHtml(data.totalWords)}) тенге 00 тиын, с учетом НДС 16%.</p>`,
+    '<div class="terms">',
+    `<p>Условия поставки и место: ${escapeHtml(data.deliveryPlace)}</p>`,
+    `<p>Срок оплаты: ${escapeHtml(data.paymentTerm)}</p>`,
+    "</div>",
+    '<p class="sign-title">Подписи Сторон:</p>',
+    '<div class="requisites">',
+    `<div class="party">${buyerRequisites}</div>`,
+    `<div class="party">${supplierRequisites}</div>`,
+    "</div>",
+    '<div class="signatures">',
+    '<div><p class="signature-role">Директор</p><div class="signature-line"><span>М.П.</span><span class="line"></span><span>Абдрахманов Д.Е.</span></div></div>',
+    '<div><p class="signature-role">Директор</p><div class="signature-line"><span>М.П.</span><span class="line"></span><span>Ширин М.М.</span></div></div>',
+    "</div>",
     "</body>",
     "</html>",
   ].join("\n");
+}
+
+function renderRequisites(lines: string[]): string {
+  return lines.map((line) => {
+    const className = ["юридический адрес:", "фактический адрес:"].includes(line)
+        ? "italic"
+        : line.endsWith(":")
+          ? "bold"
+          : "";
+    return `<p${className ? ` class="${className}"` : ""}>${escapeHtml(line)}</p>`;
+  }).join("\n");
+}
+
+function firstMatch(value: string, patterns: RegExp[]): string {
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match?.[1]) return cleanAppendixValue(match[1]);
+  }
+  return "";
+}
+
+function cleanAppendixValue(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/^\s*[-•]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTableCell(value: string): string {
+  return cleanAppendixValue(value.replace(/<br\s*\/?>/gi, " "));
+}
+
+function cleanQuantity(value: unknown): string {
+  const text = cleanAppendixValue(value);
+  if (!text) return "";
+  const match = text.match(/([0-9]+(?:[,.][0-9]+)?)/);
+  return match ? match[1].replace(".", ",") : text;
+}
+
+function unitFromQuantity(value: string): string {
+  const text = cleanAppendixValue(value).toLowerCase();
+  if (!text) return "";
+  if (/\bм\b|метр/.test(text)) return "м";
+  if (/шт/.test(text)) return "шт.";
+  if (/компл/.test(text)) return "компл.";
+  if (/кг/.test(text)) return "кг";
+  return "";
+}
+
+function formatMoneyText(value: unknown): string {
+  const amount = parseMoneyText(value);
+  return amount === null ? "уточняется" : formatMoney(amount);
+}
+
+function computeRowSum(quantityValue: unknown, priceValue: unknown): string {
+  const quantityText = cleanAppendixValue(quantityValue);
+  const price = parseMoneyText(priceValue);
+  const quantityMatch = quantityText.match(/([0-9]+(?:[,.][0-9]+)?)/);
+  if (price === null || !quantityMatch) return "";
+  const quantity = Number(quantityMatch[1].replace(",", "."));
+  if (!Number.isFinite(quantity)) return "";
+  return formatMoney(quantity * price);
+}
+
+function parseMoneyText(value: unknown): number | null {
+  const text = cleanAppendixValue(value);
+  if (!text || text === "уточняется") return null;
+  const match = text.match(/-?[0-9][0-9\s]*(?:[,.][0-9]{1,2})?/);
+  if (!match) return null;
+  const normalized = match[0].replace(/\s/g, "").replace(",", ".");
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatMoney(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  const [integerPart, fractionPart] = rounded.toFixed(2).split(".");
+  return `${integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, " ")},${fractionPart}`;
+}
+
+function formatRuDate(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  const [year, month, day] = value.split("-").map(Number);
+  const months = [
+    "",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+  ];
+  return `${day} ${months[month]} ${year} года`;
+}
+
+function extractDeliveryPlace(sourceText: string): string {
+  return firstMatch(sourceText, [
+    /Условия поставки и место\s*[:\-]\s*([^\n]+)/i,
+    /Место поставки\s*[:\-]\s*([^\n]+)/i,
+    /Доставка\s*[:\-]\s*([^\n]+)/i,
+  ]);
+}
+
+function extractPaymentTerm(sourceText: string): string {
+  return firstMatch(sourceText, [
+    /Срок оплаты\s*[:\-]\s*([^\n]+)/i,
+    /Условия оплаты\s*[:\-]\s*([^\n]+)/i,
+  ]);
+}
+
+function moneyToRussianWords(amount: number): string {
+  const integer = Math.max(0, Math.floor(amount));
+  if (integer === 0) return "ноль";
+
+  const units = [
+    { forms: ["", "", ""], gender: "male" },
+    { forms: ["тысяча", "тысячи", "тысяч"], gender: "female" },
+    { forms: ["миллион", "миллиона", "миллионов"], gender: "male" },
+    { forms: ["миллиард", "миллиарда", "миллиардов"], gender: "male" },
+  ];
+  const parts: string[] = [];
+  let rest = integer;
+  let groupIndex = 0;
+
+  while (rest > 0 && groupIndex < units.length) {
+    const group = rest % 1000;
+    if (group > 0) {
+      const unit = units[groupIndex];
+      const words = triadToRussianWords(group, unit.gender);
+      const form = unit.forms[0] ? pluralRu(group, unit.forms) : "";
+      parts.unshift([words, form].filter(Boolean).join(" "));
+    }
+    rest = Math.floor(rest / 1000);
+    groupIndex += 1;
+  }
+
+  return parts.join(" ");
+}
+
+function triadToRussianWords(value: number, gender: string): string {
+  const hundreds = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"];
+  const tens = ["", "десять", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"];
+  const teens = ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"];
+  const onesMale = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
+  const onesFemale = ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
+  const ones = gender === "female" ? onesFemale : onesMale;
+  const result: string[] = [];
+  const hundred = Math.floor(value / 100);
+  const lastTwo = value % 100;
+  const one = value % 10;
+
+  if (hundred) result.push(hundreds[hundred]);
+  if (lastTwo >= 10 && lastTwo <= 19) {
+    result.push(teens[lastTwo - 10]);
+  } else {
+    const ten = Math.floor(lastTwo / 10);
+    if (ten) result.push(tens[ten]);
+    if (one) result.push(ones[one]);
+  }
+  return result.join(" ");
+}
+
+function pluralRu(value: number, forms: string[]): string {
+  const mod100 = value % 100;
+  const mod10 = value % 10;
+  if (mod100 >= 11 && mod100 <= 14) return forms[2];
+  if (mod10 === 1) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4) return forms[1];
+  return forms[2];
+}
+
+function capitalizeFirst(value: string): string {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
 }
 
 function buildAppendixFileName(requestId: number, invoiceNumber: string, clientCompany: string): string {
