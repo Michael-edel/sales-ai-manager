@@ -97,6 +97,10 @@ export function updateRequestTask(requestId, taskId, payload) {
   });
 }
 
+export function deleteRequestTask(requestId, taskId) {
+  return request(`/requests/${requestId}/tasks/${taskId}`, { method: "DELETE" });
+}
+
 export function updateRequestStatus(requestId, payload) {
   return request(`/requests/${requestId}/status`, {
     method: "PATCH",

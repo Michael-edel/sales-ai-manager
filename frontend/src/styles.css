@@ -189,30 +189,71 @@ textarea {
 }
 
 .open-task-item {
+  align-items: center;
   background: #ffffff;
   border: 1px solid #d9dfd7;
   border-radius: 8px;
-  cursor: pointer;
   display: grid;
-  gap: 4px;
-  padding: 10px;
-  text-align: left;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
 }
 
 .open-task-item:hover {
   border-color: #277a50;
 }
 
-.open-task-item strong,
-.open-task-item span,
-.open-task-item small {
+.open-task-main {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px;
+  text-align: left;
+}
+
+.open-task-main strong,
+.open-task-main span,
+.open-task-main small {
   overflow-wrap: anywhere;
 }
 
-.open-task-item span,
-.open-task-item small {
+.open-task-main span,
+.open-task-main small {
   color: #6b756e;
   font-size: 12px;
+}
+
+.open-task-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.task-action {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #cbd3c8;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.task-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.task-action-done {
+  color: #1f7a50;
+}
+
+.task-action-danger {
+  color: #a33030;
 }
 
 .history-item.active {

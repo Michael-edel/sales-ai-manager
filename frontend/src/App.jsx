@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Upload, UserPlus } from "lucide-react";
+import { Check, CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createUser,
   createRequestTask,
+  deleteRequestTask,
   generateContractAppendix,
   getCrmSummary,
   getCurrentUser,
@@ -508,6 +509,19 @@ export default function App() {
     listRequests().then(setRequests).catch(() => {});
   }
 
+  async function refreshOpenTaskState(requestId) {
+    const updates = [
+      listOpenTasks().then(setOpenTasks).catch(() => {}),
+      getCrmSummary().then(setCrmSummary).catch(() => {}),
+      listRequests().then(setRequests).catch(() => {}),
+    ];
+    if (selected?.id === requestId) {
+      updates.push(listRequestTasks(requestId).then(setRequestTasks).catch(() => {}));
+      updates.push(listRequestEvents(requestId).then(setRequestEvents).catch(() => {}));
+    }
+    await Promise.all(updates);
+  }
+
   async function handleTaskToggle(task) {
     if (!selected || !canManageTasks) return;
     setError("");
@@ -542,6 +556,43 @@ export default function App() {
       });
       setNewTaskTitle("");
       await refreshSelectedTasksAndEvents(selected.id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleOpenTaskClose(event, task) {
+    event.stopPropagation();
+    if (!canManageTasks) return;
+    setError("");
+    setLoading(true);
+    try {
+      await updateRequestTask(task.request_id, task.id, {
+        title: task.title,
+        status: "done",
+        owner_name: task.owner_name || task.michael_manager || "",
+        due_date: task.due_date || "",
+        actor: metadata.michael_manager || task.michael_manager || "manager",
+      });
+      await refreshOpenTaskState(task.request_id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleOpenTaskDelete(event, task) {
+    event.stopPropagation();
+    if (!canManageTasks) return;
+    if (!window.confirm(`Удалить задачу "${task.title}"?`)) return;
+    setError("");
+    setLoading(true);
+    try {
+      await deleteRequestTask(task.request_id, task.id);
+      await refreshOpenTaskState(task.request_id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -680,17 +731,39 @@ export default function App() {
           <div className="open-task-list">
             {openTasks.length === 0 && <p className="muted">Открытых задач нет</p>}
             {openTasks.slice(0, 8).map((task) => (
-              <button className="open-task-item" key={task.id} onClick={() => selectTaskRequest(task)}>
-                <strong>{task.title}</strong>
-                <span>
-                  #{task.request_id}
-                  {task.client_company ? ` · ${task.client_company}` : ""}
-                </span>
-                <small>
-                  {PRIORITY_LABELS[task.priority || "normal"] || "Обычный"}
-                  {task.requires_contract_appendix ? " · KBI договор" : ""}
-                </small>
-              </button>
+              <div className="open-task-item" key={task.id}>
+                <button className="open-task-main" onClick={() => selectTaskRequest(task)}>
+                  <strong>{task.title}</strong>
+                  <span>
+                    #{task.request_id}
+                    {task.client_company ? ` · ${task.client_company}` : ""}
+                  </span>
+                  <small>
+                    {PRIORITY_LABELS[task.priority || "normal"] || "Обычный"}
+                    {task.requires_contract_appendix ? " · KBI договор" : ""}
+                  </small>
+                </button>
+                {canManageTasks ? (
+                  <div className="open-task-actions">
+                    <button
+                      className="task-action task-action-done"
+                      disabled={loading}
+                      onClick={(event) => handleOpenTaskClose(event, task)}
+                      title="Закрыть задачу"
+                    >
+                      <Check size={15} />
+                    </button>
+                    <button
+                      className="task-action task-action-danger"
+                      disabled={loading}
+                      onClick={(event) => handleOpenTaskDelete(event, task)}
+                      title="Удалить задачу"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             ))}
           </div>
         </div>

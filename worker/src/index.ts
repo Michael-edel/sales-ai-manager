@@ -237,10 +237,17 @@ export default {
       }
 
       const taskMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/tasks\/(\d+)$/);
-      if (request.method === "PATCH" && taskMatch) {
-        if (!canManageTasks(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        const task = await updateRequestTask(request, env, Number(taskMatch[1]), Number(taskMatch[2]));
-        return task ? json(task) : json({ detail: "Задача не найдена." }, 404);
+      if (taskMatch) {
+        if (request.method === "PATCH") {
+          if (!canManageTasks(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const task = await updateRequestTask(request, env, Number(taskMatch[1]), Number(taskMatch[2]));
+          return task ? json(task) : json({ detail: "Задача не найдена." }, 404);
+        }
+        if (request.method === "DELETE") {
+          if (!canManageTasks(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const result = await deleteRequestTask(env, Number(taskMatch[1]), Number(taskMatch[2]), currentUser);
+          return result ? json(result) : json({ detail: "Задача не найдена." }, 404);
+        }
       }
 
       const eventsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/events$/);
@@ -1629,14 +1636,14 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     '<meta charset="utf-8">',
     `<title>Приложение к договору - заявка ${data.requestId}</title>`,
     "<style>",
-    "@page { size: A4; margin: 17mm 14mm 14mm 14mm; }",
-    "body { font-family: 'Times New Roman', Times, serif; color: #111; font-size: 12pt; line-height: 1.18; }",
+    "@page { size: A4; margin: 16mm 12mm 14mm 12mm; }",
+    "body { font-family: 'Times New Roman', Times, serif; color: #111; font-size: 12pt; line-height: 1.15; }",
     "p { margin: 0 0 8px; }",
-    ".appendix-title { font-weight: 700; margin-left: auto; margin-bottom: 42px; text-align: center; width: 360px; }",
+    ".appendix-title { font-weight: 700; margin: 0 auto 42px; text-align: center; width: 360px; }",
     ".appendix-title p { margin: 0; }",
     "table.items { border-collapse: collapse; margin: 0 auto 0; mso-table-lspace: 0pt; mso-table-rspace: 0pt; table-layout: fixed; width: 100%; }",
-    ".items th, .items td { border: 1px solid #333; font-size: 9pt; overflow-wrap: anywhere; padding: 3px 4px; vertical-align: middle; word-break: break-word; word-wrap: break-word; }",
-    ".items th { font-weight: 700; text-align: center; }",
+    ".items th, .items td { border: 1px solid #333; font-size: 9pt; overflow-wrap: anywhere; padding: 2px 3px; vertical-align: middle; word-break: break-word; word-wrap: break-word; }",
+    ".items th { font-weight: 700; line-height: 1.05; text-align: center; }",
     ".center { text-align: center; }",
     ".money { text-align: right; }",
     ".summary { margin-top: 0; }",
@@ -1649,10 +1656,9 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     ".party p { margin: 0; }",
     ".party p:nth-child(1), .party p:nth-child(2), .party .bold { font-weight: 700; }",
     ".party .italic { font-style: italic; }",
-    ".signature-cell { padding-top: 56px !important; }",
-    ".signature-role { font-weight: 700; margin-bottom: 54px; }",
-    ".signature-line { align-items: baseline; display: grid; gap: 8px; grid-template-columns: auto 1fr auto; }",
-    ".line { border-bottom: 1px solid #111; height: 1px; }",
+    ".signature-cell { padding-top: 46px !important; }",
+    ".signature-role { font-weight: 400; margin: 0 0 2px; }",
+    ".signature-name { margin: 0; }",
     "</style>",
     "</head>",
     "<body>",
@@ -1663,14 +1669,14 @@ function buildAppendixHtml(data: KbiAppendixData): string {
     "</div>",
     '<table class="items">',
     "<colgroup>",
-    '<col style="width: 4.5%">',
+    '<col style="width: 3%">',
     '<col style="width: 12.5%">',
-    '<col style="width: 31%">',
-    '<col style="width: 7%">',
-    '<col style="width: 7%">',
-    '<col style="width: 13%">',
-    '<col style="width: 14%">',
+    '<col style="width: 47%">',
+    '<col style="width: 4%">',
+    '<col style="width: 4.5%">',
+    '<col style="width: 11.5%">',
     '<col style="width: 11%">',
+    '<col style="width: 6.5%">',
     "</colgroup>",
     "<thead>",
     "<tr>",
@@ -1711,7 +1717,7 @@ function renderPartySignature(name: string): string {
   return [
     '<div>',
     '<p class="signature-role">Директор</p>',
-    `<div class="signature-line"><span>М.П.</span><span class="line"></span><span>${escapeHtml(name)}</span></div>`,
+    `<p class="signature-name">${escapeHtml(name)}</p>`,
     "</div>",
   ].join("");
 }
@@ -2099,6 +2105,30 @@ async function updateRequestTask(request: Request, env: Env, requestId: number, 
   });
 
   return getRequestTask(env, requestId, taskId);
+}
+
+async function deleteRequestTask(env: Env, requestId: number, taskId: number, currentUser: CurrentUser) {
+  const existing = await getRequestTask(env, requestId, taskId) as Record<string, any> | null;
+  if (!existing) return null;
+
+  await env.DB.prepare(`
+    DELETE FROM request_tasks
+    WHERE request_id = ? AND id = ?
+  `).bind(requestId, taskId).run();
+
+  await createRequestEvent(
+    env,
+    requestId,
+    "request.task_deleted",
+    currentUser.display_name || currentUser.username || "manager",
+    {
+      task_id: taskId,
+      title: String(existing.title || ""),
+      previous_status: existing.status || "open",
+    },
+  );
+
+  return { ok: true, task_id: taskId };
 }
 
 async function createDefaultTasks(
