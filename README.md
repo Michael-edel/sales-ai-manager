@@ -319,6 +319,18 @@ npx wrangler secret put PARSER_SERVICE_TOKEN
 
 Parser-service также проверяется в GitHub Actions перед деплоем Worker.
 
+В интерфейсе в блоке новой обработки отображается статус `Parser-service`:
+
+- `подключен` — Worker успешно получил ответ от `PARSER_SERVICE_URL`;
+- `не настроен` — `PARSER_SERVICE_URL` не задан;
+- `ошибка` — URL задан, но сервис не отвечает или вернул ошибку.
+
+Проверить статус через API можно так:
+
+```text
+GET /api/parser/health
+```
+
 ## Проверка голосового WhatsApp
 
 1. В поле «Компания клиента» укажите `ТОО KBI Energy`, если запрос от этого клиента.

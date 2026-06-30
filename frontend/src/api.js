@@ -65,6 +65,10 @@ export function getCrmSummary() {
   return request("/crm/summary");
 }
 
+export function getParserHealth() {
+  return request("/parser/health");
+}
+
 export function listOpenTasks() {
   return request("/tasks/open");
 }

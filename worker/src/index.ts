@@ -118,6 +118,9 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/health") {
         return json({ status: "ok", runtime: "cloudflare-workers" });
       }
+      if (request.method === "GET" && url.pathname === "/api/parser/health") {
+        return json(await checkParserService(env));
+      }
       if (request.method === "GET" && url.pathname === "/api/users") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await listUsers(env));
@@ -455,6 +458,79 @@ async function processUpload(request: Request, env: Env) {
     uploaded_file_name: fileName,
     ai_result: aiResult,
   });
+}
+
+async function checkParserService(env: Env) {
+  const baseUrl = (env.PARSER_SERVICE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    return {
+      configured: false,
+      reachable: false,
+      status: "not_configured",
+      detail: "PARSER_SERVICE_URL не задан.",
+    };
+  }
+
+  let serviceOrigin = baseUrl;
+  try {
+    serviceOrigin = new URL(baseUrl).origin;
+  } catch {
+    return {
+      configured: true,
+      reachable: false,
+      status: "invalid_url",
+      detail: "PARSER_SERVICE_URL задан в неверном формате.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const headers = new Headers();
+    if (env.PARSER_SERVICE_TOKEN) headers.set("X-Parser-Token", env.PARSER_SERVICE_TOKEN);
+
+    const response = await fetch(`${baseUrl}/health`, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let data: any = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok) {
+      return {
+        configured: true,
+        reachable: false,
+        status: "error",
+        service_origin: serviceOrigin,
+        detail: data?.detail || raw || response.statusText,
+      };
+    }
+
+    return {
+      configured: true,
+      reachable: true,
+      status: data?.status || "ok",
+      service: data?.service || "parser-service",
+      service_origin: serviceOrigin,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Parser-service недоступен.";
+    return {
+      configured: true,
+      reachable: false,
+      status: "unreachable",
+      service_origin: serviceOrigin,
+      detail: message,
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function analyzeText(env: Env, originalText: string): Promise<string> {

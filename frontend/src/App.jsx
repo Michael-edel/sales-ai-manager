@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Clipboard, FileText, Loader2, LogOut, Mail, Plus, Shield, Upload, UserPlus } from "lucide-react";
+import { CheckSquare, Clipboard, FileText, Loader2, LogOut, Mail, Plus, RefreshCw, Server, Shield, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createUser,
   createRequestTask,
   getCrmSummary,
   getCurrentUser,
+  getParserHealth,
   listEmailMessages,
   listOpenTasks,
   listRequestEvents,
@@ -129,6 +130,8 @@ export default function App() {
   const [emailStatus, setEmailStatus] = useState("");
   const [fileInputKey, setFileInputKey] = useState(0);
   const [crmSummary, setCrmSummary] = useState(null);
+  const [parserStatus, setParserStatus] = useState(null);
+  const [parserLoading, setParserLoading] = useState(false);
   const [requestEvents, setRequestEvents] = useState([]);
   const [requestTasks, setRequestTasks] = useState([]);
   const [openTasks, setOpenTasks] = useState([]);
@@ -184,6 +187,23 @@ export default function App() {
     setEmails(items);
   }
 
+  async function refreshParserStatus() {
+    setParserLoading(true);
+    try {
+      const status = await getParserHealth();
+      setParserStatus(status);
+    } catch (err) {
+      setParserStatus({
+        configured: false,
+        reachable: false,
+        status: "error",
+        detail: err.message,
+      });
+    } finally {
+      setParserLoading(false);
+    }
+  }
+
   useEffect(() => {
     getCurrentUser()
       .then(({ user }) => {
@@ -197,6 +217,7 @@ export default function App() {
     if (!authUser) return;
     refreshHistory().catch((err) => setError(err.message));
     refreshEmails().catch((err) => setEmailStatus(err.message));
+    refreshParserStatus().catch(() => {});
     refreshUsers().catch(() => {});
   }, [authUser]);
 
@@ -445,6 +466,16 @@ export default function App() {
 
   const canProcess = canManageRequests && Boolean(text.trim() || file) && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
+  const parserHealthClass = parserStatus?.reachable
+    ? "ok"
+    : parserStatus?.configured
+      ? "error"
+      : "warn";
+  const parserHealthText = parserStatus?.reachable
+    ? "подключен"
+    : parserStatus?.configured
+      ? "ошибка"
+      : "не настроен";
 
   function updateMetadata(field, value) {
     setMetadata((current) => ({ ...current, [field]: value }));
@@ -724,6 +755,22 @@ export default function App() {
             <button className="primary-button" onClick={handleProcess} disabled={!canProcess}>
               {loading ? <Loader2 className="spin" size={18} /> : null}
               Обработать
+            </button>
+          </div>
+
+          <div className={`service-status service-status-${parserHealthClass}`}>
+            <Server size={18} />
+            <div>
+              <strong>Parser-service</strong>
+              <span>{parserLoading ? "проверяется" : parserHealthText}</span>
+            </div>
+            <button
+              className="icon-button"
+              onClick={refreshParserStatus}
+              disabled={parserLoading}
+              title="Проверить parser-service"
+            >
+              <RefreshCw className={parserLoading ? "spin" : ""} size={16} />
             </button>
           </div>
 

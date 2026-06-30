@@ -440,6 +440,50 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.service-status {
+  align-items: center;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 10px;
+  margin-top: 12px;
+  max-width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.service-status > div {
+  display: grid;
+  gap: 2px;
+}
+
+.service-status strong {
+  font-size: 13px;
+}
+
+.service-status span {
+  color: #6b756e;
+  font-size: 12px;
+}
+
+.service-status-ok {
+  background: #eef8f1;
+  border-color: #b9d9c4;
+  color: #246247;
+}
+
+.service-status-warn {
+  background: #fff7e6;
+  border-color: #ead092;
+  color: #6f4d0a;
+}
+
+.service-status-error {
+  background: #fff1f0;
+  border-color: #ffc1bd;
+  color: #9b1c14;
+}
+
 .empty-state {
   align-items: center;
   color: #6b756e;

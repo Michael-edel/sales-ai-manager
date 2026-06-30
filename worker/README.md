@@ -132,6 +132,14 @@ npx wrangler secret put PARSER_SERVICE_TOKEN
 
 `PARSER_SERVICE_URL` добавьте как Worker variable в Cloudflare Dashboard или в `wrangler.toml`, если URL не секретный.
 
+Проверка из Worker:
+
+```text
+GET /api/parser/health
+```
+
+Ответ не раскрывает token. В интерфейсе статус отображается в блоке новой обработки рядом с загрузкой файла.
+
 ## Gemini API
 
 Gemini поддерживается как альтернативный провайдер.
