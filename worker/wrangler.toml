@@ -4,6 +4,10 @@ compatibility_date = "2026-06-15"
 account_id = "3e2a044cfaf01abb436adfe910297e5c"
 workers_dev = true
 
+[[routes]]
+pattern = "ai.michael.kz"
+custom_domain = true
+
 [vars]
 AI_PROVIDER = "gemini"
 GEMINI_MODEL = "gemini-3.5-flash"

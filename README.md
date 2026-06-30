@@ -4,6 +4,12 @@
 
 Основной целевой runtime: **Cloudflare Workers + D1 + Wrangler**.
 
+Production URL:
+
+```text
+https://ai.michael.kz
+```
+
 Docker/FastAPI версия в проекте оставлена как legacy-прототип, но для дальнейшей работы используйте папку `worker/`.
 
 ## Что входит
