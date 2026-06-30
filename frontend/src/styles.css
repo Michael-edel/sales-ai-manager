@@ -777,6 +777,11 @@ button:disabled,
   gap: 14px;
 }
 
+.ai-rules-area {
+  display: grid;
+  gap: 14px;
+}
+
 .user-create-grid {
   align-items: end;
   display: grid;
@@ -818,6 +823,67 @@ button:disabled,
 .user-row span {
   color: #6b756e;
   overflow-wrap: anywhere;
+}
+
+.rules-list {
+  display: grid;
+  gap: 10px;
+}
+
+.rule-card {
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.rule-card textarea {
+  margin-top: 0;
+  min-height: 86px;
+}
+
+.rule-card-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.rule-card-header small {
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 999px;
+  color: #1f6b45;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 8px;
+}
+
+.rule-toggle {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rule-toggle input {
+  height: 18px;
+  min-height: 18px;
+  width: 18px;
+}
+
+.rule-toggle span {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.rules-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
 }
 
 .email-controls {
@@ -913,6 +979,7 @@ pre {
   .result-header,
   .result-actions,
   .email-controls,
+  .rules-actions,
   .email-item {
     align-items: stretch;
     flex-direction: column;
@@ -934,6 +1001,11 @@ pre {
   .user-row,
   .event-item {
     grid-template-columns: 1fr;
+  }
+
+  .rule-card-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .deal-note {

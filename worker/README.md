@@ -14,26 +14,54 @@
 - `GET /api/health`
 - `GET /api/requests`
 - `GET /api/requests/:id`
+- `GET /api/ai/rules`
+- `PATCH /api/ai/rules` для администратора
 - `POST /api/requests/text`
 - `POST /api/requests/upload`
 - `POST /api/email/messages/:id/process`
 - `POST /api/email/send` через внешний `email-bridge`
 - входящие письма через Cloudflare Email Routing `email()` handler с сохранением в D1
 - `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
-- D1 таблицы `requests` и `email_messages`
+- D1 таблицы `requests`, `email_messages`, `ai_rules`
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
 - Gemini/OpenAI audio transcription для голосовых
 - PDF напрямую через Gemini, если `AI_PROVIDER=gemini` и `PARSER_SERVICE_URL` не задан
 - DOCX/XLSX и расширенный PDF-разбор через внешний `parser-service`
 - KBI Energy как VIP-клиент: счет от ТОО Michael + приложение к годовому договору
+- настройки ИИ и 1С в D1: цены с НДС, счет от ТОО Michael, данные из 1С/документа, запрет придумывать цены
 
 ## Что пока не перенесено
 
 - Встроенная SMTP-отправка из самого Worker.
 - Парсинг DOCX/XLSX внутри самого Worker.
 
-Для входящей почты Worker принимает письма через Cloudflare Email Routing. Если основной ящик остается на mailcow, настройте в mailcow пересылку копии через Sieve `redirect :copy` на технический адрес Email Routing. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
+Для входящей почты Worker принимает письма через Cloudflare Email Routing. Если основной ящик остается на mailcow, настройте в mailcow recipient BCC map, чтобы письмо оставалось в рабочем ящике и копия уходила на технический адрес Email Routing. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
+
+## Настройки ИИ и 1С
+
+Правила хранятся в D1-таблице `ai_rules`. При старте списка или новой обработке Worker добавляет обязательные правила по умолчанию, если их еще нет в базе.
+
+Endpoint:
+
+```text
+GET /api/ai/rules
+PATCH /api/ai/rules
+```
+
+Доступ:
+
+- `GET` — любой авторизованный пользователь;
+- `PATCH` — только `admin`.
+
+Обязательные правила нельзя выключить. Их текст можно уточнять через интерфейс администратора, после сохранения они применяются ко всем новым обработкам:
+
+- цены и суммы всегда с НДС 16%;
+- поставщик и счет всегда от `ТОО Michael`;
+- для KBI Energy всегда готовится счет в 1С и приложение к годовому договору;
+- карточки клиентов, договоры, реквизиты, номенклатура, коды товаров, остатки и цены берутся из 1С или загруженного документа 1С;
+- финальный счет выставляется только через 1С;
+- ИИ не имеет права придумывать цену, скидку, наличие, срок поставки или код товара.
 
 ## Приложение к договору KBI Energy
 

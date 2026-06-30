@@ -69,6 +69,18 @@ export function getParserHealth() {
   return request("/parser/health");
 }
 
+export function listAiRules() {
+  return request("/ai/rules");
+}
+
+export function updateAiRules(rules) {
+  return request("/ai/rules", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  });
+}
+
 export function listOpenTasks() {
   return request("/tasks/open");
 }

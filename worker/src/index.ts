@@ -69,6 +69,15 @@ type ParsedImagePage = {
   payload: FilePayload;
 };
 
+type AiRuleDefinition = {
+  rule_key: string;
+  title: string;
+  rule_text: string;
+  is_enabled: number;
+  is_required: number;
+  sort_order: number;
+};
+
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -103,6 +112,57 @@ const SYSTEM_PROMPT = `
 ${REQUIRED_OUTPUT}
 `;
 
+const DEFAULT_AI_RULES: AiRuleDefinition[] = [
+  {
+    rule_key: "prices_with_vat",
+    title: "Цены всегда с НДС",
+    rule_text: "Все цены, суммы, коммерческие предложения и ответы клиенту готовить в формате с НДС 16%, если документ сделки прямо не говорит иное.",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 10,
+  },
+  {
+    rule_key: "supplier_michael",
+    title: "Поставщик ТОО Michael",
+    rule_text: "Все счета, предложения и клиентские ответы оформляются от поставщика ТОО Michael. Не предлагать выставление счета от другой компании.",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 20,
+  },
+  {
+    rule_key: "kbi_invoice_appendix",
+    title: "KBI: счет + приложение",
+    rule_text: "Для ТОО KBI Energy / KBI Energy Group всегда учитывать работу по годовому договору: счет выставляется в 1С, а к каждому счету нужно подготовить приложение к договору.",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 30,
+  },
+  {
+    rule_key: "one_c_source",
+    title: "1С главный источник данных",
+    rule_text: "Карточки клиентов, договоры, реквизиты, номенклатура, коды товаров, остатки и цены брать из 1С или из загруженного документа 1С. Если данных нет, писать что нужно проверить в 1С.",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 40,
+  },
+  {
+    rule_key: "invoice_only_in_1c",
+    title: "Счет только через 1С",
+    rule_text: "Программа и ИИ не создают финальный счет самостоятельно. Они готовят задачу, черновик ответа и данные для менеджера; счет выставляется только через 1С.",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 50,
+  },
+  {
+    rule_key: "no_price_guessing",
+    title: "Не придумывать цены",
+    rule_text: "Запрещено придумывать цену, скидку, наличие, срок поставки или код товара. Если цена не видна в счете, прайсе или данных 1С, писать \"цену нужно проверить в 1С\".",
+    is_enabled: 1,
+    is_required: 1,
+    sort_order: 60,
+  },
+];
+
 export default {
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     await storeRoutedEmail(env, message);
@@ -135,6 +195,13 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/api/parser/health") {
         return json(await checkParserService(env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/ai/rules") {
+        return json(await listAiRules(env));
+      }
+      if (request.method === "PATCH" && url.pathname === "/api/ai/rules") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await updateAiRules(request, env));
       }
       if (request.method === "GET" && url.pathname === "/api/users") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -422,6 +489,70 @@ async function updateUserActive(env: Env, userId: number, isActive: boolean) {
     SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
   `).bind(userId).first();
+}
+
+async function ensureDefaultAiRules(env: Env): Promise<void> {
+  const statements = DEFAULT_AI_RULES.map((rule) => env.DB.prepare(`
+    INSERT OR IGNORE INTO ai_rules (
+      rule_key, title, rule_text, is_enabled, is_required, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(
+    rule.rule_key,
+    rule.title,
+    rule.rule_text,
+    rule.is_enabled,
+    rule.is_required,
+    rule.sort_order,
+  ));
+  if (statements.length) await env.DB.batch(statements);
+}
+
+async function listAiRules(env: Env) {
+  await ensureDefaultAiRules(env);
+  const result = await env.DB.prepare(`
+    SELECT id, rule_key, title, rule_text, is_enabled, is_required, sort_order, updated_at
+    FROM ai_rules
+    ORDER BY sort_order ASC, id ASC
+  `).all();
+  return result.results;
+}
+
+async function updateAiRules(request: Request, env: Env) {
+  const payload = (await request.json()) as {
+    rules?: Array<{
+      id?: unknown;
+      rule_key?: unknown;
+      rule_text?: unknown;
+      is_enabled?: unknown;
+    }>;
+  };
+  const rules = Array.isArray(payload.rules) ? payload.rules : [];
+  if (!rules.length) throw new Error("Нет правил для сохранения.");
+
+  await ensureDefaultAiRules(env);
+  const existingRules = await listAiRules(env) as Array<Record<string, any>>;
+  const existingByKey = new Map(existingRules.map((rule) => [String(rule.rule_key), rule]));
+  const statements: D1PreparedStatement[] = [];
+
+  for (const incoming of rules) {
+    const ruleKey = typeof incoming.rule_key === "string" ? incoming.rule_key : "";
+    const existing = existingByKey.get(ruleKey);
+    if (!existing) continue;
+
+    const ruleText = normalizeOptionalText(incoming.rule_text);
+    if (!ruleText) throw new Error(`Правило "${existing.title}" не может быть пустым.`);
+
+    const isRequired = Number(existing.is_required) === 1;
+    const isEnabled = isRequired ? 1 : incoming.is_enabled === false ? 0 : 1;
+    statements.push(env.DB.prepare(`
+      UPDATE ai_rules
+      SET rule_text = ?, is_enabled = ?, updated_at = datetime('now')
+      WHERE rule_key = ?
+    `).bind(ruleText, isEnabled, ruleKey));
+  }
+
+  if (statements.length) await env.DB.batch(statements);
+  return listAiRules(env);
 }
 
 async function processText(request: Request, env: Env) {
@@ -721,9 +852,37 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   };
 }
 
+async function buildSystemPrompt(env: Env): Promise<string> {
+  try {
+    await ensureDefaultAiRules(env);
+    const result = await env.DB.prepare(`
+      SELECT title, rule_text
+      FROM ai_rules
+      WHERE is_enabled = 1
+      ORDER BY sort_order ASC, id ASC
+    `).all();
+    const rules = result.results
+      .map((rule: any, index: number) => {
+        const title = normalizeOptionalText(rule.title);
+        const text = normalizeOptionalText(rule.rule_text);
+        if (!text) return "";
+        return `${index + 1}. ${title ? `${title}: ` : ""}${text}`;
+      })
+      .filter(Boolean)
+      .join("\n");
+
+    if (!rules) return SYSTEM_PROMPT;
+    return `${SYSTEM_PROMPT}\n\nАктивные правила ИИ и 1С из настроек программы:\n${rules}\n`;
+  } catch (error) {
+    console.error("AI rules prompt fallback", error);
+    return SYSTEM_PROMPT;
+  }
+}
+
 async function analyzeText(env: Env, originalText: string): Promise<string> {
+  const systemPrompt = await buildSystemPrompt(env);
   if (useGemini(env)) {
-    return analyzeTextGemini(env, originalText);
+    return analyzeTextGemini(env, originalText, systemPrompt);
   }
   requireOpenAI(env);
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -731,7 +890,7 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
     headers: openAIHeaders(env),
     body: JSON.stringify({
       model: env.OPENAI_MODEL || "gpt-5.5",
-      instructions: SYSTEM_PROMPT,
+      instructions: systemPrompt,
       input: `Проанализируй входящую заявку менеджера по продажам.\n\nЗаявка:\n${originalText}`,
     }),
   });
@@ -739,8 +898,9 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
 }
 
 async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+  const systemPrompt = await buildSystemPrompt(env);
   if (useGemini(env)) {
-    return analyzeImageGemini(env, filePayload, fileName, managerNote);
+    return analyzeImageGemini(env, filePayload, fileName, managerNote, systemPrompt);
   }
   requireOpenAI(env);
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -748,7 +908,7 @@ async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string
     headers: openAIHeaders(env),
     body: JSON.stringify({
       model: env.OPENAI_MODEL || "gpt-5.5",
-      instructions: SYSTEM_PROMPT,
+      instructions: systemPrompt,
       input: [
         {
           role: "user",
@@ -772,8 +932,9 @@ async function analyzeDocumentImages(
   fileName: string,
   managerNote: string,
 ): Promise<string> {
+  const systemPrompt = await buildSystemPrompt(env);
   if (useGemini(env)) {
-    return analyzeDocumentImagesGemini(env, pages, fileName, managerNote);
+    return analyzeDocumentImagesGemini(env, pages, fileName, managerNote, systemPrompt);
   }
 
   requireOpenAI(env);
@@ -793,7 +954,7 @@ async function analyzeDocumentImages(
     headers: openAIHeaders(env),
     body: JSON.stringify({
       model: env.OPENAI_MODEL || "gpt-5.5",
-      instructions: SYSTEM_PROMPT,
+      instructions: systemPrompt,
       input: [{ role: "user", content }],
     }),
   });
@@ -821,10 +982,10 @@ async function transcribeAudio(env: Env, file: File, managerNote: string): Promi
   return (await response.text()).trim();
 }
 
-async function analyzeTextGemini(env: Env, originalText: string): Promise<string> {
+async function analyzeTextGemini(env: Env, originalText: string, systemPrompt: string): Promise<string> {
   requireGemini(env);
   const response = await fetchGeminiGenerateContent(env, {
-    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [
       {
         parts: [
@@ -838,10 +999,16 @@ async function analyzeTextGemini(env: Env, originalText: string): Promise<string
   return readGeminiText(response);
 }
 
-async function analyzeImageGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
+async function analyzeImageGemini(
+  env: Env,
+  filePayload: FilePayload,
+  fileName: string,
+  managerNote: string,
+  systemPrompt: string,
+): Promise<string> {
   requireGemini(env);
   const response = await fetchGeminiGenerateContent(env, {
-    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [
       {
         parts: [
@@ -866,12 +1033,13 @@ async function analyzePdfGemini(env: Env, filePayload: FilePayload, fileName: st
   if (filePayload.base64.length > 28_000_000) {
     throw new Error("PDF слишком большой для прямой обработки через Gemini. Настройте parser-service или загрузите файл меньше 20 МБ.");
   }
+  const systemPrompt = await buildSystemPrompt(env);
 
   const response = await fetchGeminiInteractions(env, {
     input: [
       {
         type: "text",
-        text: `${SYSTEM_PROMPT}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Если это счет на оплату, точно извлеки все строки товара: код, наименование, единицу измерения, количество, цену с НДС 16%, сумму с НДС 16% и гарантию. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+        text: `${systemPrompt}\n\nПроанализируй PDF-документ как входящую B2B-заявку или счет. Если это счет на оплату, точно извлеки все строки товара: код, наименование, единицу измерения, количество, цену с НДС 16%, сумму с НДС 16% и гарантию. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
       },
       {
         type: "document",
@@ -888,6 +1056,7 @@ async function analyzeDocumentImagesGemini(
   pages: ParsedImagePage[],
   fileName: string,
   managerNote: string,
+  systemPrompt: string,
 ): Promise<string> {
   requireGemini(env);
   const parts: Array<Record<string, unknown>> = [
@@ -906,7 +1075,7 @@ async function analyzeDocumentImagesGemini(
   }
 
   const response = await fetchGeminiGenerateContent(env, {
-    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [{ parts }],
   });
   return readGeminiText(response);

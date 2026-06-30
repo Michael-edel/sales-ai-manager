@@ -11,6 +11,7 @@ import {
   getCurrentUser,
   getEmailSmtpHealth,
   getParserHealth,
+  listAiRules,
   listEmailMessages,
   listOpenTasks,
   listRequestEvents,
@@ -24,6 +25,7 @@ import {
   resetUserPassword,
   sendEmailReply,
   updateDealDocuments,
+  updateAiRules,
   updateUserActive,
   updateRequestTask,
   updateRequestStatus,
@@ -118,6 +120,8 @@ export default function App() {
   const [loginDraft, setLoginDraft] = useState({ username: "manager", password: "" });
   const [loginError, setLoginError] = useState("");
   const [users, setUsers] = useState([]);
+  const [aiRules, setAiRules] = useState([]);
+  const [aiRulesStatus, setAiRulesStatus] = useState("");
   const [userDraft, setUserDraft] = useState({
     username: "",
     display_name: "",
@@ -175,6 +179,11 @@ export default function App() {
     if (authUser?.role !== "admin") return;
     const items = await listUsers();
     setUsers(items);
+  }
+
+  async function refreshAiRules() {
+    const items = await listAiRules();
+    setAiRules(items);
   }
 
   async function refreshHistory(latestItem = null) {
@@ -241,6 +250,7 @@ export default function App() {
     refreshParserStatus().catch(() => {});
     refreshSmtpStatus().catch(() => {});
     refreshUsers().catch(() => {});
+    refreshAiRules().catch((err) => setAiRulesStatus(err.message));
   }, [authUser]);
 
   useEffect(() => {
@@ -309,6 +319,36 @@ export default function App() {
       await refreshUsers();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateAiRuleDraft(ruleKey, field, value) {
+    setAiRules((current) => current.map((rule) => {
+      if (rule.rule_key !== ruleKey) return rule;
+      if (field === "is_enabled" && Number(rule.is_required) === 1) {
+        return { ...rule, is_enabled: 1 };
+      }
+      return { ...rule, [field]: value };
+    }));
+  }
+
+  async function handleAiRulesSave() {
+    if (authUser?.role !== "admin") return;
+    setError("");
+    setAiRulesStatus("");
+    setLoading(true);
+    try {
+      const saved = await updateAiRules(aiRules.map((rule) => ({
+        rule_key: rule.rule_key,
+        rule_text: rule.rule_text,
+        is_enabled: Boolean(rule.is_enabled),
+      })));
+      setAiRules(saved);
+      setAiRulesStatus("Правила сохранены и будут применяться к новым обработкам.");
+    } catch (err) {
+      setAiRulesStatus(err.message);
     } finally {
       setLoading(false);
     }
@@ -1141,6 +1181,53 @@ export default function App() {
                   </button>
                 </article>
               ))}
+            </div>
+          </section>
+        )}
+
+        {authUser.role === "admin" && (
+          <section className="input-area ai-rules-area">
+            <div className="section-title">
+              <h2>Правила ИИ и 1С</h2>
+              <p>Эти правила добавляются к системному промпту при каждой новой обработке.</p>
+            </div>
+
+            <div className="rules-list">
+              {aiRules.map((rule) => (
+                <article className="rule-card" key={rule.rule_key}>
+                  <div className="rule-card-header">
+                    <label className="rule-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(rule.is_enabled)}
+                        disabled={loading || Number(rule.is_required) === 1}
+                        onChange={(event) => updateAiRuleDraft(rule.rule_key, "is_enabled", event.target.checked ? 1 : 0)}
+                      />
+                      <span>{rule.title}</span>
+                    </label>
+                    {Number(rule.is_required) === 1 ? <small>обязательное</small> : null}
+                  </div>
+                  <textarea
+                    value={rule.rule_text || ""}
+                    onChange={(event) => updateAiRuleDraft(rule.rule_key, "rule_text", event.target.value)}
+                    disabled={loading}
+                    rows={3}
+                  />
+                </article>
+              ))}
+              {aiRules.length === 0 && <p className="muted">Правила еще не загружены.</p>}
+            </div>
+
+            <div className="rules-actions">
+              <button className="secondary-button" onClick={refreshAiRules} disabled={loading}>
+                <RefreshCw size={18} />
+                Обновить
+              </button>
+              <button className="primary-button" onClick={handleAiRulesSave} disabled={loading || aiRules.length === 0}>
+                {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                Сохранить правила
+              </button>
+              {aiRulesStatus && <span className="email-status">{aiRulesStatus}</span>}
             </div>
           </section>
         )}
