@@ -371,7 +371,7 @@ export default function App() {
     setLoading(true);
     try {
       const result = await checkEmail();
-      setEmailStatus(`Новых писем: ${result.imported}, пропущено: ${result.skipped}`);
+      setEmailStatus(result.detail || `Писем в базе: ${result.total_seen || 0}`);
       await refreshEmails();
     } catch (err) {
       setEmailStatus(err.message);
@@ -1027,21 +1027,21 @@ export default function App() {
 
         <section className="input-area email-area">
           <div className="section-title">
-            <h2>Почта mailcow</h2>
-            <p>Проверка входящих писем через IMAP. Вложения PDF/DOCX/XLSX попадают в анализ.</p>
+            <h2>Входящая почта</h2>
+            <p>Письма поступают через Cloudflare Email Routing и сохраняются в программе.</p>
           </div>
 
           <div className="email-controls">
             <button className="secondary-button" onClick={handleCheckEmail} disabled={loading || !canManageRequests}>
               <Mail size={18} />
-              Проверить почту
+              Обновить письма
             </button>
             <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
             {emailStatus && <span className="email-status">{emailStatus}</span>}
           </div>
 
           <div className="email-list">
-            {emails.length === 0 && <p className="muted">Писем пока нет. Проверьте почту после настройки IMAP.</p>}
+            {emails.length === 0 && <p className="muted">Писем пока нет. Настройте маршрут Cloudflare Email Routing и пересылку копии из mailcow.</p>}
             {emails.map((email) => (
               <article className="email-item" key={email.id}>
                 <div>

@@ -1,3 +1,5 @@
+import PostalMime from "postal-mime";
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -102,6 +104,10 @@ ${REQUIRED_OUTPUT}
 `;
 
 export default {
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    await storeRoutedEmail(env, message);
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
@@ -179,11 +185,12 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/email/check") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const totalSeen = await countEmailMessages(env);
         return json({
           imported: 0,
           skipped: 0,
-          total_seen: 0,
-          detail: "IMAP mailcow/Yandex не поддерживается напрямую в Cloudflare Worker. Нужен отдельный email bridge-сервис.",
+          total_seen: totalSeen,
+          detail: `Писем в базе: ${totalSeen}. Новые письма поступают автоматически через Cloudflare Email Routing.`,
         });
       }
       if (request.method === "POST" && url.pathname === "/api/email/send") {
@@ -266,7 +273,7 @@ export default {
       return json({ detail: message }, 500);
     }
   },
-};
+} satisfies ExportedHandler<Env>;
 
 async function ensureInitialUser(env: Env): Promise<void> {
   const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_users").first() as Record<string, unknown> | null;
@@ -1005,8 +1012,61 @@ async function listEmailMessages(env: Env) {
   return result.results;
 }
 
+async function countEmailMessages(env: Env): Promise<number> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM email_messages").first() as Record<string, unknown> | null;
+  return Number(row?.count || 0);
+}
+
 async function getEmailMessage(env: Env, id: number) {
   return env.DB.prepare("SELECT * FROM email_messages WHERE id = ?").bind(id).first() as Promise<Record<string, any> | null>;
+}
+
+async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
+  const rawBuffer = await new Response(message.raw).arrayBuffer();
+  const parsed = await PostalMime.parse(rawBuffer) as Record<string, any>;
+  const rawHash = await sha256Base64UrlBytes(rawBuffer);
+
+  const messageId = normalizeOptionalText(parsed.messageId || message.headers.get("message-id"));
+  const messageUid = messageId || rawHash;
+  const fromAddress = normalizeEmailAddress(parsed.from?.address) || normalizeOptionalText(message.from);
+  const toAddress = normalizeEmailAddress(parsed.to?.[0]?.address) || normalizeOptionalText(message.to);
+  const subject = normalizeOptionalText(parsed.subject || message.headers.get("subject")) || "Без темы";
+  const bodyText = normalizeOptionalText(parsed.text) || htmlToText(normalizeOptionalText(parsed.html));
+  const attachments = Array.isArray(parsed.attachments) ? parsed.attachments : [];
+  const attachmentNames = attachments
+    .map((attachment: any, index: number) => normalizeOptionalText(attachment.filename) || `attachment-${index + 1}`)
+    .filter(Boolean)
+    .join("; ");
+  const receivedAt = normalizeEmailDate(parsed.date || message.headers.get("date"));
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO email_messages (
+      mailbox_name,
+      mailbox_email,
+      michael_manager,
+      message_uid,
+      from_address,
+      to_address,
+      subject,
+      body_text,
+      attachment_names,
+      attachment_text,
+      received_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    "Cloudflare Email Routing",
+    normalizeOptionalText(message.to) || toAddress || null,
+    null,
+    messageUid,
+    fromAddress || null,
+    toAddress || null,
+    subject,
+    bodyText || "(письмо без текстового содержимого)",
+    attachmentNames || null,
+    null,
+    receivedAt || null,
+  ).run();
 }
 
 async function processEmailMessage(env: Env, emailId: number) {
@@ -1073,6 +1133,40 @@ function buildEmailAnalysisText(emailItem: Record<string, any>): string {
   if (emailItem.attachment_names) parts.push("", "Вложения:", emailItem.attachment_names);
   if (emailItem.attachment_text) parts.push("", "Текст из поддерживаемых вложений:", emailItem.attachment_text);
   return parts.join("\n");
+}
+
+function normalizeEmailAddress(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value && typeof value === "object" && "address" in value) {
+    return normalizeOptionalText((value as { address?: unknown }).address);
+  }
+  return "";
+}
+
+function normalizeEmailDate(value: unknown): string {
+  const text = normalizeOptionalText(value);
+  if (!text) return "";
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? text : date.toISOString();
+}
+
+function htmlToText(value: string): string {
+  if (!value) return "";
+  return value
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s+/g, "\n")
+    .trim();
 }
 
 async function getRequest(env: Env, id: number) {
@@ -2760,6 +2854,11 @@ function generateSessionToken(): string {
 async function sha256Base64(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return bytesToBase64(new Uint8Array(digest));
+}
+
+async function sha256Base64UrlBytes(value: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return bytesToBase64Url(new Uint8Array(digest));
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

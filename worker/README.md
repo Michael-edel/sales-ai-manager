@@ -18,6 +18,7 @@
 - `POST /api/requests/upload`
 - `POST /api/email/messages/:id/process`
 - `POST /api/email/send` через внешний `email-bridge`
+- входящие письма через Cloudflare Email Routing `email()` handler с сохранением в D1
 - `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
 - D1 таблицы `requests` и `email_messages`
 - пользователи, роли и cookie-сессии в D1
@@ -29,11 +30,10 @@
 
 ## Что пока не перенесено
 
-- IMAP-проверка mailcow/Yandex.
 - Встроенная SMTP-отправка из самого Worker.
 - Парсинг DOCX/XLSX внутри самого Worker.
 
-Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
+Для входящей почты Worker принимает письма через Cloudflare Email Routing. Если основной ящик остается на mailcow, настройте в mailcow пересылку копии через Sieve `redirect :copy` на технический адрес Email Routing. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
 
 ## Приложение к договору KBI Energy
 
@@ -232,6 +232,22 @@ GET /api/email/smtp/health
 ```text
 POST /api/email/send
 ```
+
+## Входящая почта через Cloudflare Email Routing
+
+Worker содержит `email()` handler. Он получает письмо из Cloudflare Email Routing, парсит raw MIME через `postal-mime`, сохраняет отправителя, получателя, тему, текст и имена вложений в таблицу `email_messages`.
+
+Маршрут доставки настраивается в Cloudflare Email Routing: технический адрес, например `ai-inbox@michael.kz`, должен быть связан с Worker `sales-ai-manager`.
+
+Для ящика mailcow `direktor@edel.kz` используйте Sieve-правило с копией:
+
+```sieve
+require ["copy"];
+
+redirect :copy "ai-inbox@michael.kz";
+```
+
+После доставки письма появятся в интерфейсе в блоке «Входящая почта». Кнопка «Обновить письма» только перечитывает список из D1, она не подключается к IMAP.
 
 ## Gemini API
 

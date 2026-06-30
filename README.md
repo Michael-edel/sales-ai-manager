@@ -59,7 +59,7 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Чек-лист задач по каждой заявке: цена с НДС, ответ клиенту, счет, приложение к договору.
 - Общая панель открытых задач, чтобы видеть незавершенные действия без открытия каждой заявки.
 - Встроенная авторизация: вход через форму, cookie-сессии, пользователи и роли.
-- Проверка входящей почты mailcow через IMAP.
+- Прием входящей почты через Cloudflare Email Routing с сохранением писем в D1.
 - Обработка сохраненного письма в заявку через `/api/email/messages/:id/process`.
 - SMTP-отправка блока D через отдельный `email-bridge`.
 - Отправка заявки в OpenAI API.
@@ -396,21 +396,42 @@ GET /api/parser/health
 
 Система сначала сделает транскрибацию аудио, затем сформирует результат A-F.
 
-## Проверка входящей почты mailcow
+## Прием входящей почты
 
-1. В Docker/FastAPI версии заполните `MAIL_IMAP_HOST` и `MAIL_ACCOUNTS` в `.env`.
-2. Перезапустите backend.
-3. В интерфейсе нажмите «Проверить почту».
-4. Новые непрочитанные письма появятся в блоке «Почта mailcow».
-5. Нажмите «Обработать письмо», чтобы создать заявку A-F.
+Cloudflare Worker не подключается к IMAP/POP3 ящикам mailcow напрямую. Для рабочей версии письма должны поступать в Worker через Cloudflare Email Routing:
 
-В Cloudflare-версии прямой IMAP не выполняется внутри Worker. Worker умеет обработать уже сохраненное письмо через:
+```text
+Клиент -> direktor@edel.kz
+mailcow сохраняет письмо в direktor@edel.kz
+mailcow отправляет копию -> технический адрес Cloudflare Email Routing
+Cloudflare Worker сохраняет письмо в D1 email_messages
+ИИ-менеджер показывает письмо в блоке «Входящая почта»
+```
+
+В Worker добавлен `email()` handler. Он получает MIME-письмо, извлекает отправителя, получателя, тему, текст и имена вложений, затем сохраняет письмо в `email_messages`. Повторная доставка того же письма не создает дубликат, если есть `Message-ID` или совпадает хеш raw-содержимого.
+
+В интерфейсе:
+
+1. Откройте блок «Входящая почта».
+2. Нажмите «Обновить письма».
+3. Новые письма появятся в списке после доставки через Cloudflare Email Routing.
+4. Нажмите «Обработать письмо», чтобы создать заявку A-F.
+
+Обработка уже сохраненного письма выполняется через:
 
 ```text
 POST /api/email/messages/:id/process
 ```
 
-Для production нужен email bridge/webhook, который читает IMAP/mailcow и записывает письма в D1 или вызывает Worker API.
+Настройка mailcow для одного ящика `direktor@edel.kz`: в user `sieve_before` добавьте пересылку копии на технический адрес Cloudflare:
+
+```sieve
+require ["copy"];
+
+redirect :copy "ai-inbox@michael.kz";
+```
+
+`redirect :copy` оставляет письмо в `direktor@edel.kz` и отправляет копию в Worker. Не меняйте MX записи домена `edel.kz`, если рабочая почта остается на mailcow.
 
 ## SMTP-отправка через email-bridge
 
@@ -515,7 +536,7 @@ cd ..\worker
 npm run dev
 ```
 
-Важно: Cloudflare-версия переносит заявки, D1, Gemini/OpenAI text/vision/audio и обработку PDF/DOCX/XLSX через внешний parser-service. IMAP-проверка mailcow/Yandex остается заглушкой в Worker и требует отдельного email bridge-сервиса для production.
+Важно: Cloudflare-версия переносит заявки, D1, Gemini/OpenAI text/vision/audio и обработку PDF/DOCX/XLSX через внешний parser-service. Входящая почта принимается через Cloudflare Email Routing; прямой IMAP/POP3 из Worker не используется.
 
 Cloudflare Worker поддерживает два LLM-провайдера:
 

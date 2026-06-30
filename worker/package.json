@@ -13,5 +13,8 @@
     "@cloudflare/workers-types": "latest",
     "typescript": "latest",
     "wrangler": "latest"
+  },
+  "dependencies": {
+    "postal-mime": "^2.7.5"
   }
 }
