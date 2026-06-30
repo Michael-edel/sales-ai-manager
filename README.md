@@ -23,6 +23,7 @@ https://ai.michael.kz
 - сессии хранятся в D1 `auth_sessions`;
 - пользователи хранятся в D1 `app_users`;
 - история заявок, CRM, задачи, документы сделки и журнал действий сохраняются в D1.
+- `.pdf`, `.docx` и `.xlsx` в Cloudflare-версии обрабатываются через отдельный `parser-service`, если задан `PARSER_SERVICE_URL`;
 - деплой выполняется через GitHub Actions на Node.js 24 с секретами `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GEMINI_API_KEY`.
 
 ## Роли и доступ
@@ -45,7 +46,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Python + FastAPI backend.
 - PostgreSQL для истории заявок.
 - Загрузка `.xlsx`, `.pdf`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.mp3`, `.m4a`, `.wav`, `.ogg`, `.opus`, `.webm`.
-- Извлечение текста из документов.
+- Извлечение текста из `.pdf`, `.docx`, `.xlsx`; в Cloudflare-версии это делает отдельный Python `parser-service`.
+- Vision-анализ сканированных PDF, если parser-service не нашел текст и вернул изображения страниц.
 - Vision-анализ скриншотов WhatsApp/Telegram и фото товара через OpenAI API.
 - Транскрибация голосовых сообщений WhatsApp/Telegram через OpenAI API.
 - Фиксация компании клиента, менеджера клиента, менеджера Michael и канала связи.
@@ -77,6 +79,7 @@ npx wrangler d1 create sales-ai-manager
 npx wrangler secret put ACCESS_PASSWORD
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
+npx wrangler secret put PARSER_SERVICE_TOKEN
 npm run d1:migrate:local
 
 cd ..\frontend
@@ -86,6 +89,8 @@ npm run build
 cd ..\worker
 npm run dev
 ```
+
+Для обработки `.pdf`, `.docx` и `.xlsx` в Cloudflare-версии отдельно запустите `parser-service` и задайте `PARSER_SERVICE_URL`.
 
 ## Legacy Docker запуск
 
@@ -264,6 +269,46 @@ npm run d1:migrate:remote
 5. Нажмите «Обработать».
 6. Система отправит изображение и пояснение в OpenAI vision-анализ и сохранит результат в историю.
 
+## Проверка PDF/DOCX/XLSX через parser-service
+
+Cloudflare Worker не может напрямую запускать Python-библиотеки для офисных документов. Для этого добавлен отдельный сервис:
+
+```text
+parser-service/
+```
+
+Локальный запуск:
+
+```powershell
+cd parser-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:PARSER_SERVICE_TOKEN="change-this-parser-token"
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+В `worker/.dev.vars` для локального запуска укажите:
+
+```env
+PARSER_SERVICE_URL=http://127.0.0.1:8080
+PARSER_SERVICE_TOKEN=change-this-parser-token
+```
+
+Для production `PARSER_SERVICE_URL` должен указывать на доступный HTTPS-адрес parser-service, а `PARSER_SERVICE_TOKEN` задается как secret:
+
+```powershell
+cd worker
+npx wrangler secret put PARSER_SERVICE_TOKEN
+```
+
+Что поддерживается:
+
+- `.docx`: текст параграфов и таблиц;
+- `.xlsx`: строки всех листов;
+- `.pdf`: текстовый слой через PyMuPDF;
+- сканированный `.pdf`: первые страницы рендерятся в JPEG и отправляются в vision-анализ.
+
 ## Проверка голосового WhatsApp
 
 1. В поле «Компания клиента» укажите `ТОО KBI Energy`, если запрос от этого клиента.
@@ -347,7 +392,7 @@ cd ..\worker
 npm run dev
 ```
 
-Важно: Cloudflare-версия пока переносит заявки, D1, OpenAI text/vision/audio. IMAP-проверка mailcow/Yandex остается в Docker/FastAPI-версии и требует отдельного bridge-сервиса для production.
+Важно: Cloudflare-версия переносит заявки, D1, Gemini/OpenAI text/vision/audio и обработку PDF/DOCX/XLSX через внешний parser-service. IMAP-проверка mailcow/Yandex остается заглушкой в Worker и требует отдельного email bridge-сервиса для production.
 
 Cloudflare Worker поддерживает два LLM-провайдера:
 

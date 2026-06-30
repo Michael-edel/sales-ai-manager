@@ -4,6 +4,7 @@ node_modules/
 .npm-cache/
 dist/
 .wrangler/
+.venv/
 .DS_Store
 __pycache__/
 *.pyc

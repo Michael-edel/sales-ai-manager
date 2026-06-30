@@ -7,6 +7,8 @@ export interface Env {
   OPENAI_TRANSCRIBE_MODEL: string;
   GEMINI_API_KEY: string;
   GEMINI_MODEL: string;
+  PARSER_SERVICE_URL: string;
+  PARSER_SERVICE_TOKEN: string;
   ACCESS_USERNAME: string;
   ACCESS_PASSWORD: string;
 }
@@ -36,6 +38,28 @@ type CurrentUser = {
 };
 
 type FormValue = string | File;
+
+type ParsedDocumentPage = {
+  page_number?: number;
+  text?: string;
+  image_base64?: string;
+  image_mime_type?: string;
+  image_data_url?: string;
+};
+
+type ParsedDocument = {
+  text?: string;
+  pages?: ParsedDocumentPage[];
+  parser?: string;
+  warnings?: string[];
+  filename?: string;
+  extension?: string;
+};
+
+type ParsedImagePage = {
+  pageNumber: number;
+  payload: FilePayload;
+};
 
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -398,9 +422,29 @@ async function processUpload(request: Request, env: Env) {
     if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
     aiResult = await analyzeText(env, originalText);
     sourceType = "audio";
+  } else if (isDocument(lowerName)) {
+    const parsed = await parseDocumentWithService(env, file);
+    const parsedText = parsedDocumentText(parsed);
+    const warningsText = parsed.warnings?.length
+      ? `\n\nПредупреждения parser-service:\n${parsed.warnings.join("\n")}`
+      : "";
+    originalText = `${context}Файл: ${fileName}\nParser: ${parsed.parser || "parser-service"}${warningsText}`;
+    if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
+
+    if (parsedText) {
+      originalText += `\n\nИзвлеченный текст:\n${limitText(parsedText, 120000)}`;
+      aiResult = await analyzeText(env, originalText);
+    } else {
+      const imagePages = parsedImagePages(parsed);
+      if (!imagePages.length) {
+        throw new Error("Parser service не нашел текст и не вернул изображения страниц для vision-анализа.");
+      }
+      originalText += `\n\nДокумент похож на скан. Parser service вернул ${imagePages.length} страниц для vision-анализа.`;
+      aiResult = await analyzeDocumentImages(env, imagePages, fileName, `${context}${managerNote}`.trim());
+    }
   } else {
     const text = await file.text().catch(() => "");
-    originalText = `${context}Файл: ${fileName}\n\n${managerNote ? `Пояснение менеджера:\n${managerNote}\n\n` : ""}${text || "Текст файла не извлечен в Worker MVP. Для PDF/DOCX/XLSX используйте текущую Docker-версию или добавьте отдельный parser/R2 pipeline."}`;
+    originalText = `${context}Файл: ${fileName}\n\n${managerNote ? `Пояснение менеджера:\n${managerNote}\n\n` : ""}${text || "Текст файла не извлечен. Поддерживаются изображения, голосовые файлы и документы PDF/DOCX/XLSX через parser-service."}`;
     aiResult = await analyzeText(env, originalText);
   }
 
@@ -453,6 +497,40 @@ async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string
           ],
         },
       ],
+    }),
+  });
+  return readOpenAIText(response);
+}
+
+async function analyzeDocumentImages(
+  env: Env,
+  pages: ParsedImagePage[],
+  fileName: string,
+  managerNote: string,
+): Promise<string> {
+  if (useGemini(env)) {
+    return analyzeDocumentImagesGemini(env, pages, fileName, managerNote);
+  }
+
+  requireOpenAI(env);
+  const content: Array<Record<string, string>> = [
+    {
+      type: "input_text",
+      text: `Проанализируй страницы документа как входящую B2B-заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+    },
+  ];
+  for (const page of pages) {
+    content.push({ type: "input_text", text: `Страница ${page.pageNumber}` });
+    content.push({ type: "input_image", image_url: page.payload.dataUrl });
+  }
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: openAIHeaders(env),
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL || "gpt-5.5",
+      instructions: SYSTEM_PROMPT,
+      input: [{ role: "user", content }],
     }),
   });
   return readOpenAIText(response);
@@ -522,6 +600,39 @@ async function analyzeImageGemini(env: Env, filePayload: FilePayload, fileName: 
           ],
         },
       ],
+    }),
+  });
+  return readGeminiText(response);
+}
+
+async function analyzeDocumentImagesGemini(
+  env: Env,
+  pages: ParsedImagePage[],
+  fileName: string,
+  managerNote: string,
+): Promise<string> {
+  requireGemini(env);
+  const parts: Array<Record<string, unknown>> = [
+    {
+      text: `Проанализируй страницы документа как входящую B2B-заявку. Имя файла: ${fileName}\n\nПояснение менеджера:\n${managerNote || "нет"}`,
+    },
+  ];
+  for (const page of pages) {
+    parts.push({ text: `Страница ${page.pageNumber}` });
+    parts.push({
+      inline_data: {
+        mime_type: page.payload.mimeType,
+        data: page.payload.base64,
+      },
+    });
+  }
+
+  const response = await fetch(geminiGenerateUrl(env), {
+    method: "POST",
+    headers: geminiHeaders(env),
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ parts }],
     }),
   });
   return readGeminiText(response);
@@ -1140,6 +1251,10 @@ function isAudio(fileName: string): boolean {
   return [".mp3", ".m4a", ".wav", ".ogg", ".opus", ".webm"].some((extension) => fileName.endsWith(extension));
 }
 
+function isDocument(fileName: string): boolean {
+  return [".pdf", ".docx", ".xlsx"].some((extension) => fileName.endsWith(extension));
+}
+
 type FilePayload = {
   mimeType: string;
   base64: string;
@@ -1158,6 +1273,89 @@ async function fileToPayload(file: File): Promise<FilePayload> {
     base64,
     dataUrl: `data:${mimeType};base64,${base64}`,
   };
+}
+
+async function parseDocumentWithService(env: Env, file: File): Promise<ParsedDocument> {
+  const baseUrl = (env.PARSER_SERVICE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error(
+      "PARSER_SERVICE_URL не задан. Для обработки PDF/DOCX/XLSX запустите parser-service и укажите его URL в настройках Worker.",
+    );
+  }
+
+  const formData = new FormData();
+  formData.append("file", file, file.name || "uploaded-file");
+
+  const headers = new Headers();
+  if (env.PARSER_SERVICE_TOKEN) headers.set("X-Parser-Token", env.PARSER_SERVICE_TOKEN);
+
+  const response = await fetch(`${baseUrl}/parse`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  const raw = await response.text();
+  let data: any = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const detail = typeof data?.detail === "string" ? data.detail : raw || response.statusText;
+    throw new Error(`Ошибка parser-service: ${detail}`);
+  }
+
+  if (!data || typeof data !== "object") throw new Error("Parser service вернул пустой ответ.");
+  return data as ParsedDocument;
+}
+
+function parsedDocumentText(parsed: ParsedDocument): string {
+  const rootText = normalizeOptionalText(parsed.text);
+  if (rootText) return rootText;
+
+  const parts: string[] = [];
+  for (const page of parsed.pages || []) {
+    const text = normalizeOptionalText(page.text);
+    if (text) {
+      const pageNumber = Number(page.page_number || 0);
+      parts.push(pageNumber ? `Страница ${pageNumber}:\n${text}` : text);
+    }
+  }
+
+  return parts.join("\n\n").trim();
+}
+
+function parsedImagePages(parsed: ParsedDocument): ParsedImagePage[] {
+  const pages: ParsedImagePage[] = [];
+  for (const [index, page] of (parsed.pages || []).entries()) {
+    const payload = filePayloadFromParsedPage(page);
+    if (payload) pages.push({ pageNumber: Number(page.page_number || index + 1), payload });
+  }
+  return pages;
+}
+
+function filePayloadFromParsedPage(page: ParsedDocumentPage): FilePayload | null {
+  const dataUrl = normalizeOptionalText(page.image_data_url);
+  if (dataUrl) {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) return { mimeType: match[1], base64: match[2], dataUrl };
+  }
+
+  const base64 = normalizeOptionalText(page.image_base64);
+  if (!base64) return null;
+  const mimeType = normalizeOptionalText(page.image_mime_type) || "image/jpeg";
+  return {
+    mimeType,
+    base64,
+    dataUrl: `data:${mimeType};base64,${base64}`,
+  };
+}
+
+function limitText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}\n\n[Текст обрезан до ${maxLength} символов перед отправкой в ИИ.]`;
 }
 
 function stringValue(value: FormValue | null): string {

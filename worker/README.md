@@ -17,16 +17,18 @@
 - `POST /api/requests/text`
 - `POST /api/requests/upload`
 - D1 таблицы `requests` и `email_messages`
-- OpenAI Responses API для текста и изображений
-- OpenAI audio transcription для голосовых
+- пользователи, роли и cookie-сессии в D1
+- Gemini/OpenAI для текста и изображений
+- Gemini/OpenAI audio transcription для голосовых
+- PDF/DOCX/XLSX через внешний `parser-service`
 
 ## Что пока не перенесено
 
 - IMAP-проверка mailcow/Yandex.
 - SMTP-отправка.
-- Парсинг PDF/DOCX/XLSX внутри Worker.
+- Парсинг PDF/DOCX/XLSX внутри самого Worker.
 
-Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API.
+Для почты лучше сделать отдельный bridge-сервис или webhook-поток, который будет читать IMAP и отправлять письма в Worker API. Для документов уже добавлен Python-сервис `../parser-service`.
 
 ## Подготовка
 
@@ -69,7 +71,7 @@ npx wrangler secret put OPENAI_API_KEY
 
 ## Защита доступа
 
-Интерфейс и все API закрыты HTTP Basic Auth.
+Интерфейс открывается как SPA, но все API закрыты встроенной авторизацией приложения через cookie-сессии.
 
 Логин задается в `wrangler.toml`:
 
@@ -91,6 +93,44 @@ notepad .dev.vars
 ```
 
 В `.dev.vars` укажите свой `ACCESS_PASSWORD`. Этот файл добавлен в `.gitignore` и не должен попадать в GitHub.
+
+Первый пользователь создается автоматически, если таблица `app_users` пустая:
+
+```text
+логин: manager
+роль: admin
+пароль: ACCESS_PASSWORD
+```
+
+## Parser-service для PDF/DOCX/XLSX
+
+Worker вызывает внешний FastAPI-сервис, потому что Cloudflare Worker не запускает Python-библиотеки `PyMuPDF`, `python-docx` и `openpyxl`.
+
+Локально:
+
+```powershell
+cd ..\parser-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:PARSER_SERVICE_TOKEN="change-this-parser-token"
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+В `worker/.dev.vars`:
+
+```env
+PARSER_SERVICE_URL=http://127.0.0.1:8080
+PARSER_SERVICE_TOKEN=change-this-parser-token
+```
+
+Для production:
+
+```powershell
+npx wrangler secret put PARSER_SERVICE_TOKEN
+```
+
+`PARSER_SERVICE_URL` добавьте как Worker variable в Cloudflare Dashboard или в `wrangler.toml`, если URL не секретный.
 
 ## Gemini API
 
