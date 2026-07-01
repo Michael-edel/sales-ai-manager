@@ -121,10 +121,10 @@ type EmailMessageInput = {
   received_at: string | null;
 };
 
-type EmailFolder = "inbox" | "in_work" | "done" | "trash";
+type EmailFolder = "inbox" | "in_work" | "suppliers" | "buyers" | "done" | "trash";
 type EmailStatus = "received" | "in_work" | "done" | "deleted";
 
-const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "done", "trash"];
+const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers", "done", "trash"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
 
 const SESSION_COOKIE_NAME = "sales_ai_session";
@@ -1614,6 +1614,8 @@ async function getEmailFolderStats(env: Env) {
   const stats: Record<EmailFolder, { total: number; unread: number }> = {
     inbox: { total: 0, unread: 0 },
     in_work: { total: 0, unread: 0 },
+    suppliers: { total: 0, unread: 0 },
+    buyers: { total: 0, unread: 0 },
     done: { total: 0, unread: 0 },
     trash: { total: 0, unread: 0 },
   };

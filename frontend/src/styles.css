@@ -1199,9 +1199,25 @@ button:disabled,
   border: 1px solid #e1e6df;
   border-radius: 8px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   margin: 0 0 14px;
   padding: 10px 12px;
+}
+
+.email-sender-filters-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.email-sender-filters-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.email-sender-filters-header small {
+  color: #6b756e;
 }
 
 .email-sender-filter-list {
@@ -1326,6 +1342,7 @@ pre {
   .result-actions,
   .section-title-with-action,
   .email-controls,
+  .email-sender-filters-header,
   .email-detail-header,
   .email-detail-actions,
   .email-item-actions,

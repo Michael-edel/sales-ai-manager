@@ -130,6 +130,8 @@ const TASK_STATUS_LABELS = {
 const EMAIL_FOLDERS = [
   ["inbox", "Полученные"],
   ["in_work", "В работе"],
+  ["suppliers", "Поставщики"],
+  ["buyers", "Покупатели"],
   ["done", "Закрытые"],
   ["trash", "Удаленные"],
 ];
@@ -201,6 +203,7 @@ export default function App() {
   const [emailSenderFilters, setEmailSenderFilters] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailCollapsed, setEmailCollapsed] = useState(false);
+  const [emailSenderFiltersCollapsed, setEmailSenderFiltersCollapsed] = useState(true);
   const [emailStatus, setEmailStatus] = useState("");
   const [emailSendStatus, setEmailSendStatus] = useState("");
   const [smtpStatus, setSmtpStatus] = useState(null);
@@ -743,6 +746,26 @@ export default function App() {
             >
               <FolderOpen size={16} />
               В работу
+            </button>
+          )}
+          {email.folder !== "suppliers" && email.folder !== "trash" && (
+            <button
+              className="secondary-button"
+              onClick={() => handleUpdateEmail(email, { folder: "suppliers", is_read: true })}
+              disabled={loading || !canManageRequests}
+            >
+              <FolderOpen size={16} />
+              В поставщики
+            </button>
+          )}
+          {email.folder !== "buyers" && email.folder !== "trash" && (
+            <button
+              className="secondary-button"
+              onClick={() => handleUpdateEmail(email, { folder: "buyers", is_read: true })}
+              disabled={loading || !canManageRequests}
+            >
+              <FolderOpen size={16} />
+              В покупатели
             </button>
           )}
           {email.folder !== "done" && email.folder !== "trash" && (
@@ -1513,21 +1536,36 @@ export default function App() {
 
               {emailSenderFilters.length > 0 && (
                 <div className="email-sender-filters">
-                  <strong>Скрытые отправители</strong>
-                  <div className="email-sender-filter-list">
-                    {emailSenderFilters.map((filter) => (
-                      <span className="email-sender-filter" key={filter.id}>
-                        {filter.sender_label || filter.sender_email}
-                        <button
-                          type="button"
-                          onClick={() => handleRestoreEmailSender(filter)}
-                          disabled={loading || !canManageRequests}
-                        >
-                          показывать
-                        </button>
-                      </span>
-                    ))}
+                  <div className="email-sender-filters-header">
+                    <div>
+                      <strong>Скрытые отправители</strong>
+                      <small>{emailSenderFilters.length} адресов не показываются в рабочих папках</small>
+                    </div>
+                    <button
+                      className="secondary-button compact-button"
+                      type="button"
+                      onClick={() => setEmailSenderFiltersCollapsed((current) => !current)}
+                    >
+                      {emailSenderFiltersCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                      {emailSenderFiltersCollapsed ? "Показать" : "Свернуть"}
+                    </button>
                   </div>
+                  {!emailSenderFiltersCollapsed && (
+                    <div className="email-sender-filter-list">
+                      {emailSenderFilters.map((filter) => (
+                        <span className="email-sender-filter" key={filter.id}>
+                          {filter.sender_label || filter.sender_email}
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreEmailSender(filter)}
+                            disabled={loading || !canManageRequests}
+                          >
+                            показывать
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
