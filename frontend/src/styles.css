@@ -1053,6 +1053,11 @@ button:disabled,
   gap: 10px;
 }
 
+.email-list-entry {
+  display: grid;
+  gap: 8px;
+}
+
 .email-item {
   align-items: flex-start;
   border: 1px solid #d9dfd7;
@@ -1124,12 +1129,15 @@ button:disabled,
   justify-content: flex-end;
 }
 
+.email-item-actions {
+  flex-shrink: 0;
+}
+
 .email-detail {
   border: 1px solid #d9dfd7;
   border-radius: 8px;
   display: grid;
   gap: 12px;
-  margin-top: 14px;
   padding: 14px;
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, CheckSquare, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, ChevronUp, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createWhatsAppTemplate,
@@ -573,6 +573,12 @@ export default function App() {
   }
 
   async function handleOpenEmail(email) {
+    if (selectedEmail?.id === email.id) {
+      setSelectedEmail(null);
+      setEmailStatus("");
+      return;
+    }
+
     setSelectedEmail(email);
     setEmailStatus("");
     if (email.is_read) return;
@@ -636,6 +642,94 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function renderEmailDetail(email) {
+    return (
+      <div className="email-detail">
+        <div className="email-detail-header">
+          <div>
+            <h3>{email.subject || "Без темы"}</h3>
+            <p>{email.from_address || "Отправитель не определен"} → {email.to_address || email.mailbox_email || "direktor@edel.kz"}</p>
+            <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
+          </div>
+          <div className="email-tags">
+            <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
+              {email.is_read ? "Просмотрено" : "Новое"}
+            </span>
+            <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
+            <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
+          </div>
+        </div>
+
+        {email.attachment_names && (
+          <div className="email-attachments">
+            <strong>Вложения:</strong> {email.attachment_names}
+          </div>
+        )}
+
+        <pre className="email-body">{email.body_text || email.body_preview || "Текст письма пустой."}</pre>
+
+        <div className="email-detail-actions">
+          {email.folder !== "in_work" && email.folder !== "trash" && (
+            <button
+              className="secondary-button"
+              onClick={() => handleUpdateEmail(email, { folder: "in_work", is_read: true })}
+              disabled={loading || !canManageRequests}
+            >
+              <FolderOpen size={16} />
+              В работу
+            </button>
+          )}
+          {email.folder !== "done" && email.folder !== "trash" && (
+            <button
+              className="secondary-button"
+              onClick={() => handleUpdateEmail(email, { folder: "done", is_read: true })}
+              disabled={loading || !canManageRequests}
+            >
+              <Archive size={16} />
+              Закрыть
+            </button>
+          )}
+          {email.folder === "trash" && (
+            <button
+              className="secondary-button"
+              onClick={() => handleUpdateEmail(email, { folder: "inbox", is_read: true })}
+              disabled={loading || !canManageRequests}
+            >
+              <RotateCcw size={16} />
+              Вернуть
+            </button>
+          )}
+          <button
+            className="secondary-button"
+            onClick={() => handleUpdateEmail(email, { is_read: false })}
+            disabled={loading || !canManageRequests || !email.is_read}
+          >
+            <Inbox size={16} />
+            Не просмотрено
+          </button>
+          <button
+            className="secondary-button"
+            onClick={() => handleProcessEmail(email.id)}
+            disabled={loading || !canManageRequests || Boolean(email.processed_request_id) || email.folder === "trash"}
+          >
+            <FilePlus2 size={16} />
+            {email.processed_request_id ? `Заявка #${email.processed_request_id}` : "Создать заявку"}
+          </button>
+          {email.folder !== "trash" && (
+            <button
+              className="secondary-button danger-button"
+              onClick={() => handleDeleteEmail(email)}
+              disabled={loading || !canManageRequests}
+            >
+              <Trash2 size={16} />
+              Удалить
+            </button>
+          )}
+        </div>
+      </div>
+    );
   }
 
   async function handleSendClientEmail() {
@@ -1316,6 +1410,10 @@ export default function App() {
               <Mail size={18} />
               Обновить письма
             </button>
+            <button className="secondary-button" onClick={() => setSelectedEmail(null)} disabled={!selectedEmail}>
+              <ChevronUp size={18} />
+              Свернуть все
+            </button>
             <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
             {emailStatus && <span className="email-status">{emailStatus}</span>}
           </div>
@@ -1340,122 +1438,55 @@ export default function App() {
           <div className="email-list">
             {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
             {emails.map((email) => (
-              <article
-                className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}
-                key={email.id}
-              >
-                <div className="email-main">
-                  <strong>{email.subject || "Без темы"}</strong>
-                  <span>{email.from_address || "Отправитель не определен"}</span>
-                  <small>Ящик: {email.mailbox_email || "не указан"}</small>
-                  <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
-                  <div className="email-tags">
-                    <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
-                      {email.is_read ? "Просмотрено" : "Новое"}
-                    </span>
-                    <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
-                    <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
-                    {email.processed_request_id && <span className="email-chip email-chip-linked">Заявка #{email.processed_request_id}</span>}
+              <div className="email-list-entry" key={email.id}>
+                <article className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}>
+                  <div className="email-main">
+                    <strong>{email.subject || "Без темы"}</strong>
+                    <span>{email.from_address || "Отправитель не определен"}</span>
+                    <small>Ящик: {email.mailbox_email || "не указан"}</small>
+                    <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
+                    <div className="email-tags">
+                      <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
+                        {email.is_read ? "Просмотрено" : "Новое"}
+                      </span>
+                      <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
+                      <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
+                      {email.processed_request_id && <span className="email-chip email-chip-linked">Заявка #{email.processed_request_id}</span>}
+                    </div>
+                    {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
+                    {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
+                    {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
                   </div>
-                  {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
-                  {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
-                  {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
-                </div>
-                <div className="email-item-actions">
-                  <button className="secondary-button" onClick={() => handleOpenEmail(email)} disabled={loading}>
-                    <Eye size={16} />
-                    Открыть
-                  </button>
-                </div>
-              </article>
+                  <div className="email-item-actions">
+                    {email.folder === "trash" ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => handleUpdateEmail(email, { folder: "inbox", is_read: true })}
+                        disabled={loading || !canManageRequests}
+                      >
+                        <RotateCcw size={16} />
+                        Вернуть
+                      </button>
+                    ) : (
+                      <button
+                        className="secondary-button danger-button"
+                        onClick={() => handleDeleteEmail(email)}
+                        disabled={loading || !canManageRequests}
+                      >
+                        <Trash2 size={16} />
+                        Удалить
+                      </button>
+                    )}
+                    <button className="secondary-button" onClick={() => handleOpenEmail(email)} disabled={loading}>
+                      {selectedEmail?.id === email.id ? <ChevronUp size={16} /> : <Eye size={16} />}
+                      {selectedEmail?.id === email.id ? "Свернуть" : "Открыть"}
+                    </button>
+                  </div>
+                </article>
+                {selectedEmail?.id === email.id && renderEmailDetail(selectedEmail)}
+              </div>
             ))}
           </div>
-
-          {selectedEmail && (
-            <div className="email-detail">
-              <div className="email-detail-header">
-                <div>
-                  <h3>{selectedEmail.subject || "Без темы"}</h3>
-                  <p>{selectedEmail.from_address || "Отправитель не определен"} → {selectedEmail.to_address || selectedEmail.mailbox_email || "direktor@edel.kz"}</p>
-                  <small>Получено: {formatDateTime(selectedEmail.received_at || selectedEmail.created_at)}</small>
-                </div>
-                <div className="email-tags">
-                  <span className={`email-chip ${selectedEmail.is_read ? "email-chip-read" : "email-chip-new"}`}>
-                    {selectedEmail.is_read ? "Просмотрено" : "Новое"}
-                  </span>
-                  <span className="email-chip">{EMAIL_STATUS_LABELS[selectedEmail.status] || "Получено"}</span>
-                  <span className="email-chip">{EMAIL_FOLDER_LABELS[selectedEmail.folder] || "Полученные"}</span>
-                </div>
-              </div>
-
-              {selectedEmail.attachment_names && (
-                <div className="email-attachments">
-                  <strong>Вложения:</strong> {selectedEmail.attachment_names}
-                </div>
-              )}
-
-              <pre className="email-body">{selectedEmail.body_text || selectedEmail.body_preview || "Текст письма пустой."}</pre>
-
-              <div className="email-detail-actions">
-                {selectedEmail.folder !== "in_work" && selectedEmail.folder !== "trash" && (
-                  <button
-                    className="secondary-button"
-                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "in_work", is_read: true })}
-                    disabled={loading || !canManageRequests}
-                  >
-                    <FolderOpen size={16} />
-                    В работу
-                  </button>
-                )}
-                {selectedEmail.folder !== "done" && selectedEmail.folder !== "trash" && (
-                  <button
-                    className="secondary-button"
-                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "done", is_read: true })}
-                    disabled={loading || !canManageRequests}
-                  >
-                    <Archive size={16} />
-                    Закрыть
-                  </button>
-                )}
-                {selectedEmail.folder === "trash" && (
-                  <button
-                    className="secondary-button"
-                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "inbox", is_read: true })}
-                    disabled={loading || !canManageRequests}
-                  >
-                    <RotateCcw size={16} />
-                    Вернуть
-                  </button>
-                )}
-                <button
-                  className="secondary-button"
-                  onClick={() => handleUpdateEmail(selectedEmail, { is_read: false })}
-                  disabled={loading || !canManageRequests || !selectedEmail.is_read}
-                >
-                  <Inbox size={16} />
-                  Не просмотрено
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={() => handleProcessEmail(selectedEmail.id)}
-                  disabled={loading || !canManageRequests || Boolean(selectedEmail.processed_request_id) || selectedEmail.folder === "trash"}
-                >
-                  <FilePlus2 size={16} />
-                  {selectedEmail.processed_request_id ? `Заявка #${selectedEmail.processed_request_id}` : "Создать заявку"}
-                </button>
-                {selectedEmail.folder !== "trash" && (
-                  <button
-                    className="secondary-button danger-button"
-                    onClick={() => handleDeleteEmail(selectedEmail)}
-                    disabled={loading || !canManageRequests}
-                  >
-                    <Trash2 size={16} />
-                    Удалить
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
         </section>
 
         {authUser.role === "admin" && (
