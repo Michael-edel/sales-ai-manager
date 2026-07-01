@@ -207,8 +207,20 @@ export function sendEmailReply(payload) {
   });
 }
 
-export function listEmailMessages() {
-  return request("/email/messages");
+export function listEmailMessages(folder = "inbox") {
+  return request(`/email/messages?folder=${encodeURIComponent(folder)}`);
+}
+
+export function updateEmailMessage(emailId, payload) {
+  return request(`/email/messages/${emailId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteEmailMessage(emailId) {
+  return request(`/email/messages/${emailId}`, { method: "DELETE" });
 }
 
 export function processEmailMessage(emailId) {

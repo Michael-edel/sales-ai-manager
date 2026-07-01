@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, Clipboard, FilePlus2, FileText, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createWhatsAppTemplate,
   createUser,
   createRequestTask,
   deleteRequest,
+  deleteEmailMessage,
   deleteRequestTask,
   generateContractAppendix,
   getCrmSummary,
@@ -29,6 +30,7 @@ import {
   sendEmailReply,
   sendWhatsAppTemplate,
   updateDealDocuments,
+  updateEmailMessage,
   updateAiRules,
   updateWhatsAppTemplates,
   updateUserActive,
@@ -65,6 +67,12 @@ function requestTitle(item) {
   if (item.source_type === "audio") return `Голос: ${item.uploaded_file_name}`;
   if (item.source_type === "email") return "Email-заявка";
   return item.uploaded_file_name || "Файл заявки";
+}
+
+function formatDateTime(value) {
+  if (!value) return "не указано";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 const STATUS_OPTIONS = [
@@ -115,6 +123,22 @@ const TASK_STATUS_LABELS = {
   open: "Открыта",
   done: "Выполнена",
   cancelled: "Отменена",
+};
+
+const EMAIL_FOLDERS = [
+  ["inbox", "Полученные"],
+  ["in_work", "В работе"],
+  ["done", "Закрытые"],
+  ["trash", "Удаленные"],
+];
+
+const EMAIL_FOLDER_LABELS = Object.fromEntries(EMAIL_FOLDERS);
+
+const EMAIL_STATUS_LABELS = {
+  received: "Получено",
+  in_work: "В работе",
+  done: "Закрыто",
+  deleted: "Удалено",
 };
 
 const ROLE_OPTIONS = [
@@ -170,6 +194,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [emails, setEmails] = useState([]);
+  const [emailFolder, setEmailFolder] = useState("inbox");
+  const [emailStats, setEmailStats] = useState({});
+  const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailStatus, setEmailStatus] = useState("");
   const [emailSendStatus, setEmailSendStatus] = useState("");
   const [smtpStatus, setSmtpStatus] = useState(null);
@@ -246,9 +273,15 @@ export default function App() {
     }
   }
 
-  async function refreshEmails() {
-    const items = await listEmailMessages();
+  async function refreshEmails(folder = emailFolder) {
+    const result = await listEmailMessages(folder);
+    const items = Array.isArray(result) ? result : result.items || [];
     setEmails(items);
+    setEmailStats(Array.isArray(result) ? {} : result.stats || {});
+    setSelectedEmail((current) => {
+      if (!current) return null;
+      return items.find((item) => item.id === current.id) || null;
+    });
   }
 
   async function refreshParserStatus() {
@@ -328,6 +361,9 @@ export default function App() {
     setRequests([]);
     setSelected(null);
     setOpenTasks([]);
+    setEmails([]);
+    setEmailStats({});
+    setSelectedEmail(null);
     setCrmSummary(null);
   }
 
@@ -517,7 +553,67 @@ export default function App() {
     try {
       const result = await checkEmail();
       setEmailStatus(result.detail || `Писем в базе: ${result.total_seen || 0}`);
-      await refreshEmails();
+      await refreshEmails(emailFolder);
+    } catch (err) {
+      setEmailStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSelectEmailFolder(folder) {
+    setEmailFolder(folder);
+    setSelectedEmail(null);
+    setEmailStatus("");
+    try {
+      await refreshEmails(folder);
+    } catch (err) {
+      setEmailStatus(err.message);
+    }
+  }
+
+  async function handleOpenEmail(email) {
+    setSelectedEmail(email);
+    setEmailStatus("");
+    if (email.is_read) return;
+
+    try {
+      const updated = await updateEmailMessage(email.id, { is_read: true });
+      setSelectedEmail(updated);
+      await refreshEmails(emailFolder);
+    } catch (err) {
+      setEmailStatus(err.message);
+    }
+  }
+
+  async function handleUpdateEmail(email, payload) {
+    if (!canManageRequests) return;
+    setEmailStatus("");
+    setLoading(true);
+    try {
+      const updated = await updateEmailMessage(email.id, payload);
+      if (payload.folder && payload.folder !== emailFolder) {
+        setSelectedEmail(null);
+      } else {
+        setSelectedEmail(updated);
+      }
+      await refreshEmails(emailFolder);
+    } catch (err) {
+      setEmailStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDeleteEmail(email) {
+    if (!canManageRequests) return;
+    if (!window.confirm("Переместить письмо в удаленные?")) return;
+    setEmailStatus("");
+    setLoading(true);
+    try {
+      await deleteEmailMessage(email.id);
+      setSelectedEmail(null);
+      await refreshEmails(emailFolder);
     } catch (err) {
       setEmailStatus(err.message);
     } finally {
@@ -532,7 +628,9 @@ export default function App() {
     try {
       const item = await processEmailMessage(emailId);
       await refreshHistory(item);
-      await refreshEmails();
+      setEmailFolder("in_work");
+      await refreshEmails("in_work");
+      setEmailStatus(`Создана заявка #${item.id} из письма.`);
     } catch (err) {
       setEmailStatus(err.message);
     } finally {
@@ -1222,27 +1320,142 @@ export default function App() {
             {emailStatus && <span className="email-status">{emailStatus}</span>}
           </div>
 
+          <div className="email-folder-tabs">
+            {EMAIL_FOLDERS.map(([folder, label]) => {
+              const stats = emailStats[folder] || { total: 0, unread: 0 };
+              return (
+                <button
+                  key={folder}
+                  className={`email-folder-tab ${emailFolder === folder ? "email-folder-tab-active" : ""}`}
+                  onClick={() => handleSelectEmailFolder(folder)}
+                  disabled={loading}
+                >
+                  <span>{label}</span>
+                  <small>{stats.total || 0}{stats.unread ? ` / новых ${stats.unread}` : ""}</small>
+                </button>
+              );
+            })}
+          </div>
+
           <div className="email-list">
             {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
             {emails.map((email) => (
-              <article className="email-item" key={email.id}>
-                <div>
+              <article
+                className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}
+                key={email.id}
+              >
+                <div className="email-main">
                   <strong>{email.subject || "Без темы"}</strong>
                   <span>{email.from_address || "Отправитель не определен"}</span>
                   <small>Ящик: {email.mailbox_email || "не указан"}</small>
+                  <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
+                  <div className="email-tags">
+                    <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
+                      {email.is_read ? "Просмотрено" : "Новое"}
+                    </span>
+                    <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
+                    <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
+                    {email.processed_request_id && <span className="email-chip email-chip-linked">Заявка #{email.processed_request_id}</span>}
+                  </div>
+                  {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
                   {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
                   {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
                 </div>
-                <button
-                  className="secondary-button"
-                  onClick={() => handleProcessEmail(email.id)}
-                  disabled={loading || !canManageRequests || Boolean(email.processed_request_id)}
-                >
-                  {email.processed_request_id ? `Заявка #${email.processed_request_id}` : "Обработать письмо"}
-                </button>
+                <div className="email-item-actions">
+                  <button className="secondary-button" onClick={() => handleOpenEmail(email)} disabled={loading}>
+                    <Eye size={16} />
+                    Открыть
+                  </button>
+                </div>
               </article>
             ))}
           </div>
+
+          {selectedEmail && (
+            <div className="email-detail">
+              <div className="email-detail-header">
+                <div>
+                  <h3>{selectedEmail.subject || "Без темы"}</h3>
+                  <p>{selectedEmail.from_address || "Отправитель не определен"} → {selectedEmail.to_address || selectedEmail.mailbox_email || "direktor@edel.kz"}</p>
+                  <small>Получено: {formatDateTime(selectedEmail.received_at || selectedEmail.created_at)}</small>
+                </div>
+                <div className="email-tags">
+                  <span className={`email-chip ${selectedEmail.is_read ? "email-chip-read" : "email-chip-new"}`}>
+                    {selectedEmail.is_read ? "Просмотрено" : "Новое"}
+                  </span>
+                  <span className="email-chip">{EMAIL_STATUS_LABELS[selectedEmail.status] || "Получено"}</span>
+                  <span className="email-chip">{EMAIL_FOLDER_LABELS[selectedEmail.folder] || "Полученные"}</span>
+                </div>
+              </div>
+
+              {selectedEmail.attachment_names && (
+                <div className="email-attachments">
+                  <strong>Вложения:</strong> {selectedEmail.attachment_names}
+                </div>
+              )}
+
+              <pre className="email-body">{selectedEmail.body_text || selectedEmail.body_preview || "Текст письма пустой."}</pre>
+
+              <div className="email-detail-actions">
+                {selectedEmail.folder !== "in_work" && selectedEmail.folder !== "trash" && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "in_work", is_read: true })}
+                    disabled={loading || !canManageRequests}
+                  >
+                    <FolderOpen size={16} />
+                    В работу
+                  </button>
+                )}
+                {selectedEmail.folder !== "done" && selectedEmail.folder !== "trash" && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "done", is_read: true })}
+                    disabled={loading || !canManageRequests}
+                  >
+                    <Archive size={16} />
+                    Закрыть
+                  </button>
+                )}
+                {selectedEmail.folder === "trash" && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => handleUpdateEmail(selectedEmail, { folder: "inbox", is_read: true })}
+                    disabled={loading || !canManageRequests}
+                  >
+                    <RotateCcw size={16} />
+                    Вернуть
+                  </button>
+                )}
+                <button
+                  className="secondary-button"
+                  onClick={() => handleUpdateEmail(selectedEmail, { is_read: false })}
+                  disabled={loading || !canManageRequests || !selectedEmail.is_read}
+                >
+                  <Inbox size={16} />
+                  Не просмотрено
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleProcessEmail(selectedEmail.id)}
+                  disabled={loading || !canManageRequests || Boolean(selectedEmail.processed_request_id) || selectedEmail.folder === "trash"}
+                >
+                  <FilePlus2 size={16} />
+                  {selectedEmail.processed_request_id ? `Заявка #${selectedEmail.processed_request_id}` : "Создать заявку"}
+                </button>
+                {selectedEmail.folder !== "trash" && (
+                  <button
+                    className="secondary-button danger-button"
+                    onClick={() => handleDeleteEmail(selectedEmail)}
+                    disabled={loading || !canManageRequests}
+                  >
+                    <Trash2 size={16} />
+                    Удалить
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         {authUser.role === "admin" && (

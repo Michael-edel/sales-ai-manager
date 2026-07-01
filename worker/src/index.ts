@@ -121,6 +121,12 @@ type EmailMessageInput = {
   received_at: string | null;
 };
 
+type EmailFolder = "inbox" | "in_work" | "done" | "trash";
+type EmailStatus = "received" | "in_work" | "done" | "deleted";
+
+const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "done", "trash"];
+const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
+
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -348,7 +354,7 @@ export default {
         return json(await getCrmSummary(env));
       }
       if (request.method === "GET" && url.pathname === "/api/email/messages") {
-        return json(await listEmailMessages(env));
+        return json(await listEmailMessages(env, url.searchParams.get("folder")));
       }
       if (request.method === "GET" && url.pathname === "/api/email/smtp/health") {
         return json(await checkEmailBridge(env));
@@ -377,6 +383,25 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const item = await processEmailMessage(env, Number(emailProcessMatch[1]));
         return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
+      }
+
+      const emailMessageMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)$/);
+      if (emailMessageMatch) {
+        const emailId = Number(emailMessageMatch[1]);
+        if (request.method === "GET") {
+          const item = await getEmailMessage(env, emailId);
+          return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
+        }
+        if (request.method === "PATCH") {
+          if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const item = await updateEmailMessage(request, env, emailId);
+          return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
+        }
+        if (request.method === "DELETE") {
+          if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const item = await moveEmailMessageToTrash(env, emailId);
+          return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
+        }
       }
 
       const requestMatch = url.pathname.match(/^\/api\/requests\/(\d+)$/);
@@ -1522,9 +1547,23 @@ async function listRequests(env: Env) {
   return result.results;
 }
 
-async function listEmailMessages(env: Env) {
-  const result = await env.DB.prepare("SELECT * FROM email_messages ORDER BY created_at DESC LIMIT 100").all();
-  return result.results;
+async function listEmailMessages(env: Env, folderParam: string | null) {
+  const folder = normalizeEmailFolder(folderParam) || "inbox";
+  const whereClause = folder === "trash" ? "folder = ?" : "folder = ?";
+  const result = await env.DB.prepare(`
+    SELECT
+      *,
+      substr(body_text, 1, 420) AS body_preview
+    FROM email_messages
+    WHERE ${whereClause}
+    ORDER BY COALESCE(received_at, created_at) DESC, id DESC
+    LIMIT 100
+  `).bind(folder).all();
+  return {
+    folder,
+    items: result.results,
+    stats: await getEmailFolderStats(env),
+  };
 }
 
 async function countEmailMessages(env: Env): Promise<number> {
@@ -1532,8 +1571,111 @@ async function countEmailMessages(env: Env): Promise<number> {
   return Number(row?.count || 0);
 }
 
+async function getEmailFolderStats(env: Env) {
+  const result = await env.DB.prepare(`
+    SELECT
+      folder,
+      COUNT(*) AS total,
+      SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread
+    FROM email_messages
+    GROUP BY folder
+  `).all();
+  const stats: Record<EmailFolder, { total: number; unread: number }> = {
+    inbox: { total: 0, unread: 0 },
+    in_work: { total: 0, unread: 0 },
+    done: { total: 0, unread: 0 },
+    trash: { total: 0, unread: 0 },
+  };
+  for (const row of result.results || []) {
+    const folder = normalizeEmailFolder(String((row as Record<string, unknown>).folder || ""));
+    if (!folder) continue;
+    stats[folder] = {
+      total: Number((row as Record<string, unknown>).total || 0),
+      unread: Number((row as Record<string, unknown>).unread || 0),
+    };
+  }
+  return stats;
+}
+
 async function getEmailMessage(env: Env, id: number) {
   return env.DB.prepare("SELECT * FROM email_messages WHERE id = ?").bind(id).first() as Promise<Record<string, any> | null>;
+}
+
+async function updateEmailMessage(request: Request, env: Env, id: number) {
+  const existing = await getEmailMessage(env, id);
+  if (!existing) return null;
+
+  const payload = (await request.json()) as {
+    folder?: unknown;
+    status?: unknown;
+    is_read?: unknown;
+  };
+
+  const requestedFolder = normalizeEmailFolder(typeof payload.folder === "string" ? payload.folder : "");
+  const requestedStatus = normalizeEmailStatus(typeof payload.status === "string" ? payload.status : "");
+  let folder = requestedFolder || normalizeEmailFolder(String(existing.folder || "")) || "inbox";
+  let status = requestedStatus || normalizeEmailStatus(String(existing.status || "")) || emailStatusForFolder(folder);
+
+  if (requestedFolder && !requestedStatus) status = emailStatusForFolder(requestedFolder);
+  if (requestedStatus && !requestedFolder) folder = emailFolderForStatus(requestedStatus);
+
+  const isRead = typeof payload.is_read === "boolean" ? (payload.is_read ? 1 : 0) : Number(existing.is_read || 0);
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET
+      folder = ?,
+      status = ?,
+      is_read = ?,
+      read_at = CASE
+        WHEN ? = 1 AND read_at IS NULL THEN datetime('now')
+        WHEN ? = 0 THEN NULL
+        ELSE read_at
+      END,
+      closed_at = CASE
+        WHEN ? = 'done' AND closed_at IS NULL THEN datetime('now')
+        WHEN ? <> 'done' THEN NULL
+        ELSE closed_at
+      END,
+      deleted_at = CASE
+        WHEN ? = 'trash' AND deleted_at IS NULL THEN datetime('now')
+        WHEN ? <> 'trash' THEN NULL
+        ELSE deleted_at
+      END,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(
+    folder,
+    status,
+    isRead,
+    isRead,
+    isRead,
+    folder,
+    folder,
+    folder,
+    folder,
+    id,
+  ).run();
+
+  return getEmailMessage(env, id);
+}
+
+async function moveEmailMessageToTrash(env: Env, id: number) {
+  const existing = await getEmailMessage(env, id);
+  if (!existing) return null;
+
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET
+      folder = 'trash',
+      status = 'deleted',
+      is_read = 1,
+      read_at = COALESCE(read_at, datetime('now')),
+      deleted_at = COALESCE(deleted_at, datetime('now')),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(id).run();
+
+  return getEmailMessage(env, id);
 }
 
 async function getEmailMessageByUid(env: Env, mailboxEmail: string | null, messageUid: string) {
@@ -1638,9 +1780,10 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
       body_text,
       attachment_names,
       attachment_text,
-      received_at
+      received_at,
+      updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).bind(
     item.mailbox_name,
     item.mailbox_email,
@@ -1693,7 +1836,13 @@ async function processEmailMessage(env: Env, emailId: number) {
 
   await env.DB.prepare(`
     UPDATE email_messages
-    SET processed_request_id = ?
+    SET
+      processed_request_id = ?,
+      folder = 'in_work',
+      status = 'in_work',
+      is_read = 1,
+      read_at = COALESCE(read_at, datetime('now')),
+      updated_at = datetime('now')
     WHERE id = ?
   `).bind(Number(item.id), emailId).run();
 
@@ -3095,6 +3244,30 @@ function normalizeAppendixStatus(value: unknown): string {
 function normalizeTaskStatus(value: unknown): string {
   const normalized = normalizeOptionalText(value) || "open";
   return ["open", "done", "cancelled"].includes(normalized) ? normalized : "open";
+}
+
+function normalizeEmailFolder(value: unknown): EmailFolder | "" {
+  const normalized = normalizeOptionalText(value);
+  return (EMAIL_FOLDERS as string[]).includes(normalized) ? normalized as EmailFolder : "";
+}
+
+function normalizeEmailStatus(value: unknown): EmailStatus | "" {
+  const normalized = normalizeOptionalText(value);
+  return (EMAIL_STATUSES as string[]).includes(normalized) ? normalized as EmailStatus : "";
+}
+
+function emailStatusForFolder(folder: EmailFolder): EmailStatus {
+  if (folder === "in_work") return "in_work";
+  if (folder === "done") return "done";
+  if (folder === "trash") return "deleted";
+  return "received";
+}
+
+function emailFolderForStatus(status: EmailStatus): EmailFolder {
+  if (status === "in_work") return "in_work";
+  if (status === "done") return "done";
+  if (status === "deleted") return "trash";
+  return "inbox";
 }
 
 function normalizeIsoDate(value: unknown): string {
