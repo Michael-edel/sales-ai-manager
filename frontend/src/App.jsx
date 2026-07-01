@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, CheckSquare, ChevronUp, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createEmailSenderFilter,
@@ -200,6 +200,7 @@ export default function App() {
   const [emailStats, setEmailStats] = useState({});
   const [emailSenderFilters, setEmailSenderFilters] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
+  const [emailCollapsed, setEmailCollapsed] = useState(false);
   const [emailStatus, setEmailStatus] = useState("");
   const [emailSendStatus, setEmailSendStatus] = useState("");
   const [smtpStatus, setSmtpStatus] = useState(null);
@@ -574,6 +575,12 @@ export default function App() {
     } catch (err) {
       setEmailStatus(err.message);
     }
+  }
+
+  function handleToggleEmailCollapsed() {
+    const nextCollapsed = !emailCollapsed;
+    setEmailCollapsed(nextCollapsed);
+    if (nextCollapsed) setSelectedEmail(null);
   }
 
   async function handleOpenEmail(email) {
@@ -1457,114 +1464,128 @@ export default function App() {
         </section>
 
         <section className="input-area email-area">
-          <div className="section-title">
-            <h2>Входящая почта</h2>
-            <p>Письма из direktor@edel.kz поступают через IMAP-ingest и сохраняются в программе.</p>
+          <div className="section-title section-title-with-action">
+            <div>
+              <h2>Входящая почта</h2>
+              <p>Письма из direktor@edel.kz поступают через IMAP-ingest и сохраняются в программе.</p>
+            </div>
+            <button className="secondary-button compact-button" onClick={handleToggleEmailCollapsed}>
+              {emailCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+              {emailCollapsed ? "Показать почту" : "Свернуть почту"}
+            </button>
           </div>
 
-          <div className="email-controls">
-            <button className="secondary-button" onClick={handleCheckEmail} disabled={loading || !canManageRequests}>
-              <Mail size={18} />
-              Обновить письма
-            </button>
-            <button className="secondary-button" onClick={() => setSelectedEmail(null)} disabled={!selectedEmail}>
-              <ChevronUp size={18} />
-              Свернуть все
-            </button>
-            <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
-            {emailStatus && <span className="email-status">{emailStatus}</span>}
-          </div>
-
-          <div className="email-folder-tabs">
-            {EMAIL_FOLDERS.map(([folder, label]) => {
-              const stats = emailStats[folder] || { total: 0, unread: 0 };
-              return (
-                <button
-                  key={folder}
-                  className={`email-folder-tab ${emailFolder === folder ? "email-folder-tab-active" : ""}`}
-                  onClick={() => handleSelectEmailFolder(folder)}
-                  disabled={loading}
-                >
-                  <span>{label}</span>
-                  <small>{stats.total || 0}{stats.unread ? ` / новых ${stats.unread}` : ""}</small>
+          {emailCollapsed ? (
+            <div className="email-collapsed-note">
+              Почта свернута. Нажмите «Показать почту», чтобы открыть список писем.
+            </div>
+          ) : (
+            <>
+              <div className="email-controls">
+                <button className="secondary-button" onClick={handleCheckEmail} disabled={loading || !canManageRequests}>
+                  <Mail size={18} />
+                  Обновить письма
                 </button>
-              );
-            })}
-          </div>
+                <button className="secondary-button" onClick={() => setSelectedEmail(null)} disabled={!selectedEmail}>
+                  <ChevronUp size={18} />
+                  Свернуть письмо
+                </button>
+                <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
+                {emailStatus && <span className="email-status">{emailStatus}</span>}
+              </div>
 
-          {emailSenderFilters.length > 0 && (
-            <div className="email-sender-filters">
-              <strong>Скрытые отправители</strong>
-              <div className="email-sender-filter-list">
-                {emailSenderFilters.map((filter) => (
-                  <span className="email-sender-filter" key={filter.id}>
-                    {filter.sender_label || filter.sender_email}
+              <div className="email-folder-tabs">
+                {EMAIL_FOLDERS.map(([folder, label]) => {
+                  const stats = emailStats[folder] || { total: 0, unread: 0 };
+                  return (
                     <button
-                      type="button"
-                      onClick={() => handleRestoreEmailSender(filter)}
-                      disabled={loading || !canManageRequests}
+                      key={folder}
+                      className={`email-folder-tab ${emailFolder === folder ? "email-folder-tab-active" : ""}`}
+                      onClick={() => handleSelectEmailFolder(folder)}
+                      disabled={loading}
                     >
-                      показывать
+                      <span>{label}</span>
+                      <small>{stats.total || 0}{stats.unread ? ` / новых ${stats.unread}` : ""}</small>
                     </button>
-                  </span>
+                  );
+                })}
+              </div>
+
+              {emailSenderFilters.length > 0 && (
+                <div className="email-sender-filters">
+                  <strong>Скрытые отправители</strong>
+                  <div className="email-sender-filter-list">
+                    {emailSenderFilters.map((filter) => (
+                      <span className="email-sender-filter" key={filter.id}>
+                        {filter.sender_label || filter.sender_email}
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreEmailSender(filter)}
+                          disabled={loading || !canManageRequests}
+                        >
+                          показывать
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="email-list">
+                {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
+                {emails.map((email) => (
+                  <div className="email-list-entry" key={email.id}>
+                    <article className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}>
+                      <div className="email-main">
+                        <strong>{email.subject || "Без темы"}</strong>
+                        <span>{email.from_address || "Отправитель не определен"}</span>
+                        <small>Ящик: {email.mailbox_email || "не указан"}</small>
+                        <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
+                        <div className="email-tags">
+                          <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
+                            {email.is_read ? "Просмотрено" : "Новое"}
+                          </span>
+                          <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
+                          <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
+                          {email.processed_request_id && <span className="email-chip email-chip-linked">Заявка #{email.processed_request_id}</span>}
+                        </div>
+                        {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
+                        {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
+                        {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
+                        {selectedEmail?.id !== email.id && renderSenderFilterCheckbox(email)}
+                      </div>
+                      <div className="email-item-actions">
+                        {email.folder === "trash" ? (
+                          <button
+                            className="secondary-button"
+                            onClick={() => handleUpdateEmail(email, { folder: "inbox", is_read: true })}
+                            disabled={loading || !canManageRequests}
+                          >
+                            <RotateCcw size={16} />
+                            Вернуть
+                          </button>
+                        ) : (
+                          <button
+                            className="secondary-button danger-button"
+                            onClick={() => handleDeleteEmail(email)}
+                            disabled={loading || !canManageRequests}
+                          >
+                            <Trash2 size={16} />
+                            Удалить
+                          </button>
+                        )}
+                        <button className="secondary-button" onClick={() => handleOpenEmail(email)} disabled={loading}>
+                          {selectedEmail?.id === email.id ? <ChevronUp size={16} /> : <Eye size={16} />}
+                          {selectedEmail?.id === email.id ? "Свернуть" : "Открыть"}
+                        </button>
+                      </div>
+                    </article>
+                    {selectedEmail?.id === email.id && renderEmailDetail(selectedEmail)}
+                  </div>
                 ))}
               </div>
-            </div>
+            </>
           )}
-
-          <div className="email-list">
-            {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
-            {emails.map((email) => (
-              <div className="email-list-entry" key={email.id}>
-                <article className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}>
-                  <div className="email-main">
-                    <strong>{email.subject || "Без темы"}</strong>
-                    <span>{email.from_address || "Отправитель не определен"}</span>
-                    <small>Ящик: {email.mailbox_email || "не указан"}</small>
-                    <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
-                    <div className="email-tags">
-                      <span className={`email-chip ${email.is_read ? "email-chip-read" : "email-chip-new"}`}>
-                        {email.is_read ? "Просмотрено" : "Новое"}
-                      </span>
-                      <span className="email-chip">{EMAIL_STATUS_LABELS[email.status] || "Получено"}</span>
-                      <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
-                      {email.processed_request_id && <span className="email-chip email-chip-linked">Заявка #{email.processed_request_id}</span>}
-                    </div>
-                    {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
-                    {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
-                    {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
-                    {selectedEmail?.id !== email.id && renderSenderFilterCheckbox(email)}
-                  </div>
-                  <div className="email-item-actions">
-                    {email.folder === "trash" ? (
-                      <button
-                        className="secondary-button"
-                        onClick={() => handleUpdateEmail(email, { folder: "inbox", is_read: true })}
-                        disabled={loading || !canManageRequests}
-                      >
-                        <RotateCcw size={16} />
-                        Вернуть
-                      </button>
-                    ) : (
-                      <button
-                        className="secondary-button danger-button"
-                        onClick={() => handleDeleteEmail(email)}
-                        disabled={loading || !canManageRequests}
-                      >
-                        <Trash2 size={16} />
-                        Удалить
-                      </button>
-                    )}
-                    <button className="secondary-button" onClick={() => handleOpenEmail(email)} disabled={loading}>
-                      {selectedEmail?.id === email.id ? <ChevronUp size={16} /> : <Eye size={16} />}
-                      {selectedEmail?.id === email.id ? "Свернуть" : "Открыть"}
-                    </button>
-                  </div>
-                </article>
-                {selectedEmail?.id === email.id && renderEmailDetail(selectedEmail)}
-              </div>
-            ))}
-          </div>
         </section>
 
         {authUser.role === "admin" && (

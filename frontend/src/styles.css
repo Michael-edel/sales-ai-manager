@@ -374,6 +374,19 @@ textarea {
   padding: 20px;
 }
 
+.section-title-with-action {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.compact-button {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
 textarea {
   border: 1px solid #cbd3c8;
   border-radius: 8px;
@@ -772,6 +785,14 @@ button:disabled,
   gap: 14px;
 }
 
+.email-collapsed-note {
+  background: #f7f9f6;
+  border: 1px dashed #cbd3c8;
+  border-radius: 8px;
+  color: #6b756e;
+  padding: 10px 12px;
+}
+
 .users-area {
   display: grid;
   gap: 14px;
@@ -1079,6 +1100,7 @@ button:disabled,
 
 .email-main {
   display: grid;
+  flex: 1;
   gap: 4px;
   min-width: 0;
 }
@@ -1123,15 +1145,53 @@ button:disabled,
 
 .email-filter-checkbox {
   align-items: center;
+  background: #f7f9f6;
+  border: 1px solid #e1e6df;
+  border-radius: 6px;
   color: #4f5b53;
+  cursor: pointer;
   display: inline-flex;
   gap: 8px;
+  justify-self: start;
   line-height: 1.25;
   margin-top: 4px;
+  max-width: 100%;
+  padding: 6px 8px;
 }
 
 .email-filter-checkbox input {
+  appearance: none;
+  background: #ffffff;
+  border: 1px solid #9aa69d;
+  border-radius: 4px;
+  display: grid;
+  flex: 0 0 16px;
+  height: 16px;
   margin: 0;
+  min-height: 16px;
+  padding: 0;
+  place-content: center;
+  width: 16px;
+}
+
+.email-filter-checkbox input::before {
+  background: #277a50;
+  border-radius: 2px;
+  content: "";
+  height: 8px;
+  opacity: 0;
+  transform: scale(0.8);
+  width: 8px;
+}
+
+.email-filter-checkbox input:checked::before {
+  opacity: 1;
+}
+
+.email-filter-checkbox span {
+  color: #4f5b53;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .email-sender-filters {
@@ -1264,6 +1324,7 @@ pre {
   .input-controls,
   .result-header,
   .result-actions,
+  .section-title-with-action,
   .email-controls,
   .email-detail-header,
   .email-detail-actions,
@@ -1273,6 +1334,11 @@ pre {
   .email-item {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .compact-button {
+    justify-content: center;
+    width: 100%;
   }
 
   .metadata-grid {
