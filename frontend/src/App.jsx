@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Archive, Check, CheckSquare, ChevronUp, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
+  createEmailSenderFilter,
   createWhatsAppTemplate,
   createUser,
   createRequestTask,
+  deleteEmailSenderFilter,
   deleteRequest,
   deleteEmailMessage,
   deleteRequestTask,
@@ -196,6 +198,7 @@ export default function App() {
   const [emails, setEmails] = useState([]);
   const [emailFolder, setEmailFolder] = useState("inbox");
   const [emailStats, setEmailStats] = useState({});
+  const [emailSenderFilters, setEmailSenderFilters] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [emailStatus, setEmailStatus] = useState("");
   const [emailSendStatus, setEmailSendStatus] = useState("");
@@ -278,6 +281,7 @@ export default function App() {
     const items = Array.isArray(result) ? result : result.items || [];
     setEmails(items);
     setEmailStats(Array.isArray(result) ? {} : result.stats || {});
+    setEmailSenderFilters(Array.isArray(result) ? [] : result.hidden_senders || []);
     setSelectedEmail((current) => {
       if (!current) return null;
       return items.find((item) => item.id === current.id) || null;
@@ -627,6 +631,40 @@ export default function App() {
     }
   }
 
+  async function handleHideEmailSender(email) {
+    if (!canManageRequests || !email.from_address) return;
+    setEmailStatus("");
+    setLoading(true);
+    try {
+      const filter = await createEmailSenderFilter({
+        sender_email: email.from_address,
+        sender_label: email.from_address,
+      });
+      setSelectedEmail(null);
+      await refreshEmails(emailFolder);
+      setEmailStatus(`Письма от ${filter.sender_email || email.from_address} скрыты.`);
+    } catch (err) {
+      setEmailStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRestoreEmailSender(filter) {
+    if (!canManageRequests) return;
+    setEmailStatus("");
+    setLoading(true);
+    try {
+      await deleteEmailSenderFilter(filter.id);
+      await refreshEmails(emailFolder);
+      setEmailStatus(`Письма от ${filter.sender_email} снова показываются.`);
+    } catch (err) {
+      setEmailStatus(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleProcessEmail(emailId) {
     if (!canManageRequests) return;
     setEmailStatus("");
@@ -642,6 +680,23 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function renderSenderFilterCheckbox(email) {
+    if (!email.from_address || email.folder === "trash") return null;
+    return (
+      <label className="email-filter-checkbox">
+        <input
+          type="checkbox"
+          checked={Boolean(email.is_sender_hidden)}
+          onChange={(event) => {
+            if (event.target.checked) handleHideEmailSender(email);
+          }}
+          disabled={loading || !canManageRequests || Boolean(email.is_sender_hidden)}
+        />
+        <span>Не показывать письма от этого отправителя</span>
+      </label>
+    );
   }
 
   function renderEmailDetail(email) {
@@ -661,6 +716,8 @@ export default function App() {
             <span className="email-chip">{EMAIL_FOLDER_LABELS[email.folder] || "Полученные"}</span>
           </div>
         </div>
+
+        {renderSenderFilterCheckbox(email)}
 
         {email.attachment_names && (
           <div className="email-attachments">
@@ -1435,6 +1492,26 @@ export default function App() {
             })}
           </div>
 
+          {emailSenderFilters.length > 0 && (
+            <div className="email-sender-filters">
+              <strong>Скрытые отправители</strong>
+              <div className="email-sender-filter-list">
+                {emailSenderFilters.map((filter) => (
+                  <span className="email-sender-filter" key={filter.id}>
+                    {filter.sender_label || filter.sender_email}
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreEmailSender(filter)}
+                      disabled={loading || !canManageRequests}
+                    >
+                      показывать
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="email-list">
             {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
             {emails.map((email) => (
@@ -1456,6 +1533,7 @@ export default function App() {
                     {email.body_preview && <small className="email-preview">{email.body_preview}</small>}
                     {email.michael_manager && <small>Менеджер Michael: {email.michael_manager}</small>}
                     {email.attachment_names && <small>Вложения: {email.attachment_names}</small>}
+                    {selectedEmail?.id !== email.id && renderSenderFilterCheckbox(email)}
                   </div>
                   <div className="email-item-actions">
                     {email.folder === "trash" ? (

@@ -356,6 +356,13 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/email/messages") {
         return json(await listEmailMessages(env, url.searchParams.get("folder")));
       }
+      if (request.method === "GET" && url.pathname === "/api/email/sender-filters") {
+        return json(await listEmailSenderFilters(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/email/sender-filters") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await createEmailSenderFilter(request, env));
+      }
       if (request.method === "GET" && url.pathname === "/api/email/smtp/health") {
         return json(await checkEmailBridge(env));
       }
@@ -383,6 +390,12 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const item = await processEmailMessage(env, Number(emailProcessMatch[1]));
         return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
+      }
+
+      const emailSenderFilterMatch = url.pathname.match(/^\/api\/email\/sender-filters\/(\d+)$/);
+      if (request.method === "DELETE" && emailSenderFilterMatch) {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await deleteEmailSenderFilter(env, Number(emailSenderFilterMatch[1])));
       }
 
       const emailMessageMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)$/);
@@ -1549,13 +1562,24 @@ async function listRequests(env: Env) {
 
 async function listEmailMessages(env: Env, folderParam: string | null) {
   const folder = normalizeEmailFolder(folderParam) || "inbox";
-  const whereClause = folder === "trash" ? "folder = ?" : "folder = ?";
   const result = await env.DB.prepare(`
     SELECT
       *,
+      EXISTS (
+        SELECT 1
+        FROM email_sender_filters sender_filters
+        WHERE sender_filters.is_hidden = 1
+          AND sender_filters.sender_email = lower(trim(email_messages.from_address))
+      ) AS is_sender_hidden,
       substr(body_text, 1, 420) AS body_preview
     FROM email_messages
-    WHERE ${whereClause}
+    WHERE folder = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM email_sender_filters sender_filters
+        WHERE sender_filters.is_hidden = 1
+          AND sender_filters.sender_email = lower(trim(email_messages.from_address))
+      )
     ORDER BY COALESCE(received_at, created_at) DESC, id DESC
     LIMIT 100
   `).bind(folder).all();
@@ -1563,6 +1587,7 @@ async function listEmailMessages(env: Env, folderParam: string | null) {
     folder,
     items: result.results,
     stats: await getEmailFolderStats(env),
+    hidden_senders: await listEmailSenderFilters(env),
   };
 }
 
@@ -1578,6 +1603,12 @@ async function getEmailFolderStats(env: Env) {
       COUNT(*) AS total,
       SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread
     FROM email_messages
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM email_sender_filters sender_filters
+      WHERE sender_filters.is_hidden = 1
+        AND sender_filters.sender_email = lower(trim(email_messages.from_address))
+    )
     GROUP BY folder
   `).all();
   const stats: Record<EmailFolder, { total: number; unread: number }> = {
@@ -1597,8 +1628,67 @@ async function getEmailFolderStats(env: Env) {
   return stats;
 }
 
+async function listEmailSenderFilters(env: Env) {
+  const result = await env.DB.prepare(`
+    SELECT id, sender_email, sender_label, is_hidden, created_at, updated_at
+    FROM email_sender_filters
+    WHERE is_hidden = 1
+    ORDER BY sender_email
+  `).all();
+  return result.results;
+}
+
+async function createEmailSenderFilter(request: Request, env: Env) {
+  const payload = (await request.json()) as {
+    sender_email?: unknown;
+    sender_label?: unknown;
+  };
+  const senderEmail = normalizeEmailFilterAddress(payload.sender_email);
+  if (!senderEmail) throw new Error("Не удалось определить адрес отправителя.");
+  const senderLabel = normalizeOptionalText(payload.sender_label) || senderEmail;
+
+  await env.DB.prepare(`
+    INSERT INTO email_sender_filters (sender_email, sender_label, is_hidden, updated_at)
+    VALUES (?, ?, 1, datetime('now'))
+    ON CONFLICT(sender_email) DO UPDATE SET
+      sender_label = excluded.sender_label,
+      is_hidden = 1,
+      updated_at = datetime('now')
+  `).bind(senderEmail, senderLabel).run();
+
+  const item = await env.DB.prepare(`
+    SELECT id, sender_email, sender_label, is_hidden, created_at, updated_at
+    FROM email_sender_filters
+    WHERE sender_email = ?
+  `).bind(senderEmail).first();
+  return item;
+}
+
+async function deleteEmailSenderFilter(env: Env, id: number) {
+  const existing = await env.DB.prepare(`
+    SELECT id, sender_email, sender_label
+    FROM email_sender_filters
+    WHERE id = ?
+  `).bind(id).first() as Record<string, unknown> | null;
+  if (!existing) return { ok: true, id };
+
+  await env.DB.prepare("DELETE FROM email_sender_filters WHERE id = ?").bind(id).run();
+  return { ok: true, id, sender_email: existing.sender_email };
+}
+
 async function getEmailMessage(env: Env, id: number) {
-  return env.DB.prepare("SELECT * FROM email_messages WHERE id = ?").bind(id).first() as Promise<Record<string, any> | null>;
+  return env.DB.prepare(`
+    SELECT
+      *,
+      EXISTS (
+        SELECT 1
+        FROM email_sender_filters sender_filters
+        WHERE sender_filters.is_hidden = 1
+          AND sender_filters.sender_email = lower(trim(email_messages.from_address))
+      ) AS is_sender_hidden
+    FROM email_messages
+    WHERE id = ?
+  `).bind(id).first() as Promise<Record<string, any> | null>;
 }
 
 async function updateEmailMessage(request: Request, env: Env, id: number) {
@@ -1880,6 +1970,13 @@ function normalizeEmailAddress(value: unknown): string {
     return normalizeOptionalText((value as { address?: unknown }).address);
   }
   return "";
+}
+
+function normalizeEmailFilterAddress(value: unknown): string {
+  const text = normalizeOptionalText(value).toLowerCase();
+  if (!text) return "";
+  const match = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  return (match ? match[0] : text).trim().slice(0, 254);
 }
 
 function normalizeEmailDate(value: unknown): string {

@@ -1121,6 +1121,55 @@ button:disabled,
   color: #1f6b45;
 }
 
+.email-filter-checkbox {
+  align-items: center;
+  color: #4f5b53;
+  display: inline-flex;
+  gap: 8px;
+  line-height: 1.25;
+  margin-top: 4px;
+}
+
+.email-filter-checkbox input {
+  margin: 0;
+}
+
+.email-sender-filters {
+  background: #fbfcfb;
+  border: 1px solid #e1e6df;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+}
+
+.email-sender-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.email-sender-filter {
+  align-items: center;
+  background: #f2f4f1;
+  border: 1px solid #d9dfd7;
+  border-radius: 999px;
+  color: #27312b;
+  display: inline-flex;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+}
+
+.email-sender-filter button {
+  background: transparent;
+  border: 0;
+  color: #1f6b45;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0;
+}
+
 .email-item-actions,
 .email-detail-actions {
   display: flex;

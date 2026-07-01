@@ -28,7 +28,7 @@
 - `POST /api/email/send` через внешний `email-bridge`
 - входящие письма через `imap-ingest` или Cloudflare Email Routing `email()` handler с сохранением в D1
 - `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
-- D1 таблицы `requests`, `email_messages`, `ai_rules`, `whatsapp_templates`, `whatsapp_template_messages`
+- D1 таблицы `requests`, `email_messages`, `email_sender_filters`, `ai_rules`, `whatsapp_templates`, `whatsapp_template_messages`
 - пользователи, роли и cookie-сессии в D1
 - Gemini/OpenAI для текста и изображений
 - Gemini/OpenAI audio transcription для голосовых
@@ -368,6 +368,8 @@ active: 1
 - `trash` — удаленные.
 
 Менеджер сначала нажимает «Открыть», письмо помечается как просмотренное, затем доступны действия: «В работу», «Создать заявку», «Закрыть», «Не просмотрено», «Удалить» и восстановление из удаленных. `DELETE /api/email/messages/:id` выполняет мягкое удаление в `trash` и не удаляет исходное письмо на mailcow-сервере.
+
+Если отправитель не относится к заявкам, менеджер может включить галочку «Не показывать письма от этого отправителя». Worker сохраняет адрес в `email_sender_filters`, а `GET /api/email/messages` исключает письма активных скрытых отправителей из рабочих папок. Список скрытых отправителей возвращается через `GET /api/email/sender-filters`; восстановление выполняется через `DELETE /api/email/sender-filters/:id`.
 
 ## Gemini API
 

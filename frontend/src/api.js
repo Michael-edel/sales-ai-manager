@@ -211,6 +211,18 @@ export function listEmailMessages(folder = "inbox") {
   return request(`/email/messages?folder=${encodeURIComponent(folder)}`);
 }
 
+export function createEmailSenderFilter(payload) {
+  return request("/email/sender-filters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteEmailSenderFilter(filterId) {
+  return request(`/email/sender-filters/${filterId}`, { method: "DELETE" });
+}
+
 export function updateEmailMessage(emailId, payload) {
   return request(`/email/messages/${emailId}`, {
     method: "PATCH",
