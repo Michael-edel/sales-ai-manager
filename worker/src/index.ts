@@ -360,7 +360,7 @@ export default {
           imported: 0,
           skipped: 0,
           total_seen: totalSeen,
-          detail: `Писем в базе: ${totalSeen}. Новые письма поступают автоматически через Cloudflare Email Routing.`,
+          detail: `Писем в базе: ${totalSeen}. Новые письма поступают через IMAP-ingest из direktor@edel.kz.`,
         });
       }
       if (request.method === "POST" && url.pathname === "/api/email/send") {

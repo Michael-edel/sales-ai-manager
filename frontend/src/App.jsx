@@ -1210,7 +1210,7 @@ export default function App() {
         <section className="input-area email-area">
           <div className="section-title">
             <h2>Входящая почта</h2>
-            <p>Письма поступают через Cloudflare Email Routing и сохраняются в программе.</p>
+            <p>Письма из direktor@edel.kz поступают через IMAP-ingest и сохраняются в программе.</p>
           </div>
 
           <div className="email-controls">
@@ -1223,7 +1223,7 @@ export default function App() {
           </div>
 
           <div className="email-list">
-            {emails.length === 0 && <p className="muted">Писем пока нет. Настройте маршрут Cloudflare Email Routing и пересылку копии из mailcow.</p>}
+            {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
             {emails.map((email) => (
               <article className="email-item" key={email.id}>
                 <div>
