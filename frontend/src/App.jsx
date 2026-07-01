@@ -1532,40 +1532,34 @@ export default function App() {
                     </button>
                   );
                 })}
+                {emailSenderFilters.length > 0 && (
+                  <button
+                    className={`email-folder-tab email-folder-tab-secondary ${!emailSenderFiltersCollapsed ? "email-folder-tab-active" : ""}`}
+                    onClick={() => setEmailSenderFiltersCollapsed((current) => !current)}
+                    disabled={loading}
+                  >
+                    <span>Скрытые</span>
+                    <small>{emailSenderFilters.length} адресов</small>
+                  </button>
+                )}
               </div>
 
-              {emailSenderFilters.length > 0 && (
+              {emailSenderFilters.length > 0 && !emailSenderFiltersCollapsed && (
                 <div className="email-sender-filters">
-                  <div className="email-sender-filters-header">
-                    <div>
-                      <strong>Скрытые отправители</strong>
-                      <small>{emailSenderFilters.length} адресов не показываются в рабочих папках</small>
-                    </div>
-                    <button
-                      className="secondary-button compact-button"
-                      type="button"
-                      onClick={() => setEmailSenderFiltersCollapsed((current) => !current)}
-                    >
-                      {emailSenderFiltersCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                      {emailSenderFiltersCollapsed ? "Показать" : "Свернуть"}
-                    </button>
+                  <div className="email-sender-filter-list">
+                    {emailSenderFilters.map((filter) => (
+                      <span className="email-sender-filter" key={filter.id}>
+                        {filter.sender_label || filter.sender_email}
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreEmailSender(filter)}
+                          disabled={loading || !canManageRequests}
+                        >
+                          показывать
+                        </button>
+                      </span>
+                    ))}
                   </div>
-                  {!emailSenderFiltersCollapsed && (
-                    <div className="email-sender-filter-list">
-                      {emailSenderFilters.map((filter) => (
-                        <span className="email-sender-filter" key={filter.id}>
-                          {filter.sender_label || filter.sender_email}
-                          <button
-                            type="button"
-                            onClick={() => handleRestoreEmailSender(filter)}
-                            disabled={loading || !canManageRequests}
-                          >
-                            показывать
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
 

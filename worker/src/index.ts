@@ -125,6 +125,7 @@ type EmailFolder = "inbox" | "in_work" | "suppliers" | "buyers" | "done" | "tras
 type EmailStatus = "received" | "in_work" | "done" | "deleted";
 
 const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers", "done", "trash"];
+const EMAIL_SENDER_ROUTE_FOLDERS: EmailFolder[] = ["suppliers", "buyers"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
 
 const SESSION_COOKIE_NAME = "sales_ai_session";
@@ -1678,6 +1679,49 @@ async function deleteEmailSenderFilter(env: Env, id: number) {
   return { ok: true, id, sender_email: existing.sender_email };
 }
 
+async function getEmailSenderFolderRule(env: Env, sender: unknown): Promise<EmailFolder | ""> {
+  const senderEmail = normalizeEmailFilterAddress(sender);
+  if (!senderEmail) return "";
+
+  const row = await env.DB.prepare(`
+    SELECT target_folder
+    FROM email_sender_folder_rules
+    WHERE sender_email = ?
+  `).bind(senderEmail).first() as Record<string, unknown> | null;
+
+  return normalizeEmailSenderRouteFolder(row?.target_folder);
+}
+
+async function upsertEmailSenderFolderRule(env: Env, sender: unknown, targetFolder: EmailFolder) {
+  const folder = normalizeEmailSenderRouteFolder(targetFolder);
+  const senderEmail = normalizeEmailFilterAddress(sender);
+  if (!folder || !senderEmail) return;
+
+  await env.DB.prepare(`
+    INSERT INTO email_sender_folder_rules (sender_email, sender_label, target_folder, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(sender_email) DO UPDATE SET
+      sender_label = excluded.sender_label,
+      target_folder = excluded.target_folder,
+      updated_at = datetime('now')
+  `).bind(senderEmail, senderEmail, folder).run();
+
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET
+      folder = ?,
+      status = ?,
+      closed_at = NULL,
+      updated_at = datetime('now')
+    WHERE folder <> 'trash'
+      AND processed_request_id IS NULL
+      AND (
+        lower(trim(from_address)) = ?
+        OR lower(trim(from_address)) LIKE ?
+      )
+  `).bind(folder, emailStatusForFolder(folder), senderEmail, `%${senderEmail}%`).run();
+}
+
 async function getEmailMessage(env: Env, id: number) {
   return env.DB.prepare(`
     SELECT
@@ -1747,6 +1791,10 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
     folder,
     id,
   ).run();
+
+  if (requestedFolder && isEmailSenderRouteFolder(requestedFolder) && existing.from_address) {
+    await upsertEmailSenderFolderRule(env, existing.from_address, requestedFolder);
+  }
 
   return getEmailMessage(env, id);
 }
@@ -1860,6 +1908,9 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
   const existing = await getEmailMessageByUid(env, item.mailbox_email, item.message_uid);
   if (existing?.id) return { inserted: false, id: Number(existing.id) };
 
+  const routedFolder = await getEmailSenderFolderRule(env, item.from_address);
+  const folder = routedFolder || "inbox";
+
   await env.DB.prepare(`
     INSERT OR IGNORE INTO email_messages (
       mailbox_name,
@@ -1872,10 +1923,12 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
       body_text,
       attachment_names,
       attachment_text,
+      folder,
+      status,
       received_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).bind(
     item.mailbox_name,
     item.mailbox_email,
@@ -1887,6 +1940,8 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
     item.body_text,
     item.attachment_names,
     item.attachment_text,
+    folder,
+    emailStatusForFolder(folder),
     item.received_at,
   ).run();
 
@@ -3348,6 +3403,15 @@ function normalizeTaskStatus(value: unknown): string {
 function normalizeEmailFolder(value: unknown): EmailFolder | "" {
   const normalized = normalizeOptionalText(value);
   return (EMAIL_FOLDERS as string[]).includes(normalized) ? normalized as EmailFolder : "";
+}
+
+function normalizeEmailSenderRouteFolder(value: unknown): EmailFolder | "" {
+  const folder = normalizeEmailFolder(value);
+  return folder && EMAIL_SENDER_ROUTE_FOLDERS.includes(folder) ? folder : "";
+}
+
+function isEmailSenderRouteFolder(folder: EmailFolder): boolean {
+  return EMAIL_SENDER_ROUTE_FOLDERS.includes(folder);
 }
 
 function normalizeEmailStatus(value: unknown): EmailStatus | "" {
