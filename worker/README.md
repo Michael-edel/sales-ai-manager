@@ -24,8 +24,9 @@
 - `POST /api/requests/text`
 - `POST /api/requests/upload`
 - `POST /api/email/messages/:id/process`
+- `POST /api/email/ingest` для внешнего `imap-ingest`
 - `POST /api/email/send` через внешний `email-bridge`
-- входящие письма через Cloudflare Email Routing `email()` handler с сохранением в D1
+- входящие письма через `imap-ingest` или Cloudflare Email Routing `email()` handler с сохранением в D1
 - `POST /api/requests/:id/contract-appendix` для генерации Word-совместимого приложения к договору
 - D1 таблицы `requests`, `email_messages`, `ai_rules`, `whatsapp_templates`, `whatsapp_template_messages`
 - пользователи, роли и cookie-сессии в D1
@@ -43,7 +44,7 @@
 - Парсинг DOCX/XLSX внутри самого Worker.
 - Прием входящих WhatsApp-сообщений через Meta webhook.
 
-Для входящей почты Worker принимает письма через Cloudflare Email Routing. Если основной ящик остается на mailcow, настройте в mailcow recipient BCC map, чтобы письмо оставалось в рабочем ящике и копия уходила на технический адрес Email Routing. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
+Для входящей почты основной вариант — Python-сервис `../imap-ingest`, который читает `direktor@edel.kz` из mailcow по IMAP и отправляет письма в Worker через `POST /api/email/ingest`. Cloudflare Email Routing оставлен как запасной вариант. Для SMTP-отправки добавлен Python-сервис `../email-bridge`. Для DOCX/XLSX и расширенного PDF-разбора добавлен Python-сервис `../parser-service`.
 
 ## Настройки ИИ и 1С
 
@@ -315,6 +316,32 @@ POST https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID
 ```
 
 Все попытки отправки записываются в `whatsapp_template_messages`; успешные и неуспешные отправки по заявке дополнительно попадают в `request_events`.
+
+## Входящая почта через IMAP-ingest
+
+Основной вариант для `direktor@edel.kz` — сервис `../imap-ingest`. Он читает mailcow по IMAP и отправляет письма в Worker:
+
+```text
+POST /api/email/ingest
+Authorization: Bearer EMAIL_INGEST_TOKEN
+```
+
+Payload сохраняется в таблицу `email_messages`. Обязательные поля: `mailbox_email` и `message_uid`. Остальные поля используются для отображения и дальнейшей обработки письма в заявку.
+
+Secret:
+
+```powershell
+npx wrangler secret put EMAIL_INGEST_TOKEN
+```
+
+Локальная проверка:
+
+```powershell
+cd ..\imap-ingest
+Copy-Item .env.example .env
+notepad .env
+python app\main.py --once
+```
 
 ## Входящая почта через Cloudflare Email Routing
 

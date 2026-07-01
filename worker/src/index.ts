@@ -17,6 +17,7 @@ export interface Env {
   PARSER_SERVICE_TOKEN: string;
   EMAIL_BRIDGE_URL: string;
   EMAIL_BRIDGE_TOKEN: string;
+  EMAIL_INGEST_TOKEN: string;
   WHATSAPP_ACCESS_TOKEN: string;
   WHATSAPP_PHONE_NUMBER_ID: string;
   WHATSAPP_API_VERSION: string;
@@ -90,6 +91,34 @@ type WhatsAppTemplateDefinition = {
   body_text: string;
   is_enabled: number;
   sort_order: number;
+};
+
+type EmailIngestPayload = {
+  mailbox_name?: unknown;
+  mailbox_email?: unknown;
+  michael_manager?: unknown;
+  message_uid?: unknown;
+  from_address?: unknown;
+  to_address?: unknown;
+  subject?: unknown;
+  body_text?: unknown;
+  attachment_names?: unknown;
+  attachment_text?: unknown;
+  received_at?: unknown;
+};
+
+type EmailMessageInput = {
+  mailbox_name: string | null;
+  mailbox_email: string | null;
+  michael_manager: string | null;
+  message_uid: string;
+  from_address: string | null;
+  to_address: string | null;
+  subject: string;
+  body_text: string;
+  attachment_names: string | null;
+  attachment_text: string | null;
+  received_at: string | null;
 };
 
 const SESSION_COOKIE_NAME = "sales_ai_session";
@@ -242,6 +271,9 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
         return logout(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/email/ingest") {
+        return ingestEmailMessage(request, env);
       }
 
       const currentUser = await authenticateRequest(request, env);
@@ -1504,6 +1536,12 @@ async function getEmailMessage(env: Env, id: number) {
   return env.DB.prepare("SELECT * FROM email_messages WHERE id = ?").bind(id).first() as Promise<Record<string, any> | null>;
 }
 
+async function getEmailMessageByUid(env: Env, mailboxEmail: string | null, messageUid: string) {
+  return env.DB.prepare("SELECT * FROM email_messages WHERE mailbox_email IS ? AND message_uid = ?")
+    .bind(mailboxEmail, messageUid)
+    .first() as Promise<Record<string, any> | null>;
+}
+
 async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
   const rawBuffer = await new Response(message.raw).arrayBuffer();
   const parsed = await PostalMime.parse(rawBuffer) as Record<string, any>;
@@ -1522,6 +1560,72 @@ async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
     .join("; ");
   const receivedAt = normalizeEmailDate(parsed.date || message.headers.get("date"));
 
+  await storeEmailMessage(env, {
+    mailbox_name: "Cloudflare Email Routing",
+    mailbox_email: normalizeOptionalText(message.to) || toAddress || null,
+    michael_manager: null,
+    message_uid: messageUid,
+    from_address: fromAddress || null,
+    to_address: toAddress || null,
+    subject,
+    body_text: bodyText || "(письмо без текстового содержимого)",
+    attachment_names: attachmentNames || null,
+    attachment_text: null,
+    received_at: receivedAt || null,
+  });
+}
+
+async function ingestEmailMessage(request: Request, env: Env): Promise<Response> {
+  const configuredToken = normalizeOptionalText(env.EMAIL_INGEST_TOKEN);
+  if (!configuredToken) {
+    return json({ detail: "EMAIL_INGEST_TOKEN не настроен в Worker." }, 503);
+  }
+
+  const incomingToken = extractIngestToken(request);
+  if (!incomingToken || !(await timingSafeStringEqual(incomingToken, configuredToken))) {
+    return json({ detail: "Неверный ingest token." }, 401);
+  }
+
+  let payload: EmailIngestPayload;
+  try {
+    payload = (await request.json()) as EmailIngestPayload;
+  } catch {
+    return json({ detail: "Передайте JSON с данными письма." }, 400);
+  }
+
+  const mailboxEmail = normalizeOptionalText(payload.mailbox_email);
+  const messageUid = normalizeOptionalText(payload.message_uid);
+  if (!mailboxEmail) return json({ detail: "mailbox_email обязателен." }, 400);
+  if (!messageUid) return json({ detail: "message_uid обязателен." }, 400);
+
+  const item: EmailMessageInput = {
+    mailbox_name: normalizeOptionalText(payload.mailbox_name) || "IMAP mailcow",
+    mailbox_email: mailboxEmail,
+    michael_manager: normalizeOptionalText(payload.michael_manager) || null,
+    message_uid: messageUid,
+    from_address: normalizeOptionalText(payload.from_address) || null,
+    to_address: normalizeOptionalText(payload.to_address) || null,
+    subject: normalizeOptionalText(payload.subject) || "Без темы",
+    body_text: normalizeOptionalText(payload.body_text) || "(письмо без текстового содержимого)",
+    attachment_names: normalizeAttachmentNames(payload.attachment_names),
+    attachment_text: normalizeOptionalText(payload.attachment_text) || null,
+    received_at: normalizeEmailDate(payload.received_at) || null,
+  };
+
+  const stored = await storeEmailMessage(env, item);
+  return json({
+    ok: true,
+    inserted: stored.inserted,
+    id: stored.id,
+    mailbox_email: item.mailbox_email,
+    message_uid: item.message_uid,
+  });
+}
+
+async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ inserted: boolean; id: number | null }> {
+  const existing = await getEmailMessageByUid(env, item.mailbox_email, item.message_uid);
+  if (existing?.id) return { inserted: false, id: Number(existing.id) };
+
   await env.DB.prepare(`
     INSERT OR IGNORE INTO email_messages (
       mailbox_name,
@@ -1538,18 +1642,21 @@ async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    "Cloudflare Email Routing",
-    normalizeOptionalText(message.to) || toAddress || null,
-    null,
-    messageUid,
-    fromAddress || null,
-    toAddress || null,
-    subject,
-    bodyText || "(письмо без текстового содержимого)",
-    attachmentNames || null,
-    null,
-    receivedAt || null,
+    item.mailbox_name,
+    item.mailbox_email,
+    item.michael_manager,
+    item.message_uid,
+    item.from_address,
+    item.to_address,
+    item.subject,
+    item.body_text,
+    item.attachment_names,
+    item.attachment_text,
+    item.received_at,
   ).run();
+
+  const saved = await getEmailMessageByUid(env, item.mailbox_email, item.message_uid);
+  return { inserted: Boolean(saved?.id), id: saved?.id ? Number(saved.id) : null };
 }
 
 async function processEmailMessage(env: Env, emailId: number) {
@@ -1631,6 +1738,35 @@ function normalizeEmailDate(value: unknown): string {
   if (!text) return "";
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? text : date.toISOString();
+}
+
+function extractIngestToken(request: Request): string {
+  const bearer = normalizeOptionalText(request.headers.get("authorization"));
+  if (bearer.toLowerCase().startsWith("bearer ")) return bearer.slice(7).trim();
+  return normalizeOptionalText(request.headers.get("x-ingest-token"));
+}
+
+async function timingSafeStringEqual(actual: string, expected: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [actualHash, expectedHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(actual)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const actualBytes = new Uint8Array(actualHash);
+  const expectedBytes = new Uint8Array(expectedHash);
+  let diff = actualBytes.length ^ expectedBytes.length;
+  for (let index = 0; index < Math.max(actualBytes.length, expectedBytes.length); index += 1) {
+    diff |= (actualBytes[index] || 0) ^ (expectedBytes[index] || 0);
+  }
+  return diff === 0;
+}
+
+function normalizeAttachmentNames(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    const names = value.map((item) => normalizeOptionalText(item)).filter(Boolean);
+    return names.length ? names.join("; ") : null;
+  }
+  return normalizeOptionalText(value) || null;
 }
 
 function htmlToText(value: string): string {

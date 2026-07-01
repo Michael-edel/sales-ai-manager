@@ -61,7 +61,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Общая панель открытых задач, чтобы видеть незавершенные действия без открытия каждой заявки.
 - Встроенная авторизация: вход через форму, cookie-сессии, пользователи и роли.
 - Админская страница правил ИИ и 1С: цены всегда с НДС, счет от ТОО Michael, KBI всегда счет + приложение, данные и цены из 1С/документа, запрет придумывать цены.
-- Прием входящей почты через Cloudflare Email Routing с сохранением писем в D1.
+- Прием входящей почты из `direktor@edel.kz` через отдельный `imap-ingest` с сохранением писем в D1.
+- Запасной прием входящей почты через Cloudflare Email Routing `email()` handler.
 - Обработка сохраненного письма в заявку через `/api/email/messages/:id/process`.
 - SMTP-отправка блока D через отдельный `email-bridge`.
 - Отправка утвержденных Meta WhatsApp template messages через Cloud API.
@@ -88,6 +89,7 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put PARSER_SERVICE_TOKEN
 npx wrangler secret put EMAIL_BRIDGE_TOKEN
+npx wrangler secret put EMAIL_INGEST_TOKEN
 npx wrangler secret put WHATSAPP_ACCESS_TOKEN
 npx wrangler secret put WHATSAPP_PHONE_NUMBER_ID
 npm run d1:migrate:local
@@ -425,23 +427,66 @@ GET /api/parser/health
 
 ## Прием входящей почты
 
-Cloudflare Worker не подключается к IMAP/POP3 ящикам mailcow напрямую. Для рабочей версии письма должны поступать в Worker через Cloudflare Email Routing:
+Основной рабочий вариант для `direktor@edel.kz` — отдельный IMAP-ingest сервис. Он подключается к mailcow по IMAP, читает только указанный ящик и отправляет письма в Worker через защищенный endpoint:
 
 ```text
 Клиент -> direktor@edel.kz
 mailcow сохраняет письмо в direktor@edel.kz
-mailcow отправляет копию -> технический адрес Cloudflare Email Routing
+imap-ingest читает INBOX по IMAP без удаления писем
+imap-ingest отправляет письмо -> https://ai.michael.kz/api/email/ingest
 Cloudflare Worker сохраняет письмо в D1 email_messages
 ИИ-менеджер показывает письмо в блоке «Входящая почта»
 ```
 
-В Worker добавлен `email()` handler. Он получает MIME-письмо, извлекает отправителя, получателя, тему, текст и имена вложений, затем сохраняет письмо в `email_messages`. Повторная доставка того же письма не создает дубликат, если есть `Message-ID` или совпадает хеш raw-содержимого.
+Worker принимает такие письма через `POST /api/email/ingest`. Endpoint защищен секретом `EMAIL_INGEST_TOKEN`; без него письмо не сохраняется. Повторная доставка того же IMAP UID не создает дубликат.
+
+Локальная настройка IMAP-ingest:
+
+```powershell
+cd imap-ingest
+Copy-Item .env.example .env
+notepad .env
+```
+
+В `.env` заполните:
+
+```env
+IMAP_HOST=mail-edel.edel.kz
+IMAP_PORT=143
+IMAP_SSL=false
+IMAP_STARTTLS=true
+IMAP_USERNAME=direktor@edel.kz
+IMAP_PASSWORD=пароль_или_app_password_ящика
+WORKER_INGEST_URL=https://ai.michael.kz/api/email/ingest
+EMAIL_INGEST_TOKEN=тот_же_секрет_что_в_Worker
+```
+
+Secret в Worker:
+
+```powershell
+cd worker
+npx wrangler secret put EMAIL_INGEST_TOKEN
+```
+
+Проверка одной загрузки писем:
+
+```powershell
+cd imap-ingest
+python app\main.py --once
+```
+
+Постоянный запуск:
+
+```powershell
+cd imap-ingest
+python app\main.py
+```
 
 В интерфейсе:
 
 1. Откройте блок «Входящая почта».
 2. Нажмите «Обновить письма».
-3. Новые письма появятся в списке после доставки через Cloudflare Email Routing.
+3. Новые письма появятся в списке после работы `imap-ingest`.
 4. Нажмите «Обработать письмо», чтобы создать заявку A-F.
 
 Обработка уже сохраненного письма выполняется через:
@@ -450,7 +495,9 @@ Cloudflare Worker сохраняет письмо в D1 email_messages
 POST /api/email/messages/:id/process
 ```
 
-Текущая настройка mailcow для ящика `direktor@edel.kz`: создан recipient BCC map.
+Cloudflare Email Routing также поддерживается как запасной вариант. В Worker есть `email()` handler, который получает MIME-письмо, извлекает отправителя, получателя, тему, текст и имена вложений, затем сохраняет письмо в `email_messages`. Для этого нужен маршрут Cloudflare Email Routing на Worker `sales-ai-manager`.
+
+Старый вариант через recipient BCC map:
 
 ```text
 local_dest: direktor@edel.kz
@@ -612,7 +659,7 @@ cd ..\worker
 npm run dev
 ```
 
-Важно: Cloudflare-версия переносит заявки, D1, Gemini/OpenAI text/vision/audio и обработку PDF/DOCX/XLSX через внешний parser-service. Входящая почта принимается через Cloudflare Email Routing; прямой IMAP/POP3 из Worker не используется.
+Важно: Cloudflare-версия переносит заявки, D1, Gemini/OpenAI text/vision/audio и обработку PDF/DOCX/XLSX через внешний parser-service. Входящая почта для `direktor@edel.kz` принимается через внешний `imap-ingest`, потому что сам Worker не подключается к IMAP/POP3.
 
 Cloudflare Worker поддерживает два LLM-провайдера:
 
