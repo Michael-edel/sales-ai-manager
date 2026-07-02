@@ -44,6 +44,7 @@ import {
   reanalyzeRequestWithOneC,
   refreshRequestOneCContext,
   resetUserPassword,
+  runOneCCommand,
   searchOneCCounterparties,
   searchOneCProducts,
   sendEmailReply,
@@ -319,6 +320,7 @@ export default function App() {
   const [onecLookupDraft, setOnecLookupDraft] = useState({
     client: "ТОО KBI Energy",
     item: "",
+    command: "",
   });
   const [onecLookupLoading, setOnecLookupLoading] = useState("");
   const [onecLookupResult, setOnecLookupResult] = useState(null);
@@ -640,6 +642,48 @@ export default function App() {
       });
     } catch (err) {
       setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleRunOneCCommand() {
+    if (!canManageRequests) return;
+    const command = String(onecLookupDraft.command || "").trim();
+    if (!command) {
+      setOnecLookupResult({
+        title: "Команда 1С",
+        error: "Введите команду, например: последний заказ KBI, счета KBI, долг KBI, цены по привязанным товарам.",
+      });
+      return;
+    }
+
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("command");
+    try {
+      const response = await runOneCCommand({
+        command,
+        request_id: selected?.id || null,
+        client_id: selected?.client_id || null,
+        client_query: onecLookupDraft.client,
+        product_query: onecLookupDraft.item,
+      });
+      setOnecLookupResult({
+        title: response.title || "Команда 1С",
+        body: [
+          `Команда: ${response.command || command}`,
+          response.action ? `Действие: ${response.action}` : "",
+          "",
+          response.body || "Нет данных",
+        ].filter((line) => line !== "").join("\n"),
+      });
+      if (selected?.id) {
+        const events = await listRequestEvents(selected.id);
+        setRequestEvents(events);
+      }
+    } catch (err) {
+      setOnecLookupResult({ title: "Команда 1С", error: err.message });
     } finally {
       setOnecLookupLoading("");
     }
@@ -2081,6 +2125,24 @@ export default function App() {
                   placeholder="Например: 03-0101, кабель, ЦБ-00009583"
                 />
               </label>
+            </div>
+
+            <div className="onec-command-row">
+              <label>
+                <span>Команда 1С</span>
+                <input
+                  value={onecLookupDraft.command}
+                  onChange={(event) => updateOnecLookupDraft("command", event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") handleRunOneCCommand();
+                  }}
+                  placeholder="Например: открой последний заказ KBI, счета KBI за июнь, долг KBI, цены по привязанным товарам"
+                />
+              </label>
+              <button className="secondary-button" onClick={handleRunOneCCommand} disabled={Boolean(onecLookupLoading)}>
+                {onecLookupLoading === "command" ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
+                Выполнить команду
+              </button>
             </div>
 
             <div className="onec-button-row">

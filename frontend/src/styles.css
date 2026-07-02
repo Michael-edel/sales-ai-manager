@@ -604,6 +604,28 @@ button:disabled,
   font-weight: 700;
 }
 
+.onec-command-row {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.onec-command-row label {
+  display: grid;
+  gap: 6px;
+}
+
+.onec-command-row span {
+  color: #4f5b53;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.onec-command-row .secondary-button {
+  min-width: 210px;
+}
+
 .onec-button-row {
   display: flex;
   flex-wrap: wrap;
@@ -1639,6 +1661,7 @@ pre {
   .status-editor,
   .deal-documents-grid,
   .onec-tools-grid,
+  .onec-command-row,
   .onec-candidate-card,
   .onec-products-header,
   .onec-product-item,

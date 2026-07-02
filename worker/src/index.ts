@@ -796,6 +796,10 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCStockAndPrices(request, env));
       }
+      if (request.method === "POST" && url.pathname === "/api/1c/command") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await runOneCCommand(request, env, currentUser));
+      }
       const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(contracts|orders|invoices|debt|terms|addresses)$/);
       if (request.method === "GET" && oneCClientActionMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -1758,6 +1762,10 @@ async function searchOneCProducts(request: Request, env: Env) {
 
 async function getOneCStockAndPrices(request: Request, env: Env) {
   const { pattern, search } = await oneCSearchPayload(request, "Введите артикул, код или часть наименования товара.");
+  return getOneCStockAndPricesForSearch(env, search, pattern);
+}
+
+async function getOneCStockAndPricesForSearch(env: Env, search: string, pattern = oneCSearchPattern(search)) {
   const [stockResult, priceResult] = await Promise.all([
     executeOneCMcpTool(env, "execute_query", {
       query: ONEC_STOCK_SEARCH_QUERY,
@@ -1780,6 +1788,78 @@ async function getOneCStockAndPrices(request: Request, env: Env) {
       prices: priceResult,
     },
   };
+}
+
+async function runOneCCommand(request: Request, env: Env, currentUser: CurrentUser) {
+  const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const command = normalizeOptionalText(payload.command).slice(0, 400);
+  if (!command) throw new UserInputError("Введите команду для 1С.");
+
+  const requestId = Number(payload.request_id || 0);
+  const selectedRequest = requestId > 0 ? await getRequest(env, requestId) as Record<string, any> | null : null;
+  if (requestId > 0 && !selectedRequest) throw new UserInputError("Выбранная заявка не найдена.");
+
+  const normalized = normalizeKey(command);
+  const clientAction = oneCCommandClientAction(normalized);
+  const actor = currentUser.display_name || currentUser.username || "manager";
+  let response: Record<string, unknown>;
+
+  if (clientAction) {
+    const clientId = await resolveOneCCommandClientId(env, payload, command, selectedRequest);
+    if (!clientId) {
+      throw new UserInputError("Для этой команды выберите заявку с CRM-клиентом или укажите клиента в 1С-панели.");
+    }
+    response = await getOneCClientBusinessData(env, clientId, clientAction);
+  } else if (oneCCommandWantsStockOrPrices(normalized)) {
+    if (selectedRequest?.id && !oneCCommandHasExplicitProductSearch(command, payload)) {
+      response = await getRequestOneCProductStockPrices(env, Number(selectedRequest.id));
+      response = {
+        ...response,
+        title: "Остатки и цены по товарам заявки",
+        result_text: oneCCommandLinkedProductsText(response),
+      };
+    } else {
+      const productSearch = extractOneCCommandProductSearch(command, payload);
+      if (!productSearch) {
+        throw new UserInputError("Для проверки товара укажите артикул/код в команде или привяжите товар 1С к заявке.");
+      }
+      response = await getOneCStockAndPricesForSearch(env, productSearch);
+      response = {
+        ...response,
+        title: "Остатки и цены в 1С",
+        result_text: [
+          `Поиск: ${productSearch}`,
+          "",
+          "Остатки:",
+          response.stock_result_text || "нет данных",
+          "",
+          "Цены:",
+          response.price_result_text || "нет данных",
+        ].join("\n"),
+      };
+    }
+  } else {
+    throw new UserInputError("Команда не распознана. Используйте: договоры, последние заказы, счета, задолженность, условия оплаты, адреса, остатки или цены.");
+  }
+
+  const result = {
+    command,
+    action: clientAction || "stock_prices",
+    request_id: selectedRequest?.id || null,
+    title: normalizeOptionalText(response.title) || "Результат команды 1С",
+    body: normalizeOptionalText(response.result_text) || oneCMcpResultText(response.raw) || oneCCommandLinkedProductsText(response) || "Нет данных",
+    raw: response,
+  };
+
+  if (selectedRequest?.id) {
+    await createRequestEvent(env, Number(selectedRequest.id), "request.onec_command", actor, {
+      command,
+      action: result.action,
+      title: result.title,
+    });
+  }
+
+  return result;
 }
 
 async function getOneCClientBusinessData(env: Env, clientId: number, action: string) {
@@ -2087,6 +2167,102 @@ function oneCClientActionDescriptor(action: string) {
   const descriptor = descriptors[action];
   if (!descriptor) throw new UserInputError("Неизвестный вид проверки клиента 1С.");
   return descriptor;
+}
+
+function oneCCommandClientAction(normalizedCommand: string): string {
+  if (/(договор|контракт)/.test(normalizedCommand)) return "contracts";
+  if (/(заказ|последн.*заказ|order)/.test(normalizedCommand)) return "orders";
+  if (/(счет|счета|invoice|оплат[ауые])/.test(normalizedCommand) && !/(услов|срок|порядок)/.test(normalizedCommand)) return "invoices";
+  if (/(долг|задолж|дебитор|взаиморасчет)/.test(normalizedCommand)) return "debt";
+  if (/(услов|срок оплат|порядок оплат|отсрочк|payment term)/.test(normalizedCommand)) return "terms";
+  if (/(адрес|достав|контакт|телефон|email|почт)/.test(normalizedCommand)) return "addresses";
+  return "";
+}
+
+function oneCCommandWantsStockOrPrices(normalizedCommand: string): boolean {
+  return /(остат|налич|цена|цены|прайс|stock|price|товар|номенклатур)/.test(normalizedCommand);
+}
+
+function oneCCommandHasExplicitProductSearch(command: string, payload: Record<string, unknown>): boolean {
+  return Boolean(
+    normalizeOptionalText(payload.product_query || payload.query)
+      || /(?:^|\s)(?:цб-|[0-9]{2}-[0-9]{3,}|[a-zа-я0-9]{3,}-[a-zа-я0-9-]{3,})(?:\s|$)/i.test(command),
+  );
+}
+
+function extractOneCCommandProductSearch(command: string, payload: Record<string, unknown>): string {
+  const explicit = normalizeOptionalText(payload.product_query || payload.query).slice(0, 160);
+  if (explicit) return explicit;
+
+  const cleaned = normalizeOptionalText(command)
+    .replace(/проверь|показать|найди|открой|посмотри|нужн[аыо]?/gi, " ")
+    .replace(/остатки?|наличие|цены?|прайс|товар[ауеы]?|номенклатур[ауеы]?|по|в\s*1с|1с/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+
+  return cleaned.length >= 3 ? cleaned : "";
+}
+
+async function resolveOneCCommandClientId(
+  env: Env,
+  payload: Record<string, unknown>,
+  command: string,
+  selectedRequest: Record<string, any> | null,
+): Promise<number> {
+  const requestClientId = Number(selectedRequest?.client_id || 0);
+  if (requestClientId > 0) return requestClientId;
+
+  const payloadClientId = Number(payload.client_id || 0);
+  if (payloadClientId > 0) return payloadClientId;
+
+  const clientSearch = normalizeOptionalText(payload.client_query)
+    || (detectKbiEnergy(command) ? "kbi" : extractOneCCommandClientSearch(command));
+  if (!clientSearch) return 0;
+
+  const like = `%${normalizeKey(clientSearch)}%`;
+  const row = await env.DB.prepare(`
+    SELECT id
+    FROM crm_clients
+    WHERE lower(display_name) LIKE ?
+       OR lower(normalized_name) LIKE ?
+       OR lower(COALESCE(onec_counterparty_name, '')) LIKE ?
+       OR lower(COALESCE(onec_counterparty_full_name, '')) LIKE ?
+       OR lower(COALESCE(onec_counterparty_bin, '')) LIKE ?
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+  `).bind(like, like, like, like, like).first() as Record<string, unknown> | null;
+
+  return Number(row?.id || 0);
+}
+
+function extractOneCCommandClientSearch(command: string): string {
+  const cleaned = normalizeOptionalText(command)
+    .replace(/открой|покажи|найди|проверь|последн(?:ий|ие|яя)?/gi, " ")
+    .replace(/договоры?|контракты?|заказы?|счета?|счет|долг|задолженность|условия?|оплаты?|адреса?|доставка|клиент[ауе]?|по|в\s*1с|1с/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  return cleaned.length >= 3 ? cleaned : "";
+}
+
+function oneCCommandLinkedProductsText(response: Record<string, unknown>): string {
+  const items = Array.isArray(response.items) ? response.items as Array<Record<string, any>> : [];
+  if (!items.length) return "";
+  return items.map((item, index) => {
+    const title = oneCRequestProductTitle(item.product || {}, index);
+    if (item.error) return `${index + 1}. ${title}\nОшибка: ${item.error}`;
+    return [
+      `${index + 1}. ${title}`,
+      item.search ? `Поиск: ${item.search}` : "",
+      "",
+      "Остатки:",
+      item.stock_result_text || "нет данных",
+      "",
+      "Цены:",
+      item.price_result_text || "нет данных",
+    ].filter((line) => line !== "").join("\n");
+  }).join("\n\n");
 }
 
 async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<string, string> | null> {

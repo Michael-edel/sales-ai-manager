@@ -129,6 +129,14 @@ export function getOneCStockAndPrices(query) {
   });
 }
 
+export function runOneCCommand(payload) {
+  return request("/1c/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listRequestOneCProducts(requestId) {
   return request(`/requests/${requestId}/1c-products`);
 }
