@@ -151,6 +151,12 @@ export function getRequestOneCProductStockPrices(requestId) {
   return request(`/requests/${requestId}/1c-products/stock-prices`);
 }
 
+export function refreshRequestOneCContext(requestId) {
+  return request(`/requests/${requestId}/1c-context`, {
+    method: "POST",
+  });
+}
+
 export function getOneCClientContracts(clientId) {
   return request(`/1c/clients/${clientId}/contracts`);
 }

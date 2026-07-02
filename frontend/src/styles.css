@@ -821,6 +821,13 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.onec-products-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .onec-product-list {
   display: grid;
   gap: 8px;
@@ -1602,6 +1609,14 @@ pre {
   .user-row,
   .event-item {
     grid-template-columns: 1fr;
+  }
+
+  .onec-products-actions {
+    justify-content: stretch;
+  }
+
+  .onec-products-actions .secondary-button {
+    width: 100%;
   }
 
   .rule-card-header {

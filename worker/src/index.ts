@@ -662,6 +662,11 @@ export default {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getRequestOneCProductStockPrices(env, Number(requestOneCProductStockMatch[1])));
       }
+      const requestOneCContextMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-context$/);
+      if (request.method === "POST" && requestOneCContextMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await refreshRequestOneCContext(env, Number(requestOneCContextMatch[1]), currentUser));
+      }
       const requestOneCProductMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products$/);
       if (requestOneCProductMatch) {
         const requestId = Number(requestOneCProductMatch[1]);
@@ -1836,6 +1841,65 @@ async function getRequestOneCProductStockPrices(env: Env, requestId: number) {
   };
 }
 
+async function refreshRequestOneCContext(env: Env, requestId: number, user: CurrentUser) {
+  const item = await getRequest(env, requestId) as Record<string, unknown> | null;
+  if (!item) throw new UserInputError("Заявка не найдена.");
+
+  const metadata: Metadata = {
+    client_company: normalizeOptionalText(item.client_company),
+    client_contact_name: normalizeOptionalText(item.client_contact_name),
+    michael_manager: normalizeOptionalText(item.michael_manager),
+    communication_channel: normalizeOptionalText(item.communication_channel),
+    priority: normalizeOptionalText(item.priority),
+    next_action: normalizeOptionalText(item.next_action),
+  };
+
+  const baseContext = await buildOneCAnalysisContext(env, metadata, normalizeOptionalText(item.original_text));
+  const productContext = await buildLinkedOneCProductsContext(env, requestId);
+  const contextText = appendTextBlock(baseContext, productContext.text);
+
+  await createRequestEvent(env, requestId, "request.onec_context_refreshed", user.display_name || user.username, {
+    products_count: productContext.count,
+    context_preview: limitText(contextText, 7000),
+  });
+
+  return {
+    request_id: requestId,
+    products_count: productContext.count,
+    context_text: contextText,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+async function buildLinkedOneCProductsContext(env: Env, requestId: number): Promise<{ text: string; count: number }> {
+  const products = await listRequestOneCProducts(env, requestId) as Record<string, unknown>[];
+  if (products.length === 0) return { text: "", count: 0 };
+
+  const stockPrices = await getRequestOneCProductStockPrices(env, requestId);
+  const blocks = (stockPrices.items || []).map((item: Record<string, unknown>, index: number) => {
+    const product = (item.product || {}) as Record<string, unknown>;
+    const lines = [
+      `${index + 1}. ${oneCRequestProductTitle(product, index)}`,
+      oneCRequestProductMeta(product),
+      item.search ? `Поиск в 1С: ${item.search}` : "",
+    ].filter(Boolean);
+
+    if (item.error) {
+      lines.push(`Ошибка проверки: ${item.error}`);
+    } else {
+      lines.push(`Остатки:\n${limitText(normalizeOptionalText(item.stock_result_text) || "нет данных", 3000)}`);
+      lines.push(`Цены:\n${limitText(normalizeOptionalText(item.price_result_text) || "нет данных", 3000)}`);
+    }
+
+    return lines.join("\n");
+  });
+
+  return {
+    text: ["Привязанные товары 1С в заявке:", ...blocks].join("\n\n"),
+    count: products.length,
+  };
+}
+
 function oneCClientActionDescriptor(action: string) {
   const descriptors: Record<string, { tool: string; title: string; queries: Array<{ key: string; query: string }> }> = {
     contracts: {
@@ -1899,6 +1963,26 @@ function oneCProductSearchText(product: Record<string, unknown>): string {
       product.onec_product_full_name ||
       product.onec_product_ref,
   );
+}
+
+function oneCRequestProductTitle(product: Record<string, unknown>, index: number): string {
+  return normalizeOptionalText(
+    product.onec_product_name ||
+      product.onec_product_full_name ||
+      product.onec_product_article ||
+      product.onec_product_code ||
+      product.onec_product_ref,
+  ) || `Товар ${index + 1}`;
+}
+
+function oneCRequestProductMeta(product: Record<string, unknown>): string {
+  return [
+    normalizeOptionalText(product.onec_product_code) ? `Код: ${normalizeOptionalText(product.onec_product_code)}` : "",
+    normalizeOptionalText(product.onec_product_article) ? `Артикул: ${normalizeOptionalText(product.onec_product_article)}` : "",
+    normalizeOptionalText(product.onec_product_unit) ? `Ед. изм.: ${normalizeOptionalText(product.onec_product_unit)}` : "",
+    normalizeOptionalText(product.onec_product_vat_rate) ? `НДС: ${normalizeOptionalText(product.onec_product_vat_rate)}` : "",
+    normalizeOptionalText(product.onec_product_ref) ? `1С: ${normalizeOptionalText(product.onec_product_ref)}` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 async function executeFirstSuccessfulOneCQuery(

@@ -39,6 +39,7 @@ import {
   logout,
   processEmailMessage,
   processText,
+  refreshRequestOneCContext,
   resetUserPassword,
   searchOneCCounterparties,
   searchOneCProducts,
@@ -650,6 +651,34 @@ export default function App() {
       });
     } catch (err) {
       setOnecLookupResult({ title: "Остатки и цены по товарам заявки", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleRefreshRequestOneCContext() {
+    if (authUser?.role !== "admin") return;
+    if (!selected?.id) {
+      setOnecLookupResult({
+        title: "1С-данные заявки",
+        error: "Выберите заявку.",
+      });
+      return;
+    }
+
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("request-context");
+    try {
+      const response = await refreshRequestOneCContext(selected.id);
+      setOnecLookupResult({
+        title: "1С-данные заявки",
+        body: response.context_text || "Нет данных",
+      });
+      const events = await listRequestEvents(selected.id);
+      setRequestEvents(events);
+    } catch (err) {
+      setOnecLookupResult({ title: "1С-данные заявки", error: err.message });
     } finally {
       setOnecLookupLoading("");
     }
@@ -2039,6 +2068,14 @@ export default function App() {
                   {onecLookupLoading === "linked-stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
                   Остатки/цены товаров
                 </button>
+                <button
+                  className="secondary-button"
+                  onClick={handleRefreshRequestOneCContext}
+                  disabled={Boolean(onecLookupLoading) || !selected?.id}
+                >
+                  {onecLookupLoading === "request-context" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+                  Обновить 1С-данные заявки
+                </button>
               </div>
             </div>
 
@@ -2726,16 +2763,26 @@ export default function App() {
                         {requestOneCProducts.length > 0
                           ? `Выбрано товаров: ${requestOneCProducts.length}`
                           : "В блоке 1C найдите товар и нажмите «Привязать к заявке»."}
-                      </span>
+                        </span>
                     </div>
-                    <button
-                      className="secondary-button"
-                      onClick={handleLinkedProductStockPrices}
-                      disabled={Boolean(onecLookupLoading) || requestOneCProducts.length === 0}
-                    >
-                      {onecLookupLoading === "linked-stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
-                      Остатки/цены
-                    </button>
+                    <div className="onec-products-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={handleLinkedProductStockPrices}
+                        disabled={Boolean(onecLookupLoading) || requestOneCProducts.length === 0}
+                      >
+                        {onecLookupLoading === "linked-stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                        Остатки/цены
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={handleRefreshRequestOneCContext}
+                        disabled={Boolean(onecLookupLoading) || !selected?.id}
+                      >
+                        {onecLookupLoading === "request-context" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+                        Снимок 1С
+                      </button>
+                    </div>
                   </div>
                   {requestOneCProducts.length > 0 ? (
                     <div className="onec-product-list">
