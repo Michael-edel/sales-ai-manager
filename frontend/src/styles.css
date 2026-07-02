@@ -992,18 +992,52 @@ button:disabled,
 }
 
 .event-item {
-  align-items: center;
   border: 1px solid #d9dfd7;
   border-radius: 8px;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(160px, 1fr) minmax(120px, auto) minmax(140px, auto);
   padding: 10px 12px;
+}
+
+.event-main {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.event-main > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.event-meta {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  white-space: nowrap;
 }
 
 .event-item span,
 .event-item small {
   color: #6b756e;
+}
+
+.event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.event-payload {
+  background: #fbfcfb;
+  border: 1px solid #e1e6df;
+  border-radius: 8px;
+  max-height: 340px;
+  overflow: auto;
+  padding: 10px 12px;
 }
 
 .email-area {
@@ -1574,11 +1608,18 @@ pre {
   .email-detail-header,
   .email-detail-actions,
   .email-item-actions,
+  .event-main,
+  .event-actions,
   .rules-actions,
   .integration-status,
   .email-item {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .event-meta {
+    justify-items: start;
+    white-space: normal;
   }
 
   .compact-button {

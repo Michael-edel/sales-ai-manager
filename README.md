@@ -341,9 +341,11 @@ Cloudflare-версия теперь сохраняет не только рез
 - контакты клиента в `crm_contacts`;
 - менеджеров Michael в `michael_managers`;
 - статус, приоритет и следующее действие в `requests`;
-- журнал действий в `request_events`.
+- журнал действий в `request_events`;
 - задачи по заявке в `request_tasks`;
 - документы сделки прямо в заявке: `invoice_number`, `invoice_date`, `invoice_status`, `contract_appendix_status`.
+
+В журнале действий можно раскрыть служебные данные события. Для события `request.onec_context_refreshed` доступна кнопка открытия сохраненного снимка 1С без повторного запроса к bridge.
 
 В левой панели интерфейса отображаются:
 

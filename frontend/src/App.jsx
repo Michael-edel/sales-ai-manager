@@ -226,6 +226,34 @@ function oneCProductMeta(item) {
   ].filter(Boolean).join(" · ");
 }
 
+function parseEventPayload(event) {
+  if (!event?.payload_json) return null;
+  try {
+    return JSON.parse(event.payload_json);
+  } catch {
+    return { raw: event.payload_json };
+  }
+}
+
+function eventPayloadText(payload) {
+  if (!payload) return "";
+  if (payload.context_preview) return String(payload.context_preview);
+  if (payload.raw) return String(payload.raw);
+  return JSON.stringify(payload, null, 2);
+}
+
+function eventPayloadSummary(payload) {
+  if (!payload) return "";
+  const parts = [
+    payload.products_count !== undefined ? `товаров 1С: ${payload.products_count}` : "",
+    payload.status ? `статус: ${payload.status}` : "",
+    payload.invoice_number ? `счет: ${payload.invoice_number}` : "",
+    payload.template_name ? `шаблон: ${payload.template_name}` : "",
+    payload.email_to ? `email: ${payload.email_to}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState(null);
@@ -288,6 +316,7 @@ export default function App() {
   const [onecLookupLoading, setOnecLookupLoading] = useState("");
   const [onecLookupResult, setOnecLookupResult] = useState(null);
   const [requestEvents, setRequestEvents] = useState([]);
+  const [expandedEventId, setExpandedEventId] = useState(null);
   const [requestTasks, setRequestTasks] = useState([]);
   const [requestOneCProducts, setRequestOneCProducts] = useState([]);
   const [openTasks, setOpenTasks] = useState([]);
@@ -682,6 +711,16 @@ export default function App() {
     } finally {
       setOnecLookupLoading("");
     }
+  }
+
+  function handleOpenEventPayload(event) {
+    const payload = parseEventPayload(event);
+    const body = eventPayloadText(payload);
+    if (!body) return;
+    setOnecLookupResult({
+      title: event.event_type === "request.onec_context_refreshed" ? "Сохраненный снимок 1С" : event.event_type,
+      body,
+    });
   }
 
   async function handleOneCClientData(kind) {
@@ -3002,13 +3041,46 @@ export default function App() {
             <div className="events-area">
               <h3>Журнал действий</h3>
               {requestEvents.length === 0 && <p className="muted">Событий пока нет.</p>}
-              {requestEvents.map((event) => (
-                <article className="event-item" key={event.id}>
-                  <strong>{event.event_type}</strong>
-                  <span>{event.actor || "system"}</span>
-                  <small>{new Date(event.created_at).toLocaleString()}</small>
-                </article>
-              ))}
+              {requestEvents.map((event) => {
+                const payload = parseEventPayload(event);
+                const payloadText = eventPayloadText(payload);
+                const payloadSummary = eventPayloadSummary(payload);
+                const expanded = expandedEventId === event.id;
+                return (
+                  <article className="event-item" key={event.id}>
+                    <div className="event-main">
+                      <div>
+                        <strong>{event.event_type}</strong>
+                        {payloadSummary ? <span>{payloadSummary}</span> : null}
+                      </div>
+                      <div className="event-meta">
+                        <span>{event.actor || "system"}</span>
+                        <small>{new Date(event.created_at).toLocaleString()}</small>
+                      </div>
+                    </div>
+                    {payloadText ? (
+                      <div className="event-actions">
+                        {event.event_type === "request.onec_context_refreshed" ? (
+                          <button className="secondary-button" onClick={() => handleOpenEventPayload(event)}>
+                            <Database size={16} />
+                            Открыть снимок 1С
+                          </button>
+                        ) : null}
+                        <button
+                          className="secondary-button"
+                          onClick={() => setExpandedEventId(expanded ? null : event.id)}
+                        >
+                          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          {expanded ? "Скрыть данные" : "Показать данные"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {expanded && payloadText ? (
+                      <pre className="event-payload">{payloadText}</pre>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
             </>
           )}
