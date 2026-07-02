@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createEmailSenderFilter,
@@ -14,6 +14,7 @@ import {
   getCrmSummary,
   getCurrentUser,
   getEmailSmtpHealth,
+  getOneCMcpHealth,
   getParserHealth,
   getWhatsAppHealth,
   listAiRules,
@@ -214,6 +215,8 @@ export default function App() {
   const [crmSummary, setCrmSummary] = useState(null);
   const [parserStatus, setParserStatus] = useState(null);
   const [parserLoading, setParserLoading] = useState(false);
+  const [onecMcpStatus, setOnecMcpStatus] = useState(null);
+  const [onecMcpLoading, setOnecMcpLoading] = useState(false);
   const [requestEvents, setRequestEvents] = useState([]);
   const [requestTasks, setRequestTasks] = useState([]);
   const [openTasks, setOpenTasks] = useState([]);
@@ -312,6 +315,24 @@ export default function App() {
     }
   }
 
+  async function refreshOneCMcpStatus() {
+    if (authUser?.role !== "admin") return;
+    setOnecMcpLoading(true);
+    try {
+      const status = await getOneCMcpHealth();
+      setOnecMcpStatus(status);
+    } catch (err) {
+      setOnecMcpStatus({
+        configured: false,
+        reachable: false,
+        status: "error",
+        detail: err.message,
+      });
+    } finally {
+      setOnecMcpLoading(false);
+    }
+  }
+
   async function refreshSmtpStatus() {
     try {
       const status = await getEmailSmtpHealth();
@@ -340,6 +361,7 @@ export default function App() {
     refreshHistory().catch((err) => setError(err.message));
     refreshEmails().catch((err) => setEmailStatus(err.message));
     refreshParserStatus().catch(() => {});
+    refreshOneCMcpStatus().catch(() => {});
     refreshSmtpStatus().catch(() => {});
     refreshUsers().catch(() => {});
     refreshAiRules().catch((err) => setAiRulesStatus(err.message));
@@ -1137,6 +1159,16 @@ export default function App() {
     : parserStatus?.configured
       ? "ошибка"
       : "PDF через Gemini";
+  const onecMcpHealthClass = onecMcpStatus?.reachable
+    ? "ok"
+    : onecMcpStatus?.configured
+      ? "error"
+      : "warn";
+  const onecMcpHealthText = onecMcpStatus?.reachable
+    ? `подключен, инструментов ${onecMcpStatus.tools_count || 0}`
+    : onecMcpStatus?.configured
+      ? "ошибка"
+      : "не настроен";
   const smtpHealthClass = smtpStatus?.reachable
     ? "ok"
     : smtpStatus?.configured
@@ -1491,6 +1523,27 @@ export default function App() {
               <RefreshCw className={parserLoading ? "spin" : ""} size={16} />
             </button>
           </div>
+
+          {authUser?.role === "admin" ? (
+            <div className={`service-status service-status-${onecMcpHealthClass}`}>
+              <Database size={18} />
+              <div>
+                <strong>1C MCP</strong>
+                <span>{onecMcpLoading ? "проверяется" : onecMcpHealthText}</span>
+                {!onecMcpStatus?.configured && !onecMcpLoading ? (
+                  <small>нужен onec-mcp-bridge рядом с 1С</small>
+                ) : null}
+              </div>
+              <button
+                className="icon-button"
+                onClick={refreshOneCMcpStatus}
+                disabled={onecMcpLoading}
+                title="Проверить 1C MCP bridge"
+              >
+                <RefreshCw className={onecMcpLoading ? "spin" : ""} size={16} />
+              </button>
+            </div>
+          ) : null}
 
           {file && (
             <div className="selected-file">

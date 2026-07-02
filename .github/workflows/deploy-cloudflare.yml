@@ -30,9 +30,13 @@ jobs:
           cache-dependency-path: |
             parser-service/requirements.txt
             parser-service/requirements-dev.txt
+            onec-mcp-bridge/requirements.txt
 
       - name: Validate email bridge syntax
         run: python -m py_compile email-bridge/app/main.py
+
+      - name: Validate 1C MCP bridge syntax
+        run: python -m py_compile onec-mcp-bridge/app/main.py
 
       - name: Install parser-service dependencies
         working-directory: parser-service

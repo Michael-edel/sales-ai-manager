@@ -18,6 +18,9 @@ export interface Env {
   EMAIL_BRIDGE_URL: string;
   EMAIL_BRIDGE_TOKEN: string;
   EMAIL_INGEST_TOKEN: string;
+  ONEC_MCP_BRIDGE_URL: string;
+  ONEC_MCP_BRIDGE_TOKEN: string;
+  ONEC_MCP_ALLOWED_TOOLS: string;
   WHATSAPP_ACCESS_TOKEN: string;
   WHATSAPP_PHONE_NUMBER_ID: string;
   WHATSAPP_API_VERSION: string;
@@ -132,6 +135,17 @@ type EmailStatus = "received" | "in_work" | "done" | "deleted";
 const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers", "done", "trash"];
 const EMAIL_SENDER_ROUTE_FOLDERS: EmailFolder[] = ["suppliers", "buyers"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
+const DEFAULT_ONEC_MCP_ALLOWED_TOOLS = [
+  "get_metadata_tree",
+  "get_object_structure",
+  "get_form_structure",
+  "get_configuration_info",
+  "search_code",
+  "bsl_syntax_help",
+  "execute_query",
+  "validate_query",
+  "get_event_log",
+];
 
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -296,6 +310,18 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/api/parser/health") {
         return json(await checkParserService(env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/1c/mcp/health") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await checkOneCMcpBridge(env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/1c/mcp/tools") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await listOneCMcpTools(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/1c/mcp/tools/call") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await callOneCMcpTool(request, env));
       }
       if (request.method === "GET" && url.pathname === "/api/ai/rules") {
         return json(await listAiRules(env));
@@ -1044,6 +1070,104 @@ async function checkParserService(env: Env) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function checkOneCMcpBridge(env: Env) {
+  const baseUrl = (env.ONEC_MCP_BRIDGE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    return {
+      configured: false,
+      reachable: false,
+      status: "not_configured",
+      detail: "ONEC_MCP_BRIDGE_URL не задан.",
+    };
+  }
+
+  let serviceOrigin = baseUrl;
+  try {
+    serviceOrigin = new URL(baseUrl).origin;
+  } catch {
+    return {
+      configured: true,
+      reachable: false,
+      status: "invalid_url",
+      detail: "ONEC_MCP_BRIDGE_URL задан в неверном формате.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${baseUrl}/health`, {
+      method: "GET",
+      headers: oneCMcpBridgeHeaders(env),
+      signal: controller.signal,
+    });
+    const { raw, data } = await readJsonResponse(response);
+
+    if (!response.ok) {
+      return {
+        configured: true,
+        reachable: false,
+        status: "error",
+        service_origin: serviceOrigin,
+        detail: data?.detail || raw || response.statusText,
+      };
+    }
+
+    return {
+      configured: true,
+      reachable: true,
+      status: data?.status || "ok",
+      service: data?.service || "onec-mcp-bridge",
+      service_origin: serviceOrigin,
+      tools_count: Number(data?.tools_count || 0),
+      allowed_tools: Array.isArray(data?.allowed_tools) ? data.allowed_tools : oneCMcpAllowedTools(env),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "1C MCP bridge недоступен.";
+    return {
+      configured: true,
+      reachable: false,
+      status: "unreachable",
+      service_origin: serviceOrigin,
+      detail: message,
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function listOneCMcpTools(env: Env) {
+  const baseUrl = oneCMcpBridgeBaseUrl(env);
+  const response = await fetch(`${baseUrl}/tools`, {
+    method: "GET",
+    headers: oneCMcpBridgeHeaders(env),
+  });
+  const { raw, data } = await readJsonResponse(response);
+  if (!response.ok) throw new Error(data?.detail || raw || "Не удалось получить список MCP-инструментов 1С.");
+  return data || { tools: [], allowed_tools: oneCMcpAllowedTools(env) };
+}
+
+async function callOneCMcpTool(request: Request, env: Env) {
+  const payload = (await request.json()) as { name?: unknown; tool_name?: unknown; arguments?: unknown };
+  const toolName = normalizeMcpToolName(payload.name || payload.tool_name);
+  if (!toolName) throw new UserInputError("Укажите MCP-инструмент 1С.");
+  if (!oneCMcpAllowedTools(env).includes(toolName)) throw new UserInputError("Этот MCP-инструмент 1С не разрешен.");
+
+  const toolArguments = payload.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)
+    ? payload.arguments as Record<string, unknown>
+    : {};
+
+  const baseUrl = oneCMcpBridgeBaseUrl(env);
+  const response = await fetch(`${baseUrl}/tools/call`, {
+    method: "POST",
+    headers: oneCMcpBridgeHeaders(env, true),
+    body: JSON.stringify({ name: toolName, arguments: toolArguments }),
+  });
+  const { raw, data } = await readJsonResponse(response);
+  if (!response.ok) throw new Error(data?.detail || raw || "Не удалось выполнить MCP-инструмент 1С.");
+  return data;
 }
 
 async function checkEmailBridge(env: Env) {
@@ -3613,6 +3737,52 @@ function normalizeWhatsAppBodyParameters(value: unknown): string[] {
     .map((item) => normalizeOptionalText(item).slice(0, 1024))
     .filter(Boolean)
     .slice(0, 20);
+}
+
+function normalizeMcpToolName(value: unknown): string {
+  return normalizeOptionalText(value).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 128);
+}
+
+function oneCMcpAllowedTools(env: Env): string[] {
+  const configured = (env.ONEC_MCP_ALLOWED_TOOLS || "")
+    .split(",")
+    .map((tool) => normalizeMcpToolName(tool))
+    .filter(Boolean);
+  return configured.length > 0 ? Array.from(new Set(configured)) : DEFAULT_ONEC_MCP_ALLOWED_TOOLS;
+}
+
+function oneCMcpBridgeBaseUrl(env: Env): string {
+  const baseUrl = (env.ONEC_MCP_BRIDGE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("ONEC_MCP_BRIDGE_URL не задан. Запустите onec-mcp-bridge рядом с 1С и укажите его HTTPS URL в Worker.");
+  }
+  try {
+    new URL(baseUrl);
+  } catch {
+    throw new Error("ONEC_MCP_BRIDGE_URL задан в неверном формате.");
+  }
+  return baseUrl;
+}
+
+function oneCMcpBridgeHeaders(env: Env, jsonBody = false): Headers {
+  const headers = new Headers();
+  if (jsonBody) headers.set("Content-Type", "application/json");
+  if (env.ONEC_MCP_BRIDGE_TOKEN) {
+    headers.set("Authorization", `Bearer ${env.ONEC_MCP_BRIDGE_TOKEN}`);
+    headers.set("X-OneC-MCP-Token", env.ONEC_MCP_BRIDGE_TOKEN);
+  }
+  return headers;
+}
+
+async function readJsonResponse(response: Response): Promise<{ raw: string; data: any }> {
+  const raw = await response.text();
+  let data: any = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
+  return { raw, data };
 }
 
 function normalizeMetaError(data: any, raw: string, fallback: string): string {

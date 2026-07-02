@@ -24,6 +24,7 @@ https://ai.michael.kz
 - пользователи хранятся в D1 `app_users`;
 - история заявок, CRM, задачи, документы сделки и журнал действий сохраняются в D1;
 - правила ИИ и 1С хранятся в D1 `ai_rules`, редактируются администратором и добавляются к системному промпту при каждой новой обработке.
+- для связи с 1С через MCP добавлен отдельный локальный `onec-mcp-bridge`; Worker не запускает `mcp-1c` внутри себя, а обращается к bridge по HTTPS/VPN/Tunnel;
 - `.pdf` в Cloudflare-версии может обрабатываться напрямую через Gemini; `.docx` и `.xlsx` требуют отдельный `parser-service`, если задан `PARSER_SERVICE_URL`;
 - деплой выполняется через GitHub Actions на Node.js 24 с секретами `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GEMINI_API_KEY`.
 
@@ -73,6 +74,12 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Встроенная авторизация: вход через форму, cookie-сессии, пользователи и роли.
 - Привязка корпоративных ящиков `@edel.kz` к пользователям программы: входящие письма назначаются ответственному по ящику, а не только по общему адресу.
 - Админская страница правил ИИ и 1С: цены всегда с НДС, счет от ТОО Michael, KBI всегда счет + приложение, данные и цены из 1С/документа, запрет придумывать цены.
+- Локальный `onec-mcp-bridge` для подключения готового MCP-сервера `mcp-1c` к Cloudflare-приложению.
+- Проверка статуса `1C MCP` в интерфейсе администратора.
+- Admin API для MCP 1С:
+  - `GET /api/1c/mcp/health`;
+  - `GET /api/1c/mcp/tools`;
+  - `POST /api/1c/mcp/tools/call`.
 - Прием входящей почты из привязанных ящиков домена `edel.kz` через отдельный `imap-ingest` с сохранением писем в D1.
 - Запасной прием входящей почты через Cloudflare Email Routing `email()` handler.
 - Обработка сохраненного письма в заявку через `/api/email/messages/:id/process`.
@@ -100,6 +107,8 @@ npx wrangler secret put ACCESS_PASSWORD
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put PARSER_SERVICE_TOKEN
+npx wrangler secret put ONEC_MCP_BRIDGE_URL
+npx wrangler secret put ONEC_MCP_BRIDGE_TOKEN
 npx wrangler secret put EMAIL_BRIDGE_TOKEN
 npx wrangler secret put EMAIL_INGEST_TOKEN
 npx wrangler secret put WHATSAPP_ACCESS_TOKEN
@@ -115,7 +124,83 @@ npm run dev
 ```
 
 Для `.pdf` в Cloudflare-версии достаточно Gemini. Для `.docx`, `.xlsx` и расширенного разбора PDF отдельно запустите `parser-service` и задайте `PARSER_SERVICE_URL`.
+Для доступа к 1С через MCP отдельно запустите `onec-mcp-bridge` рядом с базой 1С и задайте `ONEC_MCP_BRIDGE_URL` + `ONEC_MCP_BRIDGE_TOKEN`.
 Для отправки email через SMTP отдельно запустите `email-bridge` и задайте `EMAIL_BRIDGE_URL`.
+
+## 1С MCP через mcp-1c
+
+В проект добавлен локальный мост:
+
+```text
+onec-mcp-bridge/
+```
+
+Он нужен для сценария из статьи Infostart и проекта `mcp-1c`: AI-клиент получает метаданные и проверочные данные из рабочей базы 1С через MCP.
+
+Почему нужен bridge:
+
+- `mcp-1c` запускается локальным процессом рядом с 1С и обращается к HTTP-сервису 1С;
+- Cloudflare Worker не может запускать `mcp-1c.exe` и не должен иметь прямой доступ в локальную сеть 1С;
+- `onec-mcp-bridge` принимает HTTPS-запрос от Worker, проверяет токен и вызывает разрешенные MCP-инструменты.
+
+Разрешенные инструменты по умолчанию:
+
+```text
+get_metadata_tree
+get_object_structure
+get_form_structure
+get_configuration_info
+search_code
+bsl_syntax_help
+execute_query
+validate_query
+get_event_log
+```
+
+Схема:
+
+```text
+ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp-1c -> 1C HTTP service
+```
+
+Минимальный запуск bridge на Windows:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\onec-mcp-bridge
+Copy-Item .env.example .env
+notepad .env
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8091
+```
+
+В `.env` укажите путь к скачанному `mcp-1c`:
+
+```env
+ONEC_MCP_COMMAND=C:\tools\mcp-1c.exe
+ONEC_MCP_ARGS=--base http://localhost:8080/hs/mcp-1c
+ONEC_MCP_BRIDGE_TOKEN=сложный-токен
+```
+
+После запуска bridge задайте Worker secrets:
+
+```powershell
+cd ..\worker
+npx wrangler secret put ONEC_MCP_BRIDGE_URL
+npx wrangler secret put ONEC_MCP_BRIDGE_TOKEN
+npx wrangler deploy
+```
+
+`ONEC_MCP_BRIDGE_URL` должен быть доступен Worker по HTTPS. Для production используйте Cloudflare Tunnel, VPN или другой закрытый канал. Не открывайте bridge в интернет без ограничения доступа.
+
+Ограничения текущего этапа:
+
+- программа не проводит документы в 1С;
+- программа не выставляет счет автоматически;
+- MCP используется как слой чтения/проверки данных 1С;
+- вызовы MCP API в Worker доступны только роли `admin`;
+- окончательный счет и проведение документов остаются в 1С.
 
 ## Legacy Docker запуск
 

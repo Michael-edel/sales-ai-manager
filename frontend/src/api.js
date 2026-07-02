@@ -77,6 +77,22 @@ export function getParserHealth() {
   return request("/parser/health");
 }
 
+export function getOneCMcpHealth() {
+  return request("/1c/mcp/health");
+}
+
+export function listOneCMcpTools() {
+  return request("/1c/mcp/tools");
+}
+
+export function callOneCMcpTool(payload) {
+  return request("/1c/mcp/tools/call", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listAiRules() {
   return request("/ai/rules");
 }
