@@ -34,6 +34,7 @@ import {
   updateDealDocuments,
   updateEmailMessage,
   updateAiRules,
+  updateUserEmail,
   updateWhatsAppTemplates,
   updateUserActive,
   updateRequestTask,
@@ -188,6 +189,7 @@ export default function App() {
   const [userDraft, setUserDraft] = useState({
     username: "",
     display_name: "",
+    email_address: "",
     role: "manager",
     password: "",
   });
@@ -381,7 +383,7 @@ export default function App() {
     setLoading(true);
     try {
       await createUser(userDraft);
-      setUserDraft({ username: "", display_name: "", role: "manager", password: "" });
+      setUserDraft({ username: "", display_name: "", email_address: "", role: "manager", password: "" });
       await refreshUsers();
     } catch (err) {
       setError(err.message);
@@ -397,6 +399,19 @@ export default function App() {
     setLoading(true);
     try {
       await resetUserPassword(user.id, password);
+      await refreshUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleUpdateUserEmail(user) {
+    setError("");
+    setLoading(true);
+    try {
+      await updateUserEmail(user.id, user.email_address || "");
       await refreshUsers();
     } catch (err) {
       setError(err.message);
@@ -716,7 +731,7 @@ export default function App() {
         <div className="email-detail-header">
           <div>
             <h3>{email.subject || "Без темы"}</h3>
-            <p>{email.from_address || "Отправитель не определен"} → {email.to_address || email.mailbox_email || "direktor@edel.kz"}</p>
+            <p>{email.from_address || "Отправитель не определен"} → {email.to_address || email.mailbox_email || "ящик edel.kz"}</p>
             <small>Получено: {formatDateTime(email.received_at || email.created_at)}</small>
           </div>
           <div className="email-tags">
@@ -1207,6 +1222,7 @@ export default function App() {
           <div>
             <strong>{authUser.display_name || authUser.username}</strong>
             <span>{ROLE_LABELS[authUser.role] || authUser.role}</span>
+            <span>{authUser.email_address || "email не привязан"}</span>
           </div>
           <button className="icon-button" onClick={handleLogout} title="Выйти">
             <LogOut size={18} />
@@ -1491,7 +1507,13 @@ export default function App() {
           <div className="section-title section-title-with-action">
             <div>
               <h2>Входящая почта</h2>
-              <p>Письма из direktor@edel.kz поступают через IMAP-ingest и сохраняются в программе.</p>
+              <p>
+                {authUser.role === "admin"
+                  ? "Письма из привязанных ящиков edel.kz поступают через IMAP-ingest и сохраняются в программе."
+                  : authUser.email_address
+                    ? `Письма из ${authUser.email_address} поступают через IMAP-ingest и сохраняются в программе.`
+                    : "Email edel.kz не привязан к вашему пользователю. Обратитесь к администратору."}
+              </p>
             </div>
             <button className="secondary-button compact-button" onClick={handleToggleEmailCollapsed}>
               {emailCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
@@ -1565,7 +1587,11 @@ export default function App() {
               )}
 
               <div className="email-list">
-                {emails.length === 0 && <p className="muted">Писем пока нет. Запустите IMAP-ingest для direktor@edel.kz и нажмите «Обновить письма».</p>}
+                {emails.length === 0 && (
+                  <p className="muted">
+                    Писем пока нет. Запустите IMAP-ingest для нужного ящика edel.kz и нажмите «Обновить письма».
+                  </p>
+                )}
                 {emails.map((email) => (
                   <div className="email-list-entry" key={email.id}>
                     <article className={`email-item ${selectedEmail?.id === email.id ? "email-item-selected" : ""} ${email.is_read ? "" : "email-item-unread"}`}>
@@ -1646,6 +1672,14 @@ export default function App() {
                 />
               </label>
               <label>
+                <span>Email edel.kz</span>
+                <input
+                  value={userDraft.email_address}
+                  onChange={(event) => setUserDraft((current) => ({ ...current, email_address: event.target.value }))}
+                  placeholder="manager@edel.kz"
+                />
+              </label>
+              <label>
                 <span>Роль</span>
                 <select
                   value={userDraft.role}
@@ -1686,6 +1720,20 @@ export default function App() {
                       {user.is_active ? "активен" : "отключен"}
                     </span>
                   </div>
+                  <label className="user-email-field">
+                    <span>Email edel.kz</span>
+                    <input
+                      value={user.email_address || ""}
+                      onChange={(event) => setUsers((current) => current.map((item) => (
+                        item.id === user.id ? { ...item, email_address: event.target.value } : item
+                      )))}
+                      placeholder="user@edel.kz"
+                      disabled={loading}
+                    />
+                  </label>
+                  <button className="secondary-button" onClick={() => handleUpdateUserEmail(user)} disabled={loading}>
+                    Сохранить email
+                  </button>
                   <button className="secondary-button" onClick={() => handleResetUserPassword(user)} disabled={loading}>
                     Сбросить пароль
                   </button>

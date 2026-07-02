@@ -47,6 +47,7 @@ type CurrentUser = {
   username: string;
   display_name: string;
   role: string;
+  email_address: string;
 };
 
 type FormValue = string | File;
@@ -120,6 +121,10 @@ type EmailMessageInput = {
   attachment_text: string | null;
   received_at: string | null;
 };
+
+class UserInputError extends Error {
+  status = 400;
+}
 
 type EmailFolder = "inbox" | "in_work" | "suppliers" | "buyers" | "done" | "trash";
 type EmailStatus = "received" | "in_work" | "done" | "deleted";
@@ -327,6 +332,12 @@ export default {
         const user = await resetUserPassword(request, env, Number(userPasswordMatch[1]));
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
+      const userEmailMatch = url.pathname.match(/^\/api\/users\/(\d+)\/email$/);
+      if (request.method === "PATCH" && userEmailMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const user = await updateUserEmail(request, env, Number(userEmailMatch[1]));
+        return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
+      }
       const userActiveMatch = url.pathname.match(/^\/api\/users\/(\d+)\/active$/);
       if (request.method === "PATCH" && userActiveMatch) {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -355,7 +366,7 @@ export default {
         return json(await getCrmSummary(env));
       }
       if (request.method === "GET" && url.pathname === "/api/email/messages") {
-        return json(await listEmailMessages(env, url.searchParams.get("folder")));
+        return json(await listEmailMessages(env, currentUser, url.searchParams.get("folder")));
       }
       if (request.method === "GET" && url.pathname === "/api/email/sender-filters") {
         return json(await listEmailSenderFilters(env));
@@ -369,12 +380,12 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/email/check") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        const totalSeen = await countEmailMessages(env);
+        const totalSeen = await countEmailMessages(env, currentUser);
         return json({
           imported: 0,
           skipped: 0,
           total_seen: totalSeen,
-          detail: `Писем в базе: ${totalSeen}. Новые письма поступают через IMAP-ingest из direktor@edel.kz.`,
+          detail: `Писем в базе: ${totalSeen}. Новые письма поступают через IMAP-ingest из привязанных ящиков edel.kz.`,
         });
       }
       if (request.method === "POST" && url.pathname === "/api/email/send") {
@@ -389,6 +400,9 @@ export default {
       const emailProcessMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)\/process$/);
       if (request.method === "POST" && emailProcessMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const emailItem = await getEmailMessage(env, Number(emailProcessMatch[1]));
+        if (!emailItem) return json({ detail: "Письмо не найдено." }, 404);
+        if (!canAccessEmailMessage(currentUser, emailItem)) return json({ detail: "Недостаточно прав." }, 403);
         const item = await processEmailMessage(env, Number(emailProcessMatch[1]));
         return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
       }
@@ -404,15 +418,22 @@ export default {
         const emailId = Number(emailMessageMatch[1]);
         if (request.method === "GET") {
           const item = await getEmailMessage(env, emailId);
+          if (item && !canAccessEmailMessage(currentUser, item)) return json({ detail: "Недостаточно прав." }, 403);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
         }
         if (request.method === "PATCH") {
           if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const existing = await getEmailMessage(env, emailId);
+          if (!existing) return json({ detail: "Письмо не найдено." }, 404);
+          if (!canAccessEmailMessage(currentUser, existing)) return json({ detail: "Недостаточно прав." }, 403);
           const item = await updateEmailMessage(request, env, emailId);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
         }
         if (request.method === "DELETE") {
           if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          const existing = await getEmailMessage(env, emailId);
+          if (!existing) return json({ detail: "Письмо не найдено." }, 404);
+          if (!canAccessEmailMessage(currentUser, existing)) return json({ detail: "Недостаточно прав." }, 403);
           const item = await moveEmailMessageToTrash(env, emailId);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
         }
@@ -483,7 +504,8 @@ export default {
       return json({ detail: "Endpoint не найден." }, 404);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Неизвестная ошибка";
-      return json({ detail: message }, 500);
+      const status = error instanceof UserInputError ? error.status : 500;
+      return json({ detail: message }, status);
     }
   },
 } satisfies ExportedHandler<Env>;
@@ -549,7 +571,7 @@ async function authenticateRequest(request: Request, env: Env): Promise<CurrentU
 
   const tokenHash = await sha256Base64(token);
   const row = await env.DB.prepare(`
-    SELECT u.id, u.username, u.display_name, u.role
+    SELECT u.id, u.username, u.display_name, u.role, u.email_address
     FROM auth_sessions s
     INNER JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ?
@@ -567,7 +589,7 @@ async function authenticateRequest(request: Request, env: Env): Promise<CurrentU
 
 async function listUsers(env: Env) {
   const result = await env.DB.prepare(`
-    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
     FROM app_users
     ORDER BY id ASC
   `).all();
@@ -579,23 +601,29 @@ async function createUser(request: Request, env: Env) {
     username?: string;
     display_name?: string;
     role?: string;
+    email_address?: string;
     password?: string;
   };
   const username = normalizeUsername(payload.username || "");
   const displayName = normalizeOptionalText(payload.display_name) || username;
   const role = normalizeRole(payload.role);
+  const emailAddress = normalizeEdelEmailAddress(payload.email_address);
   const passwordValue = typeof payload.password === "string" ? payload.password : "";
   if (!username) throw new Error("Имя пользователя пустое.");
   if (passwordValue.length < 8) throw new Error("Пароль должен быть не короче 8 символов.");
+  await ensureUserEmailAvailable(env, emailAddress);
 
   const password = await hashPassword(passwordValue);
   const result = await env.DB.prepare(`
-    INSERT INTO app_users (username, display_name, role, password_hash, password_salt)
-    VALUES (?, ?, ?, ?, ?)
-  `).bind(username, displayName, role, password.hash, password.salt).run();
+    INSERT INTO app_users (username, display_name, role, email_address, password_hash, password_salt)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(username, displayName, role, emailAddress || null, password.hash, password.salt).run();
   const id = Number(result.meta.last_row_id);
+  if (emailAddress) {
+    await assignExistingEmailsToUser(env, emailAddress, displayName || username);
+  }
   return env.DB.prepare(`
-    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
   `).bind(id).first();
 }
@@ -614,9 +642,51 @@ async function resetUserPassword(request: Request, env: Env, userId: number) {
   if (!result.meta.changes) return null;
   await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
   return env.DB.prepare(`
-    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
   `).bind(userId).first();
+}
+
+async function updateUserEmail(request: Request, env: Env, userId: number) {
+  const payload = (await request.json()) as { email_address?: unknown };
+  const emailAddress = normalizeEdelEmailAddress(payload.email_address);
+  const existing = await env.DB.prepare(`
+    SELECT id, username, display_name, email_address
+    FROM app_users
+    WHERE id = ?
+  `).bind(userId).first() as Record<string, any> | null;
+  if (!existing) return null;
+  await ensureUserEmailAvailable(env, emailAddress, userId);
+
+  const result = await env.DB.prepare(`
+    UPDATE app_users
+    SET email_address = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(emailAddress || null, userId).run();
+  if (!result.meta.changes) return null;
+
+  if (emailAddress) {
+    const managerName = normalizeOptionalText(existing.display_name) || normalizeOptionalText(existing.username);
+    await assignExistingEmailsToUser(env, emailAddress, managerName);
+  }
+
+  return env.DB.prepare(`
+    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
+    FROM app_users WHERE id = ?
+  `).bind(userId).first();
+}
+
+async function ensureUserEmailAvailable(env: Env, emailAddress: string, userId: number | null = null): Promise<void> {
+  if (!emailAddress) return;
+
+  const existing = await env.DB.prepare(`
+    SELECT id
+    FROM app_users
+    WHERE email_address = ?
+  `).bind(emailAddress).first() as Record<string, unknown> | null;
+  if (existing && Number(existing.id) !== Number(userId)) {
+    throw new UserInputError("Этот email уже привязан к другому пользователю.");
+  }
 }
 
 async function updateUserActive(env: Env, userId: number, isActive: boolean) {
@@ -632,7 +702,7 @@ async function updateUserActive(env: Env, userId: number, isActive: boolean) {
   }
 
   return env.DB.prepare(`
-    SELECT id, username, display_name, role, is_active, created_at, updated_at, last_login_at
+    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
   `).bind(userId).first();
 }
@@ -1561,8 +1631,9 @@ async function listRequests(env: Env) {
   return result.results;
 }
 
-async function listEmailMessages(env: Env, folderParam: string | null) {
+async function listEmailMessages(env: Env, user: CurrentUser, folderParam: string | null) {
   const folder = normalizeEmailFolder(folderParam) || "inbox";
+  const scope = emailMailboxScope(user);
   const result = await env.DB.prepare(`
     SELECT
       *,
@@ -1575,6 +1646,7 @@ async function listEmailMessages(env: Env, folderParam: string | null) {
       substr(body_text, 1, 420) AS body_preview
     FROM email_messages
     WHERE folder = ?
+      ${scope.sql}
       AND NOT EXISTS (
         SELECT 1
         FROM email_sender_filters sender_filters
@@ -1583,35 +1655,44 @@ async function listEmailMessages(env: Env, folderParam: string | null) {
       )
     ORDER BY COALESCE(received_at, created_at) DESC, id DESC
     LIMIT 100
-  `).bind(folder).all();
+  `).bind(folder, ...scope.bindings).all();
   return {
     folder,
     items: result.results,
-    stats: await getEmailFolderStats(env),
+    stats: await getEmailFolderStats(env, user),
     hidden_senders: await listEmailSenderFilters(env),
   };
 }
 
-async function countEmailMessages(env: Env): Promise<number> {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM email_messages").first() as Record<string, unknown> | null;
+async function countEmailMessages(env: Env, user: CurrentUser): Promise<number> {
+  const scope = emailMailboxScope(user);
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS count
+    FROM email_messages
+    WHERE 1 = 1
+      ${scope.sql}
+  `).bind(...scope.bindings).first() as Record<string, unknown> | null;
   return Number(row?.count || 0);
 }
 
-async function getEmailFolderStats(env: Env) {
+async function getEmailFolderStats(env: Env, user: CurrentUser) {
+  const scope = emailMailboxScope(user);
   const result = await env.DB.prepare(`
     SELECT
       folder,
       COUNT(*) AS total,
       SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread
     FROM email_messages
-    WHERE NOT EXISTS (
+    WHERE 1 = 1
+      ${scope.sql}
+      AND NOT EXISTS (
       SELECT 1
       FROM email_sender_filters sender_filters
       WHERE sender_filters.is_hidden = 1
         AND sender_filters.sender_email = lower(trim(email_messages.from_address))
     )
     GROUP BY folder
-  `).all();
+  `).bind(...scope.bindings).all();
   const stats: Record<EmailFolder, { total: number; unread: number }> = {
     inbox: { total: 0, unread: 0 },
     in_work: { total: 0, unread: 0 },
@@ -1720,6 +1801,31 @@ async function upsertEmailSenderFolderRule(env: Env, sender: unknown, targetFold
         OR lower(trim(from_address)) LIKE ?
       )
   `).bind(folder, emailStatusForFolder(folder), senderEmail, `%${senderEmail}%`).run();
+}
+
+async function getUserByMailboxEmail(env: Env, mailboxEmail: unknown) {
+  const emailAddress = normalizeCompanyMailboxAddress(mailboxEmail);
+  if (!emailAddress) return null;
+
+  return env.DB.prepare(`
+    SELECT id, username, display_name, email_address
+    FROM app_users
+    WHERE email_address = ?
+      AND is_active = 1
+  `).bind(emailAddress).first() as Promise<Record<string, any> | null>;
+}
+
+async function assignExistingEmailsToUser(env: Env, emailAddress: string, managerName: string) {
+  await env.DB.prepare(`
+    UPDATE email_messages
+    SET
+      michael_manager = ?,
+      updated_at = datetime('now')
+    WHERE (
+        lower(trim(mailbox_email)) = ?
+        OR lower(trim(to_address)) = ?
+      )
+  `).bind(managerName, emailAddress, emailAddress).run();
 }
 
 async function getEmailMessage(env: Env, id: number) {
@@ -1910,6 +2016,11 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
 
   const routedFolder = await getEmailSenderFolderRule(env, item.from_address);
   const folder = routedFolder || "inbox";
+  const mailboxUser = await getUserByMailboxEmail(env, item.mailbox_email || item.to_address);
+  const assignedManager = item.michael_manager
+    || normalizeOptionalText(mailboxUser?.display_name)
+    || normalizeOptionalText(mailboxUser?.username)
+    || null;
 
   await env.DB.prepare(`
     INSERT OR IGNORE INTO email_messages (
@@ -1932,7 +2043,7 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
   `).bind(
     item.mailbox_name,
     item.mailbox_email,
-    item.michael_manager,
+    assignedManager,
     item.message_uid,
     item.from_address,
     item.to_address,
@@ -2034,6 +2145,22 @@ function normalizeEmailFilterAddress(value: unknown): string {
   if (!text) return "";
   const match = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
   return (match ? match[0] : text).trim().slice(0, 254);
+}
+
+function normalizeCompanyMailboxAddress(value: unknown): string {
+  const emailAddress = normalizeEmailFilterAddress(value);
+  return emailAddress.endsWith("@edel.kz") ? emailAddress : "";
+}
+
+function normalizeEdelEmailAddress(value: unknown): string {
+  const raw = normalizeOptionalText(value);
+  if (!raw) return "";
+
+  const emailAddress = normalizeEmailFilterAddress(raw);
+  if (!emailAddress || !emailAddress.endsWith("@edel.kz")) {
+    throw new UserInputError("Email пользователя должен быть ящиком домена edel.kz.");
+  }
+  return emailAddress;
 }
 
 function normalizeEmailDate(value: unknown): string {
@@ -3801,12 +3928,35 @@ function canManageTasks(user: CurrentUser): boolean {
   return ["admin", "manager", "accountant"].includes(user.role);
 }
 
+function emailMailboxScope(user: CurrentUser): { sql: string; bindings: string[] } {
+  if (isAdmin(user)) return { sql: "", bindings: [] };
+
+  const emailAddress = normalizeCompanyMailboxAddress(user.email_address);
+  if (!emailAddress) return { sql: "AND 1 = 0", bindings: [] };
+
+  return {
+    sql: "AND (lower(trim(mailbox_email)) = ? OR lower(trim(to_address)) = ?)",
+    bindings: [emailAddress, emailAddress],
+  };
+}
+
+function canAccessEmailMessage(user: CurrentUser, emailItem: Record<string, any>): boolean {
+  if (isAdmin(user)) return true;
+
+  const emailAddress = normalizeCompanyMailboxAddress(user.email_address);
+  if (!emailAddress) return false;
+
+  return normalizeCompanyMailboxAddress(emailItem.mailbox_email) === emailAddress
+    || normalizeCompanyMailboxAddress(emailItem.to_address) === emailAddress;
+}
+
 function userToCurrentUser(row: Record<string, any>): CurrentUser {
   return {
     id: Number(row.id),
     username: String(row.username),
     display_name: String(row.display_name),
     role: String(row.role),
+    email_address: normalizeOptionalText(row.email_address),
   };
 }
 

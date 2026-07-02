@@ -57,6 +57,14 @@ export function updateUserActive(userId, isActive) {
   });
 }
 
+export function updateUserEmail(userId, emailAddress) {
+  return request(`/users/${userId}/email`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email_address: emailAddress }),
+  });
+}
+
 export function listRequests() {
   return request("/requests");
 }

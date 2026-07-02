@@ -828,7 +828,7 @@ button:disabled,
   align-items: end;
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(160px, 1fr) minmax(190px, 1fr) minmax(180px, 1fr) minmax(160px, 0.8fr) auto;
 }
 
 .user-create-grid label {
@@ -853,7 +853,7 @@ button:disabled,
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(170px, 1fr) minmax(220px, 0.9fr) auto auto auto;
   padding: 10px 12px;
 }
 
@@ -865,6 +865,22 @@ button:disabled,
 .user-row span {
   color: #6b756e;
   overflow-wrap: anywhere;
+}
+
+.user-email-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.user-email-field span {
+  color: #6b756e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.user-email-field input {
+  min-width: 0;
 }
 
 .rules-list {
