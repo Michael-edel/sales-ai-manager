@@ -39,6 +39,7 @@ import {
   logout,
   processEmailMessage,
   processText,
+  reanalyzeRequestWithOneC,
   refreshRequestOneCContext,
   resetUserPassword,
   searchOneCCounterparties,
@@ -252,6 +253,10 @@ function eventPayloadSummary(payload) {
     payload.email_to ? `email: ${payload.email_to}` : "",
   ].filter(Boolean);
   return parts.join(" · ");
+}
+
+function isOneCContextEvent(event) {
+  return ["request.onec_context_refreshed", "request.reanalyzed_with_1c"].includes(event?.event_type);
 }
 
 export default function App() {
@@ -718,9 +723,31 @@ export default function App() {
     const body = eventPayloadText(payload);
     if (!body) return;
     setOnecLookupResult({
-      title: event.event_type === "request.onec_context_refreshed" ? "Сохраненный снимок 1С" : event.event_type,
+      title: isOneCContextEvent(event) ? "Сохраненный контекст 1С" : event.event_type,
       body,
     });
+  }
+
+  async function handleReanalyzeWithOneC() {
+    if (!selected?.id || !canManageRequests) return;
+    setError("");
+    setLoading(true);
+    setOnecLookupLoading("reanalyze-1c");
+    try {
+      const item = await reanalyzeRequestWithOneC(selected.id);
+      await refreshHistory(item);
+      const events = await listRequestEvents(item.id);
+      setRequestEvents(events);
+      setOnecLookupResult({
+        title: "A-F пересчитан с 1С",
+        body: "Результат заявки обновлен. Использован свежий read-only контекст 1С и привязанные товары заявки.",
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      setOnecLookupLoading("");
+    }
   }
 
   async function handleOneCClientData(kind) {
@@ -2115,6 +2142,15 @@ export default function App() {
                   {onecLookupLoading === "request-context" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
                   Обновить 1С-данные заявки
                 </button>
+                <button
+                  className="secondary-button"
+                  onClick={handleReanalyzeWithOneC}
+                  disabled={loading || Boolean(onecLookupLoading) || !selected?.id}
+                  title="Повторить анализ A-F с текущими данными 1С"
+                >
+                  {onecLookupLoading === "reanalyze-1c" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                  Пересчитать A-F с 1С
+                </button>
               </div>
             </div>
 
@@ -2674,6 +2710,15 @@ export default function App() {
               </button>
               <button
                 className="secondary-button"
+                onClick={handleReanalyzeWithOneC}
+                disabled={loading || Boolean(onecLookupLoading) || !selected?.id || !canManageRequests}
+                title="Повторить анализ A-F с текущими данными 1С"
+              >
+                {onecLookupLoading === "reanalyze-1c" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                Пересчитать с 1С
+              </button>
+              <button
+                className="secondary-button"
                 onClick={handleSendClientEmail}
                 disabled={
                   loading ||
@@ -2820,6 +2865,15 @@ export default function App() {
                       >
                         {onecLookupLoading === "request-context" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
                         Снимок 1С
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={handleReanalyzeWithOneC}
+                        disabled={loading || Boolean(onecLookupLoading) || !selected?.id}
+                        title="Обновить результат A-F с текущим контекстом 1С"
+                      >
+                        {onecLookupLoading === "reanalyze-1c" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                        Пересчитать A-F
                       </button>
                     </div>
                   </div>
@@ -3060,10 +3114,10 @@ export default function App() {
                     </div>
                     {payloadText ? (
                       <div className="event-actions">
-                        {event.event_type === "request.onec_context_refreshed" ? (
+                        {isOneCContextEvent(event) ? (
                           <button className="secondary-button" onClick={() => handleOpenEventPayload(event)}>
                             <Database size={16} />
-                            Открыть снимок 1С
+                            Открыть контекст 1С
                           </button>
                         ) : null}
                         <button

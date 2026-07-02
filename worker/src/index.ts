@@ -853,6 +853,13 @@ export default {
         return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
       }
 
+      const reanalyzeOneCMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/reanalyze-1c$/);
+      if (request.method === "POST" && reanalyzeOneCMatch) {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const item = await reanalyzeRequestWithOneC(env, Number(reanalyzeOneCMatch[1]), currentUser);
+        return item ? json(item) : json({ detail: "Заявка не найдена." }, 404);
+      }
+
       const dealDocsMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/deal-documents$/);
       if (request.method === "PATCH" && dealDocsMatch) {
         if (!canManageDocuments(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -3405,6 +3412,50 @@ async function updateRequestStatus(request: Request, env: Env, id: number) {
     status,
     priority,
     next_action: nextAction,
+  });
+
+  return getRequest(env, id);
+}
+
+async function reanalyzeRequestWithOneC(env: Env, id: number, user: CurrentUser) {
+  const existing = await getRequest(env, id) as Record<string, any> | null;
+  if (!existing) return null;
+
+  const originalText = normalizeOptionalText(existing.original_text);
+  if (!originalText) throw new UserInputError("В заявке нет исходного текста для повторного анализа.");
+
+  const metadata: Metadata = {
+    client_company: normalizeOptionalText(existing.client_company),
+    client_contact_name: normalizeOptionalText(existing.client_contact_name),
+    michael_manager: normalizeOptionalText(existing.michael_manager),
+    communication_channel: normalizeOptionalText(existing.communication_channel),
+    priority: normalizeOptionalText(existing.priority),
+    next_action: normalizeOptionalText(existing.next_action),
+  };
+
+  const baseContext = await buildOneCAnalysisContext(env, metadata, originalText);
+  const productContext = await buildLinkedOneCProductsContext(env, id);
+  const freshOneCContext = appendTextBlock(baseContext, productContext.text);
+  const analysisText = appendTextBlock(
+    originalText,
+    [
+      "Свежий контекст 1С для повторного анализа A-F.",
+      "Используйте этот блок приоритетно над предыдущими автоматическими проверками 1С в исходном тексте.",
+      freshOneCContext,
+    ].join("\n"),
+  );
+
+  const aiResult = await analyzeText(env, analysisText);
+
+  await env.DB.prepare(`
+    UPDATE requests
+    SET ai_result = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(aiResult, id).run();
+
+  await createRequestEvent(env, id, "request.reanalyzed_with_1c", user.display_name || user.username, {
+    products_count: productContext.count,
+    context_preview: limitText(freshOneCContext, 7000),
   });
 
   return getRequest(env, id);

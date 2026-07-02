@@ -157,6 +157,12 @@ export function refreshRequestOneCContext(requestId) {
   });
 }
 
+export function reanalyzeRequestWithOneC(requestId) {
+  return request(`/requests/${requestId}/reanalyze-1c`, {
+    method: "POST",
+  });
+}
+
 export function getOneCClientContracts(clientId) {
   return request(`/1c/clients/${clientId}/contracts`);
 }
