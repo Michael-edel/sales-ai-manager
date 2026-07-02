@@ -471,6 +471,12 @@ export default {
         const user = await updateUserActive(env, userId, payload.is_active);
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
+      const crmOneCMatch = url.pathname.match(/^\/api\/crm\/clients\/(\d+)\/1c-counterparty$/);
+      if (request.method === "PATCH" && crmOneCMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const client = await linkCrmClientOneCCounterparty(request, env, Number(crmOneCMatch[1]), currentUser);
+        return client ? json(client) : json({ detail: "Клиент CRM не найден." }, 404);
+      }
       if (request.method === "GET" && url.pathname === "/api/requests") {
         return json(await listRequests(env));
       }
@@ -1301,10 +1307,14 @@ async function searchOneCCounterparties(request: Request, env: Env) {
     parameters: oneCClientSearchParameters(search),
     limit: 10,
   });
+  const resultText = oneCMcpResultText(result);
+  const items = parseOneCCounterpartyCandidates(resultText);
   return {
     tool: "find_counterparty",
     search,
-    result_text: oneCMcpResultText(result),
+    result_text: resultText,
+    items,
+    has_multiple: items.length > 1,
     raw: result,
   };
 }
@@ -1372,6 +1382,19 @@ async function buildOneCAnalysisContext(env: Env, metadata: Metadata, sourceText
 
     const clientSearch = detectOneCClientSearch(metadata, sourceText);
     if (clientSearch) {
+      const linkedClient = await findLinkedOneCCounterparty(env, clientSearch);
+      if (linkedClient) {
+        sections.push([
+          "Привязанный клиент 1С:",
+          `CRM: ${linkedClient.display_name || clientSearch}`,
+          `Контрагент 1С: ${linkedClient.onec_counterparty_name || linkedClient.onec_counterparty_full_name || "не указано"}`,
+          linkedClient.onec_counterparty_full_name ? `Полное наименование: ${linkedClient.onec_counterparty_full_name}` : "",
+          linkedClient.onec_counterparty_bin ? `БИН/ИНН: ${linkedClient.onec_counterparty_bin}` : "",
+          linkedClient.onec_counterparty_ref ? `Ссылка/идентификатор 1С: ${linkedClient.onec_counterparty_ref}` : "",
+          linkedClient.onec_counterparty_partner ? `Партнер: ${linkedClient.onec_counterparty_partner}` : "",
+        ].filter(Boolean).join("\n"));
+      }
+
       const clientResult = await executeOneCMcpTool(env, "execute_query", {
         query: ONEC_CLIENT_SEARCH_QUERY,
         parameters: oneCClientSearchParameters(clientSearch),
@@ -1984,10 +2007,17 @@ async function listRequests(env: Env) {
   const result = await env.DB.prepare(`
     SELECT
       r.*,
+      c.onec_counterparty_ref,
+      c.onec_counterparty_name,
+      c.onec_counterparty_full_name,
+      c.onec_counterparty_bin,
+      c.onec_counterparty_partner,
+      c.onec_counterparty_linked_at,
       COALESCE(task_counts.open_task_count, 0) AS open_task_count,
       COALESCE(task_counts.done_task_count, 0) AS done_task_count,
       COALESCE(task_counts.total_task_count, 0) AS total_task_count
     FROM requests r
+    LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
       SELECT
         request_id,
@@ -2595,10 +2625,17 @@ async function getRequest(env: Env, id: number) {
   return env.DB.prepare(`
     SELECT
       r.*,
+      c.onec_counterparty_ref,
+      c.onec_counterparty_name,
+      c.onec_counterparty_full_name,
+      c.onec_counterparty_bin,
+      c.onec_counterparty_partner,
+      c.onec_counterparty_linked_at,
       COALESCE(task_counts.open_task_count, 0) AS open_task_count,
       COALESCE(task_counts.done_task_count, 0) AS done_task_count,
       COALESCE(task_counts.total_task_count, 0) AS total_task_count
     FROM requests r
+    LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
       SELECT
         request_id,
@@ -3814,6 +3851,56 @@ async function ensureCrmLink(env: Env, metadata: Metadata): Promise<CrmLink> {
   };
 }
 
+async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientId: number, user: CurrentUser) {
+  const existing = await env.DB.prepare("SELECT * FROM crm_clients WHERE id = ?").bind(clientId).first();
+  if (!existing) return null;
+
+  const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const candidate = normalizeOneCCounterpartyCandidate(payload);
+  if (!candidate.counterparty_ref && !candidate.name && !candidate.bin) {
+    throw new UserInputError("Выберите найденного контрагента 1С или передайте имя/БИН.");
+  }
+
+  await env.DB.prepare(`
+    UPDATE crm_clients
+    SET
+      onec_counterparty_ref = ?,
+      onec_counterparty_name = ?,
+      onec_counterparty_full_name = ?,
+      onec_counterparty_bin = ?,
+      onec_counterparty_partner = ?,
+      onec_counterparty_payload_json = ?,
+      onec_counterparty_linked_at = datetime('now'),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(
+    candidate.counterparty_ref || null,
+    candidate.name || null,
+    candidate.full_name || null,
+    candidate.bin || null,
+    candidate.partner || null,
+    JSON.stringify(candidate.raw || payload),
+    clientId,
+  ).run();
+
+  const requestId = Number(payload.request_id || 0);
+  if (requestId > 0) {
+    const requestItem = await getRequest(env, requestId) as Record<string, unknown> | null;
+    if (requestItem && Number(requestItem.client_id || 0) === clientId) {
+      await createRequestEvent(env, requestId, "client.onec_counterparty_linked", user.display_name || user.username, {
+        client_id: clientId,
+        counterparty_ref: candidate.counterparty_ref || null,
+        name: candidate.name || null,
+        full_name: candidate.full_name || null,
+        bin: candidate.bin || null,
+        partner: candidate.partner || null,
+      });
+    }
+  }
+
+  return env.DB.prepare("SELECT * FROM crm_clients WHERE id = ?").bind(clientId).first();
+}
+
 async function createRequestEvent(
   env: Env,
   requestId: number,
@@ -4032,6 +4119,32 @@ function normalizeOneCClientSearch(value: string): string {
     .trim();
 }
 
+async function findLinkedOneCCounterparty(env: Env, company: string): Promise<Record<string, string> | null> {
+  const normalized = normalizeKey(company);
+  const cleaned = normalizeKey(normalizeOneCClientSearch(company));
+  const rows = await env.DB.prepare(`
+    SELECT
+      display_name,
+      normalized_name,
+      onec_counterparty_ref,
+      onec_counterparty_name,
+      onec_counterparty_full_name,
+      onec_counterparty_bin,
+      onec_counterparty_partner,
+      onec_counterparty_linked_at
+    FROM crm_clients
+    WHERE onec_counterparty_linked_at IS NOT NULL
+      AND (
+        normalized_name = ?
+        OR normalized_name = ?
+        OR (? <> '' AND normalized_name LIKE ?)
+      )
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).bind(normalized, cleaned, cleaned, cleaned ? `%${cleaned}%` : "").first();
+  return rows as Record<string, string> | null;
+}
+
 function oneCMcpResultText(response: any): string {
   const content = response?.result?.content || response?.content || [];
   if (Array.isArray(content) && content.length > 0) {
@@ -4043,6 +4156,105 @@ function oneCMcpResultText(response: any): string {
     if (text) return text;
   }
   return JSON.stringify(response, null, 2);
+}
+
+function parseOneCCounterpartyCandidates(text: string): Record<string, unknown>[] {
+  const rows = [
+    ...parseOneCMarkdownTableRows(text),
+    ...parseKeyValueBlockRows(text),
+  ];
+  return rows
+    .map((row) => normalizeOneCCounterpartyCandidate(row))
+    .filter((item) => Boolean(item.counterparty_ref || item.name || item.full_name || item.bin))
+    .slice(0, 10);
+}
+
+function parseOneCMarkdownTableRows(text: string): Record<string, string>[] {
+  const tableLines = normalizeOptionalText(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("|") && line.endsWith("|"));
+  if (tableLines.length < 2) return [];
+
+  const header = splitMarkdownTableRow(tableLines[0]);
+  if (header.length === 0) return [];
+
+  return tableLines.slice(1)
+    .filter((line) => !/^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|$/.test(line))
+    .map((line) => splitMarkdownTableRow(line))
+    .filter((cells) => cells.length > 0)
+    .map((cells) => {
+      const row: Record<string, string> = {};
+      header.forEach((key, index) => {
+        row[key] = cells[index] || "";
+      });
+      return row;
+    });
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  return line
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function parseKeyValueBlockRows(text: string): Record<string, string>[] {
+  const blocks = normalizeOptionalText(text)
+    .split(/\n\s*\n|-{3,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  return blocks
+    .map((block) => {
+      const row: Record<string, string> = {};
+      for (const line of block.split(/\r?\n/)) {
+        const match = line.match(/^\s*([^:=]{2,40})\s*[:=]\s*(.+?)\s*$/);
+        if (match) row[match[1].trim()] = match[2].trim();
+      }
+      return row;
+    })
+    .filter((row) => Object.keys(row).length >= 2);
+}
+
+function normalizeOneCCounterpartyCandidate(row: Record<string, unknown>) {
+  const value = (...keys: string[]) => {
+    for (const key of keys) {
+      const direct = normalizeOptionalText(row[key]);
+      if (direct) return direct;
+
+      const normalizedKey = normalizeColumnKey(key);
+      const matchingKey = Object.keys(row).find((candidateKey) => normalizeColumnKey(candidateKey) === normalizedKey);
+      if (matchingKey) {
+        const matched = normalizeOptionalText(row[matchingKey]);
+        if (matched) return matched;
+      }
+    }
+    return "";
+  };
+
+  const candidate = {
+    counterparty_ref: value("counterparty_ref", "Контрагент", "Ссылка", "Ref", "СсылкаКонтрагента"),
+    name: value("name", "Наименование", "КонтрагентНаименование"),
+    full_name: value("full_name", "НаименованиеПолное", "ПолноеНаименование", "Полное наименование"),
+    bin: value("bin", "БИН", "ИНН", "ИИН", "Код"),
+    partner: value("partner", "Партнер", "Партнёр"),
+    raw: row,
+  };
+
+  if (!candidate.name && candidate.counterparty_ref && !/^[0-9a-f-]{20,}$/i.test(candidate.counterparty_ref)) {
+    candidate.name = candidate.counterparty_ref;
+  }
+
+  return candidate;
+}
+
+function normalizeColumnKey(value: string): string {
+  return normalizeOptionalText(value)
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]/g, "");
 }
 
 function detectOneCClientSearch(metadata: Metadata, sourceText: string): string {

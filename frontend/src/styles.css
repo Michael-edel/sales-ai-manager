@@ -496,6 +496,15 @@ button:disabled,
   padding: 12px;
 }
 
+.success-box {
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 8px;
+  color: #246247;
+  margin-top: 12px;
+  padding: 12px;
+}
+
 .selected-file {
   align-items: center;
   background: #eef8f1;
@@ -635,6 +644,42 @@ button:disabled,
   white-space: pre-wrap;
 }
 
+.onec-candidate-list {
+  display: grid;
+  gap: 8px;
+}
+
+.onec-candidate-card {
+  align-items: center;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+}
+
+.onec-candidate-card > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.onec-candidate-card strong,
+.onec-candidate-card span,
+.onec-candidate-card small {
+  overflow-wrap: anywhere;
+}
+
+.onec-candidate-card span,
+.onec-candidate-card small {
+  color: #6b756e;
+}
+
+.onec-candidate-card small {
+  font-size: 12px;
+}
+
 .empty-state {
   align-items: center;
   color: #6b756e;
@@ -687,6 +732,35 @@ button:disabled,
   border-radius: 8px;
   color: #6f4d0a;
   padding: 10px 12px;
+}
+
+.onec-linked-card {
+  align-items: flex-start;
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 8px;
+  color: #246247;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.onec-linked-card > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.onec-linked-card span,
+.onec-linked-card small {
+  color: #4f5b53;
+  overflow-wrap: anywhere;
+}
+
+.onec-linked-card-empty {
+  background: #f7f8f6;
+  border-color: #d9dfd7;
+  color: #4f5b53;
 }
 
 .status-editor {
@@ -1439,6 +1513,7 @@ pre {
   .status-editor,
   .deal-documents-grid,
   .onec-tools-grid,
+  .onec-candidate-card,
   .task-create,
   .user-create-grid,
   .whatsapp-template-create,

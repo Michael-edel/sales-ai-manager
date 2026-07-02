@@ -26,6 +26,7 @@ import {
   listRequestTasks,
   listRequests,
   listWhatsAppTemplates,
+  linkCrmClientOneCCounterparty,
   listUsers,
   login,
   logout,
@@ -177,6 +178,18 @@ function oneCResultText(response) {
       .join("\n\n");
   }
   return JSON.stringify(response, null, 2);
+}
+
+function oneCCounterpartyTitle(item, index) {
+  return item?.name || item?.full_name || item?.counterparty_ref || `Вариант ${index + 1}`;
+}
+
+function oneCCounterpartyMeta(item) {
+  return [
+    item?.bin ? `БИН/ИНН: ${item.bin}` : "",
+    item?.partner ? `Партнер: ${item.partner}` : "",
+    item?.counterparty_ref ? `1С: ${item.counterparty_ref}` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 export default function App() {
@@ -392,9 +405,51 @@ export default function App() {
     setOnecLookupLoading("client");
     try {
       const response = await searchOneCCounterparties(search);
-      setOnecLookupResult({ title: "Клиенты в 1C", body: oneCResultText(response) });
+      setOnecLookupResult({
+        title: "Клиенты в 1C",
+        body: oneCResultText(response),
+        kind: "counterparties",
+        items: response.items || [],
+      });
     } catch (err) {
       setOnecLookupResult({ title: "Клиенты в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleLinkOneCClient(candidate) {
+    if (authUser?.role !== "admin" || !candidate) return;
+    if (!selected?.client_id) {
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Клиенты в 1C", body: "" }),
+        error: "Выберите заявку с CRM-клиентом, чтобы сохранить привязку к 1С.",
+      }));
+      return;
+    }
+
+    setError("");
+    setOnecLookupLoading("client-link");
+    try {
+      await linkCrmClientOneCCounterparty(selected.client_id, {
+        ...candidate,
+        request_id: selected.id,
+      });
+      const items = await listRequests();
+      const updatedSelected = items.find((item) => Number(item.id) === Number(selected.id)) || selected;
+      setRequests(items);
+      setSelected(updatedSelected);
+      getCrmSummary().then(setCrmSummary).catch(() => {});
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Клиенты в 1C", body: "" }),
+        success: `Привязано к CRM-клиенту: ${oneCCounterpartyTitle(candidate, 0)}`,
+        error: "",
+      }));
+    } catch (err) {
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Клиенты в 1C", body: "" }),
+        error: err.message,
+      }));
     } finally {
       setOnecLookupLoading("");
     }
@@ -1731,11 +1786,37 @@ export default function App() {
                     <ChevronUp size={16} />
                   </button>
                 </div>
-                {onecLookupResult.error ? (
-                  <div className="error-box">{onecLookupResult.error}</div>
-                ) : (
-                  <pre>{onecLookupResult.body}</pre>
-                )}
+                {onecLookupResult.success ? <div className="success-box">{onecLookupResult.success}</div> : null}
+                {onecLookupResult.error ? <div className="error-box">{onecLookupResult.error}</div> : null}
+                {onecLookupResult.kind === "counterparties" ? (
+                  <div className="onec-candidate-list">
+                    {(onecLookupResult.items || []).length > 0 ? (
+                      (onecLookupResult.items || []).map((item, index) => (
+                        <div className="onec-candidate-card" key={`${item.counterparty_ref || item.name || index}-${index}`}>
+                          <div>
+                            <strong>{oneCCounterpartyTitle(item, index)}</strong>
+                            {item.full_name && item.full_name !== item.name ? <span>{item.full_name}</span> : null}
+                            {oneCCounterpartyMeta(item) ? <small>{oneCCounterpartyMeta(item)}</small> : null}
+                          </div>
+                          <button
+                            className="secondary-button"
+                            onClick={() => handleLinkOneCClient(item)}
+                            disabled={onecLookupLoading === "client-link" || !selected?.client_id}
+                            title={!selected?.client_id ? "Сначала выберите заявку с CRM-клиентом" : "Сохранить точную привязку к 1С"}
+                          >
+                            {onecLookupLoading === "client-link" ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                            Привязать
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted">
+                        Варианты не разобраны автоматически. Проверьте текст ответа ниже или уточните поиск.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+                {onecLookupResult.body ? <pre>{onecLookupResult.body}</pre> : null}
               </div>
             ) : null}
           </section>
@@ -2330,6 +2411,19 @@ export default function App() {
                   KBI Energy: счет оформлять от ТОО Michael и отправлять вместе с приложением к годовому договору.
                 </div>
               ) : null}
+
+              <div className={selected.onec_counterparty_ref ? "onec-linked-card" : "onec-linked-card onec-linked-card-empty"}>
+                <Database size={18} />
+                <div>
+                  <strong>{selected.onec_counterparty_ref ? "Клиент привязан к 1С" : "Клиент 1С не выбран"}</strong>
+                  <span>
+                    {selected.onec_counterparty_ref
+                      ? `${selected.onec_counterparty_name || selected.onec_counterparty_full_name || "контрагент 1С"}${selected.onec_counterparty_bin ? ` · БИН/ИНН ${selected.onec_counterparty_bin}` : ""}`
+                      : "В блоке 1C найдите клиента и нажмите «Привязать» у правильного варианта."}
+                  </span>
+                  {selected.onec_counterparty_ref ? <small>{selected.onec_counterparty_ref}</small> : null}
+                </div>
+              </div>
 
               <div className="status-editor">
                 <label>

@@ -105,6 +105,14 @@ export function searchOneCCounterparties(query) {
   });
 }
 
+export function linkCrmClientOneCCounterparty(clientId, payload) {
+  return request(`/crm/clients/${clientId}/1c-counterparty`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function searchOneCProducts(query) {
   return request("/1c/products/search", {
     method: "POST",
