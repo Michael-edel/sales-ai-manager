@@ -453,7 +453,7 @@ export default function App() {
   }
 
   async function handleOneCCheck() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     setError("");
     setOnecLookupResult(null);
     setOnecLookupLoading("health");
@@ -473,7 +473,7 @@ export default function App() {
   }
 
   async function handleOneCClientSearch() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     const search = String(onecLookupDraft.client || metadata.client_company || "").trim();
     if (!search) {
       setOnecLookupResult({ title: "Поиск клиента", error: "Введите название клиента или БИН." });
@@ -498,7 +498,7 @@ export default function App() {
   }
 
   async function handleLinkOneCClient(candidate) {
-    if (authUser?.role !== "admin" || !candidate) return;
+    if (!canManageRequests || !candidate) return;
     if (!selected?.client_id) {
       setOnecLookupResult((current) => ({
         ...(current || { title: "Клиенты в 1C", body: "" }),
@@ -535,7 +535,7 @@ export default function App() {
   }
 
   async function handleOneCItemSearch() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     const search = String(onecLookupDraft.item || "").trim();
     if (!search) {
       setOnecLookupResult({ title: "Поиск товара", error: "Введите артикул, код или часть наименования товара." });
@@ -560,7 +560,7 @@ export default function App() {
   }
 
   async function handleLinkOneCProduct(candidate) {
-    if (authUser?.role !== "admin" || !candidate) return;
+    if (!canManageRequests || !candidate) return;
     if (!selected?.id) {
       setOnecLookupResult((current) => ({
         ...(current || { title: "Товары в 1C", body: "" }),
@@ -596,7 +596,7 @@ export default function App() {
   }
 
   async function handleDeleteOneCProduct(product) {
-    if (authUser?.role !== "admin" || !selected?.id || !product?.id) return;
+    if (!canManageRequests || !selected?.id || !product?.id) return;
     if (!window.confirm(`Удалить привязку товара "${oneCProductTitle(product, 0)}" из заявки?`)) return;
 
     setError("");
@@ -618,7 +618,7 @@ export default function App() {
   }
 
   async function handleOneCStockAndPrices() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     const search = String(onecLookupDraft.item || "").trim();
     if (!search) {
       setOnecLookupResult({
@@ -644,7 +644,7 @@ export default function App() {
   }
 
   async function handleLinkedProductStockPrices() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     if (!selected?.id) {
       setOnecLookupResult({
         title: "Остатки и цены",
@@ -691,7 +691,7 @@ export default function App() {
   }
 
   async function handleRefreshRequestOneCContext() {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     if (!selected?.id) {
       setOnecLookupResult({
         title: "1С-данные заявки",
@@ -751,7 +751,7 @@ export default function App() {
   }
 
   async function handleOneCClientData(kind) {
-    if (authUser?.role !== "admin") return;
+    if (!canManageRequests) return;
     if (!selected?.client_id) {
       setOnecLookupResult({
         title: "1С по клиенту",
@@ -2028,20 +2028,30 @@ export default function App() {
           {error && <div className="error-box">{error}</div>}
         </section>
 
-        {authUser?.role === "admin" ? (
+        {canManageRequests ? (
           <section className="input-area onec-tools-area">
             <div className="section-title section-title-with-action">
               <div>
                 <h2>1C</h2>
                 <p>Безопасные проверки через MCP: только чтение из 1С, без создания и проведения документов.</p>
               </div>
-              <div className={`service-status service-status-${onecMcpHealthClass}`}>
-                <Database size={18} />
-                <div>
-                  <strong>Статус</strong>
-                  <span>{onecMcpLoading ? "проверяется" : onecMcpHealthText}</span>
+              {authUser?.role === "admin" ? (
+                <div className={`service-status service-status-${onecMcpHealthClass}`}>
+                  <Database size={18} />
+                  <div>
+                    <strong>Статус</strong>
+                    <span>{onecMcpLoading ? "проверяется" : onecMcpHealthText}</span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="service-status service-status-ok">
+                  <Database size={18} />
+                  <div>
+                    <strong>Режим</strong>
+                    <span>read-only 1С</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="onec-tools-grid">
@@ -2838,7 +2848,7 @@ export default function App() {
                 </div>
               </div>
 
-              {authUser?.role === "admin" ? (
+              {canManageRequests ? (
                 <div className={requestOneCProducts.length > 0 ? "onec-products-card" : "onec-products-card onec-products-card-empty"}>
                   <div className="onec-products-header">
                     <div>

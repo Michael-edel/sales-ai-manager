@@ -637,34 +637,34 @@ export default {
         return json(await callOneCMcpTool(request, env));
       }
       if (request.method === "GET" && url.pathname === "/api/1c/status") {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCBusinessStatus(env));
       }
       if (request.method === "POST" && url.pathname === "/api/1c/counterparties/search") {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await searchOneCCounterparties(request, env));
       }
       if (request.method === "POST" && url.pathname === "/api/1c/products/search") {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await searchOneCProducts(request, env));
       }
       if (request.method === "POST" && url.pathname === "/api/1c/products/stock-prices") {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCStockAndPrices(request, env));
       }
       const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(contracts|orders|invoices|debt)$/);
       if (request.method === "GET" && oneCClientActionMatch) {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
       }
       const requestOneCProductStockMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products\/stock-prices$/);
       if (request.method === "GET" && requestOneCProductStockMatch) {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getRequestOneCProductStockPrices(env, Number(requestOneCProductStockMatch[1])));
       }
       const requestOneCContextMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-context$/);
       if (request.method === "POST" && requestOneCContextMatch) {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await refreshRequestOneCContext(env, Number(requestOneCContextMatch[1]), currentUser));
       }
       const requestOneCProductMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products$/);
@@ -672,13 +672,13 @@ export default {
         const requestId = Number(requestOneCProductMatch[1]);
         if (request.method === "GET") return json(await listRequestOneCProducts(env, requestId));
         if (request.method === "POST") {
-          if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
           return json(await linkRequestOneCProduct(request, env, requestId, currentUser));
         }
       }
       const requestOneCProductDeleteMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products\/(\d+)$/);
       if (request.method === "DELETE" && requestOneCProductDeleteMatch) {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const result = await deleteRequestOneCProduct(
           env,
           Number(requestOneCProductDeleteMatch[1]),
@@ -740,7 +740,7 @@ export default {
       }
       const crmOneCMatch = url.pathname.match(/^\/api\/crm\/clients\/(\d+)\/1c-counterparty$/);
       if (request.method === "PATCH" && crmOneCMatch) {
-        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const client = await linkCrmClientOneCCounterparty(request, env, Number(crmOneCMatch[1]), currentUser);
         return client ? json(client) : json({ detail: "Клиент CRM не найден." }, 404);
       }
