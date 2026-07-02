@@ -21,15 +21,18 @@ import {
   getOneCClientOrders,
   getOneCMcpHealth,
   getOneCStockAndPrices,
+  getRequestOneCProductStockPrices,
   getParserHealth,
   getWhatsAppHealth,
   listAiRules,
   listEmailMessages,
+  listRequestOneCProducts,
   listOpenTasks,
   listRequestEvents,
   listRequestTasks,
   listRequests,
   listWhatsAppTemplates,
+  linkRequestOneCProduct,
   linkCrmClientOneCCounterparty,
   listUsers,
   login,
@@ -41,6 +44,7 @@ import {
   searchOneCProducts,
   sendEmailReply,
   sendWhatsAppTemplate,
+  deleteRequestOneCProduct,
   updateDealDocuments,
   updateEmailMessage,
   updateAiRules,
@@ -196,6 +200,31 @@ function oneCCounterpartyMeta(item) {
   ].filter(Boolean).join(" · ");
 }
 
+function oneCProductTitle(item, index) {
+  return item?.name ||
+    item?.onec_product_name ||
+    item?.full_name ||
+    item?.onec_product_full_name ||
+    item?.product_ref ||
+    item?.onec_product_ref ||
+    `Товар ${index + 1}`;
+}
+
+function oneCProductMeta(item) {
+  const code = item?.code || item?.onec_product_code;
+  const article = item?.article || item?.onec_product_article;
+  const unit = item?.unit || item?.onec_product_unit;
+  const vatRate = item?.vat_rate || item?.onec_product_vat_rate;
+  const ref = item?.product_ref || item?.onec_product_ref;
+  return [
+    code ? `Код: ${code}` : "",
+    article ? `Артикул: ${article}` : "",
+    unit ? `Ед.: ${unit}` : "",
+    vatRate ? `НДС: ${vatRate}` : "",
+    ref ? `1С: ${ref}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState(null);
@@ -259,6 +288,7 @@ export default function App() {
   const [onecLookupResult, setOnecLookupResult] = useState(null);
   const [requestEvents, setRequestEvents] = useState([]);
   const [requestTasks, setRequestTasks] = useState([]);
+  const [requestOneCProducts, setRequestOneCProducts] = useState([]);
   const [openTasks, setOpenTasks] = useState([]);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [statusDraft, setStatusDraft] = useState({
@@ -324,6 +354,16 @@ export default function App() {
     } else if (!selected && items.length > 0) {
       setSelected(items[0]);
     }
+  }
+
+  async function refreshRequestOneCProducts(requestId = selected?.id) {
+    if (!requestId) {
+      setRequestOneCProducts([]);
+      return [];
+    }
+    const items = await listRequestOneCProducts(requestId);
+    setRequestOneCProducts(items);
+    return items;
   }
 
   async function refreshEmails(folder = emailFolder) {
@@ -471,9 +511,72 @@ export default function App() {
     setOnecLookupLoading("item");
     try {
       const response = await searchOneCProducts(search);
-      setOnecLookupResult({ title: "Товары в 1C", body: oneCResultText(response) });
+      setOnecLookupResult({
+        title: "Товары в 1C",
+        body: oneCResultText(response),
+        kind: "products",
+        items: response.items || [],
+      });
     } catch (err) {
       setOnecLookupResult({ title: "Товары в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleLinkOneCProduct(candidate) {
+    if (authUser?.role !== "admin" || !candidate) return;
+    if (!selected?.id) {
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Товары в 1C", body: "" }),
+        error: "Выберите заявку, чтобы привязать товар 1С.",
+      }));
+      return;
+    }
+
+    setError("");
+    setOnecLookupLoading("product-link");
+    try {
+      await linkRequestOneCProduct(selected.id, candidate);
+      await refreshRequestOneCProducts(selected.id);
+      const events = await listRequestEvents(selected.id);
+      setRequestEvents(events);
+      const items = await listRequests();
+      const updatedSelected = items.find((item) => Number(item.id) === Number(selected.id)) || selected;
+      setRequests(items);
+      setSelected(updatedSelected);
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Товары в 1C", body: "" }),
+        success: `Товар привязан к заявке: ${oneCProductTitle(candidate, 0)}`,
+        error: "",
+      }));
+    } catch (err) {
+      setOnecLookupResult((current) => ({
+        ...(current || { title: "Товары в 1C", body: "" }),
+        error: err.message,
+      }));
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleDeleteOneCProduct(product) {
+    if (authUser?.role !== "admin" || !selected?.id || !product?.id) return;
+    if (!window.confirm(`Удалить привязку товара "${oneCProductTitle(product, 0)}" из заявки?`)) return;
+
+    setError("");
+    setOnecLookupLoading("product-delete");
+    try {
+      await deleteRequestOneCProduct(selected.id, product.id);
+      await refreshRequestOneCProducts(selected.id);
+      const events = await listRequestEvents(selected.id);
+      setRequestEvents(events);
+      const items = await listRequests();
+      const updatedSelected = items.find((item) => Number(item.id) === Number(selected.id)) || selected;
+      setRequests(items);
+      setSelected(updatedSelected);
+    } catch (err) {
+      setError(err.message);
     } finally {
       setOnecLookupLoading("");
     }
@@ -500,6 +603,53 @@ export default function App() {
       });
     } catch (err) {
       setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleLinkedProductStockPrices() {
+    if (authUser?.role !== "admin") return;
+    if (!selected?.id) {
+      setOnecLookupResult({
+        title: "Остатки и цены",
+        error: "Выберите заявку.",
+      });
+      return;
+    }
+    if (requestOneCProducts.length === 0) {
+      setOnecLookupResult({
+        title: "Остатки и цены",
+        error: "К заявке не привязаны товары 1С.",
+      });
+      return;
+    }
+
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("linked-stock");
+    try {
+      const response = await getRequestOneCProductStockPrices(selected.id);
+      const body = (response.items || []).map((item, index) => {
+        const title = oneCProductTitle(item.product || {}, index);
+        if (item.error) return `### ${title}\n\nОшибка: ${item.error}`;
+        return [
+          `### ${title}`,
+          item.search ? `Поиск: ${item.search}` : "",
+          "",
+          "#### Остатки",
+          item.stock_result_text || "нет данных",
+          "",
+          "#### Цены",
+          item.price_result_text || "нет данных",
+        ].filter((line) => line !== "").join("\n");
+      }).join("\n\n");
+      setOnecLookupResult({
+        title: "Остатки и цены по товарам заявки",
+        body: body || "Нет данных",
+      });
+    } catch (err) {
+      setOnecLookupResult({ title: "Остатки и цены по товарам заявки", error: err.message });
     } finally {
       setOnecLookupLoading("");
     }
@@ -768,6 +918,7 @@ export default function App() {
     if (!selected) {
       setRequestEvents([]);
       setRequestTasks([]);
+      setRequestOneCProducts([]);
       return;
     }
     setStatusDraft({
@@ -789,6 +940,7 @@ export default function App() {
     setWhatsAppDraft((current) => ({ ...current, to_phone: phone || current.to_phone }));
     listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
     listRequestTasks(selected.id).then(setRequestTasks).catch(() => setRequestTasks([]));
+    listRequestOneCProducts(selected.id).then(setRequestOneCProducts).catch(() => setRequestOneCProducts([]));
   }, [selected]);
 
   async function handleProcess() {
@@ -1879,6 +2031,14 @@ export default function App() {
                   {onecLookupLoading === "client-debt" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
                   Задолженность
                 </button>
+                <button
+                  className="secondary-button"
+                  onClick={handleLinkedProductStockPrices}
+                  disabled={Boolean(onecLookupLoading) || !selected?.id || requestOneCProducts.length === 0}
+                >
+                  {onecLookupLoading === "linked-stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                  Остатки/цены товаров
+                </button>
               </div>
             </div>
 
@@ -1916,6 +2076,34 @@ export default function App() {
                     ) : (
                       <p className="muted">
                         Варианты не разобраны автоматически. Проверьте текст ответа ниже или уточните поиск.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+                {onecLookupResult.kind === "products" ? (
+                  <div className="onec-candidate-list">
+                    {(onecLookupResult.items || []).length > 0 ? (
+                      (onecLookupResult.items || []).map((item, index) => (
+                        <div className="onec-candidate-card" key={`${item.product_ref || item.code || item.article || item.name || index}-${index}`}>
+                          <div>
+                            <strong>{oneCProductTitle(item, index)}</strong>
+                            {item.full_name && item.full_name !== item.name ? <span>{item.full_name}</span> : null}
+                            {oneCProductMeta(item) ? <small>{oneCProductMeta(item)}</small> : null}
+                          </div>
+                          <button
+                            className="secondary-button"
+                            onClick={() => handleLinkOneCProduct(item)}
+                            disabled={onecLookupLoading === "product-link" || !selected?.id}
+                            title={!selected?.id ? "Сначала выберите заявку" : "Сохранить товар 1С в выбранной заявке"}
+                          >
+                            {onecLookupLoading === "product-link" ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                            Привязать к заявке
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted">
+                        Варианты товаров не разобраны автоматически. Проверьте текст ответа ниже или уточните поиск.
                       </p>
                     )}
                   </div>
@@ -2528,6 +2716,49 @@ export default function App() {
                   {selected.onec_counterparty_ref ? <small>{selected.onec_counterparty_ref}</small> : null}
                 </div>
               </div>
+
+              {authUser?.role === "admin" ? (
+                <div className={requestOneCProducts.length > 0 ? "onec-products-card" : "onec-products-card onec-products-card-empty"}>
+                  <div className="onec-products-header">
+                    <div>
+                      <strong>Товары 1С в заявке</strong>
+                      <span>
+                        {requestOneCProducts.length > 0
+                          ? `Выбрано товаров: ${requestOneCProducts.length}`
+                          : "В блоке 1C найдите товар и нажмите «Привязать к заявке»."}
+                      </span>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      onClick={handleLinkedProductStockPrices}
+                      disabled={Boolean(onecLookupLoading) || requestOneCProducts.length === 0}
+                    >
+                      {onecLookupLoading === "linked-stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                      Остатки/цены
+                    </button>
+                  </div>
+                  {requestOneCProducts.length > 0 ? (
+                    <div className="onec-product-list">
+                      {requestOneCProducts.map((product, index) => (
+                        <div className="onec-product-item" key={product.id}>
+                          <div>
+                            <strong>{oneCProductTitle(product, index)}</strong>
+                            {oneCProductMeta(product) ? <small>{oneCProductMeta(product)}</small> : null}
+                          </div>
+                          <button
+                            className="icon-button danger-icon"
+                            onClick={() => handleDeleteOneCProduct(product)}
+                            disabled={onecLookupLoading === "product-delete"}
+                            title="Удалить привязку товара"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="status-editor">
                 <label>

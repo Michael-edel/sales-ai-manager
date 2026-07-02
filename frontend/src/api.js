@@ -129,6 +129,28 @@ export function getOneCStockAndPrices(query) {
   });
 }
 
+export function listRequestOneCProducts(requestId) {
+  return request(`/requests/${requestId}/1c-products`);
+}
+
+export function linkRequestOneCProduct(requestId, payload) {
+  return request(`/requests/${requestId}/1c-products`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRequestOneCProduct(requestId, productId) {
+  return request(`/requests/${requestId}/1c-products/${productId}`, {
+    method: "DELETE",
+  });
+}
+
+export function getRequestOneCProductStockPrices(requestId) {
+  return request(`/requests/${requestId}/1c-products/stock-prices`);
+}
+
 export function getOneCClientContracts(clientId) {
   return request(`/1c/clients/${clientId}/contracts`);
 }

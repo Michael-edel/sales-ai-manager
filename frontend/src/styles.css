@@ -133,6 +133,11 @@ textarea {
   width: 38px;
 }
 
+.danger-icon {
+  border-color: #f2c5bd;
+  color: #a33a2b;
+}
+
 .history-list {
   display: grid;
   gap: 8px;
@@ -780,6 +785,60 @@ button:disabled,
   background: #f7f8f6;
   border-color: #d9dfd7;
   color: #4f5b53;
+}
+
+.onec-products-card {
+  background: #eef8f1;
+  border: 1px solid #b9d9c4;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.onec-products-card-empty {
+  background: #f7f8f6;
+  border-color: #d9dfd7;
+}
+
+.onec-products-header {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.onec-products-header > div,
+.onec-product-item > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.onec-products-header span,
+.onec-product-item small {
+  color: #4f5b53;
+  overflow-wrap: anywhere;
+}
+
+.onec-product-list {
+  display: grid;
+  gap: 8px;
+}
+
+.onec-product-item {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 10px;
+}
+
+.onec-product-item strong {
+  overflow-wrap: anywhere;
 }
 
 .status-editor {
@@ -1533,6 +1592,8 @@ pre {
   .deal-documents-grid,
   .onec-tools-grid,
   .onec-candidate-card,
+  .onec-products-header,
+  .onec-product-item,
   .task-create,
   .user-create-grid,
   .whatsapp-template-create,

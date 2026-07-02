@@ -171,6 +171,7 @@ const ONEC_CLIENT_SEARCH_QUERY = `
 
 const ONEC_ITEM_SEARCH_QUERY = `
 ВЫБРАТЬ ПЕРВЫЕ 10
+  Номенклатура.Ссылка КАК Номенклатура,
   Номенклатура.Код КАК Код,
   Номенклатура.Артикул КАК Артикул,
   Номенклатура.Наименование КАК Наименование,
@@ -203,6 +204,7 @@ const ONEC_STOCK_SEARCH_QUERY = `
 ГДЕ
   Остатки.Номенклатура.Наименование ПОДОБНО &Поиск
   ИЛИ Остатки.Номенклатура.Артикул ПОДОБНО &Поиск
+  ИЛИ Остатки.Номенклатура.Код ПОДОБНО &Поиск
 УПОРЯДОЧИТЬ ПО
   Остатки.Номенклатура,
   Остатки.Склад
@@ -221,6 +223,7 @@ const ONEC_PRICE_SEARCH_QUERY = `
 ГДЕ
   Цены.Номенклатура.Наименование ПОДОБНО &Поиск
   ИЛИ Цены.Номенклатура.Артикул ПОДОБНО &Поиск
+  ИЛИ Цены.Номенклатура.Код ПОДОБНО &Поиск
 УПОРЯДОЧИТЬ ПО
   Цены.Номенклатура,
   Цены.ВидЦены
@@ -653,6 +656,31 @@ export default {
       if (request.method === "GET" && oneCClientActionMatch) {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
+      }
+      const requestOneCProductStockMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products\/stock-prices$/);
+      if (request.method === "GET" && requestOneCProductStockMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await getRequestOneCProductStockPrices(env, Number(requestOneCProductStockMatch[1])));
+      }
+      const requestOneCProductMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products$/);
+      if (requestOneCProductMatch) {
+        const requestId = Number(requestOneCProductMatch[1]);
+        if (request.method === "GET") return json(await listRequestOneCProducts(env, requestId));
+        if (request.method === "POST") {
+          if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+          return json(await linkRequestOneCProduct(request, env, requestId, currentUser));
+        }
+      }
+      const requestOneCProductDeleteMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products\/(\d+)$/);
+      if (request.method === "DELETE" && requestOneCProductDeleteMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        const result = await deleteRequestOneCProduct(
+          env,
+          Number(requestOneCProductDeleteMatch[1]),
+          Number(requestOneCProductDeleteMatch[2]),
+          currentUser,
+        );
+        return result ? json(result) : json({ detail: "Привязанный товар не найден." }, 404);
       }
       if (request.method === "GET" && url.pathname === "/api/ai/rules") {
         return json(await listAiRules(env));
@@ -1560,10 +1588,14 @@ async function searchOneCProducts(request: Request, env: Env) {
     parameters: { Поиск: pattern },
     limit: 10,
   });
+  const resultText = oneCMcpResultText(result);
+  const items = parseOneCProductCandidates(resultText);
   return {
     tool: "find_product",
     search,
-    result_text: oneCMcpResultText(result),
+    result_text: resultText,
+    items,
+    has_multiple: items.length > 1,
     raw: result,
   };
 }
@@ -1623,6 +1655,187 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
   };
 }
 
+async function listRequestOneCProducts(env: Env, requestId: number) {
+  const result = await env.DB.prepare(`
+    SELECT
+      id,
+      request_id,
+      onec_product_ref,
+      onec_product_code,
+      onec_product_article,
+      onec_product_name,
+      onec_product_full_name,
+      onec_product_unit,
+      onec_product_vat_rate,
+      created_at,
+      updated_at
+    FROM request_onec_products
+    WHERE request_id = ?
+    ORDER BY id ASC
+  `).bind(requestId).all();
+  return result.results;
+}
+
+async function getRequestOneCProduct(env: Env, requestId: number, productId: number) {
+  return env.DB.prepare(`
+    SELECT
+      id,
+      request_id,
+      onec_product_ref,
+      onec_product_code,
+      onec_product_article,
+      onec_product_name,
+      onec_product_full_name,
+      onec_product_unit,
+      onec_product_vat_rate,
+      created_at,
+      updated_at
+    FROM request_onec_products
+    WHERE request_id = ? AND id = ?
+  `).bind(requestId, productId).first();
+}
+
+async function linkRequestOneCProduct(request: Request, env: Env, requestId: number, user: CurrentUser) {
+  const existingRequest = await getRequest(env, requestId);
+  if (!existingRequest) throw new UserInputError("Заявка не найдена.");
+
+  const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const candidate = normalizeOneCProductCandidate(payload);
+  if (!candidate.product_ref && !candidate.code && !candidate.article && !candidate.name && !candidate.full_name) {
+    throw new UserInputError("Выберите найденный товар 1С или передайте код/артикул/наименование.");
+  }
+
+  const duplicate = await env.DB.prepare(`
+    SELECT id
+    FROM request_onec_products
+    WHERE request_id = ?
+      AND COALESCE(onec_product_ref, '') = COALESCE(?, '')
+      AND COALESCE(onec_product_code, '') = COALESCE(?, '')
+      AND COALESCE(onec_product_article, '') = COALESCE(?, '')
+      AND COALESCE(onec_product_name, '') = COALESCE(?, '')
+    LIMIT 1
+  `).bind(
+    requestId,
+    candidate.product_ref || null,
+    candidate.code || null,
+    candidate.article || null,
+    candidate.name || null,
+  ).first() as Record<string, unknown> | null;
+
+  if (duplicate?.id) {
+    return getRequestOneCProduct(env, requestId, Number(duplicate.id));
+  }
+
+  const result = await env.DB.prepare(`
+    INSERT INTO request_onec_products (
+      request_id,
+      onec_product_ref,
+      onec_product_code,
+      onec_product_article,
+      onec_product_name,
+      onec_product_full_name,
+      onec_product_unit,
+      onec_product_vat_rate,
+      onec_product_payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    requestId,
+    candidate.product_ref || null,
+    candidate.code || null,
+    candidate.article || null,
+    candidate.name || null,
+    candidate.full_name || null,
+    candidate.unit || null,
+    candidate.vat_rate || null,
+    JSON.stringify(candidate.raw || payload),
+  ).run();
+
+  const productId = Number(result.meta.last_row_id);
+  await createRequestEvent(env, requestId, "request.onec_product_linked", user.display_name || user.username, {
+    product_id: productId,
+    product_ref: candidate.product_ref || null,
+    code: candidate.code || null,
+    article: candidate.article || null,
+    name: candidate.name || null,
+    full_name: candidate.full_name || null,
+  });
+
+  return getRequestOneCProduct(env, requestId, productId);
+}
+
+async function deleteRequestOneCProduct(env: Env, requestId: number, productId: number, user: CurrentUser) {
+  const existing = await getRequestOneCProduct(env, requestId, productId) as Record<string, unknown> | null;
+  if (!existing) return null;
+
+  await env.DB.prepare(`
+    DELETE FROM request_onec_products
+    WHERE request_id = ? AND id = ?
+  `).bind(requestId, productId).run();
+
+  await createRequestEvent(env, requestId, "request.onec_product_unlinked", user.display_name || user.username, {
+    product_id: productId,
+    code: existing.onec_product_code || null,
+    article: existing.onec_product_article || null,
+    name: existing.onec_product_name || null,
+  });
+
+  return { ok: true, product_id: productId };
+}
+
+async function getRequestOneCProductStockPrices(env: Env, requestId: number) {
+  const existingRequest = await getRequest(env, requestId);
+  if (!existingRequest) throw new UserInputError("Заявка не найдена.");
+
+  const products = await listRequestOneCProducts(env, requestId) as Record<string, unknown>[];
+  if (products.length === 0) {
+    throw new UserInputError("К заявке не привязаны товары 1С.");
+  }
+
+  const items: Array<Record<string, unknown>> = [];
+  for (const product of products) {
+    const search = oneCProductSearchText(product);
+    if (!search) {
+      items.push({ product, error: "Нет кода, артикула или наименования для поиска." });
+      continue;
+    }
+
+    try {
+      const pattern = oneCSearchPattern(search);
+      const [stockResult, priceResult] = await Promise.all([
+        executeOneCMcpTool(env, "execute_query", {
+          query: ONEC_STOCK_SEARCH_QUERY,
+          parameters: { Поиск: pattern },
+          limit: 20,
+        }),
+        executeOneCMcpTool(env, "execute_query", {
+          query: ONEC_PRICE_SEARCH_QUERY,
+          parameters: { Поиск: pattern },
+          limit: 20,
+        }),
+      ]);
+
+      items.push({
+        product,
+        search,
+        stock_result_text: oneCMcpResultText(stockResult),
+        price_result_text: oneCMcpResultText(priceResult),
+      });
+    } catch (error) {
+      items.push({
+        product,
+        search,
+        error: safeOneCErrorMessage(error),
+      });
+    }
+  }
+
+  return {
+    tool: "get_request_linked_products_stock_prices",
+    request_id: requestId,
+    items,
+  };
+}
+
 function oneCClientActionDescriptor(action: string) {
   const descriptors: Record<string, { tool: string; title: string; queries: Array<{ key: string; query: string }> }> = {
     contracts: {
@@ -1675,6 +1888,16 @@ function oneCClientSearchText(client: Record<string, string>): string {
       client.onec_counterparty_full_name ||
       client.display_name ||
       client.onec_counterparty_bin,
+  );
+}
+
+function oneCProductSearchText(product: Record<string, unknown>): string {
+  return normalizeOptionalText(
+    product.onec_product_code ||
+      product.onec_product_article ||
+      product.onec_product_name ||
+      product.onec_product_full_name ||
+      product.onec_product_ref,
   );
 }
 
@@ -2372,7 +2595,8 @@ async function listRequests(env: Env) {
       c.onec_counterparty_linked_at,
       COALESCE(task_counts.open_task_count, 0) AS open_task_count,
       COALESCE(task_counts.done_task_count, 0) AS done_task_count,
-      COALESCE(task_counts.total_task_count, 0) AS total_task_count
+      COALESCE(task_counts.total_task_count, 0) AS total_task_count,
+      COALESCE(product_counts.onec_product_count, 0) AS onec_product_count
     FROM requests r
     LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
@@ -2384,6 +2608,11 @@ async function listRequests(env: Env) {
       FROM request_tasks
       GROUP BY request_id
     ) task_counts ON task_counts.request_id = r.id
+    LEFT JOIN (
+      SELECT request_id, COUNT(*) AS onec_product_count
+      FROM request_onec_products
+      GROUP BY request_id
+    ) product_counts ON product_counts.request_id = r.id
     ORDER BY r.created_at DESC
     LIMIT 100
   `).all();
@@ -2990,7 +3219,8 @@ async function getRequest(env: Env, id: number) {
       c.onec_counterparty_linked_at,
       COALESCE(task_counts.open_task_count, 0) AS open_task_count,
       COALESCE(task_counts.done_task_count, 0) AS done_task_count,
-      COALESCE(task_counts.total_task_count, 0) AS total_task_count
+      COALESCE(task_counts.total_task_count, 0) AS total_task_count,
+      COALESCE(product_counts.onec_product_count, 0) AS onec_product_count
     FROM requests r
     LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
@@ -3002,6 +3232,11 @@ async function getRequest(env: Env, id: number) {
       FROM request_tasks
       GROUP BY request_id
     ) task_counts ON task_counts.request_id = r.id
+    LEFT JOIN (
+      SELECT request_id, COUNT(*) AS onec_product_count
+      FROM request_onec_products
+      GROUP BY request_id
+    ) product_counts ON product_counts.request_id = r.id
     WHERE r.id = ?
   `).bind(id).first();
 }
@@ -3102,6 +3337,7 @@ async function deleteRequest(env: Env, id: number) {
   `).bind(id).run();
   await env.DB.prepare("DELETE FROM request_tasks WHERE request_id = ?").bind(id).run();
   await env.DB.prepare("DELETE FROM request_events WHERE request_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM request_onec_products WHERE request_id = ?").bind(id).run();
   await env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(id).run();
 
   return { ok: true, request_id: id };
@@ -4526,6 +4762,17 @@ function parseOneCCounterpartyCandidates(text: string): Record<string, unknown>[
     .slice(0, 10);
 }
 
+function parseOneCProductCandidates(text: string): Record<string, unknown>[] {
+  const rows = [
+    ...parseOneCMarkdownTableRows(text),
+    ...parseKeyValueBlockRows(text),
+  ];
+  return rows
+    .map((row) => normalizeOneCProductCandidate(row))
+    .filter((item) => Boolean(item.product_ref || item.code || item.article || item.name || item.full_name))
+    .slice(0, 10);
+}
+
 function parseOneCMarkdownTableRows(text: string): Record<string, string>[] {
   const tableLines = normalizeOptionalText(text)
     .split(/\r?\n/)
@@ -4605,6 +4852,34 @@ function normalizeOneCCounterpartyCandidate(row: Record<string, unknown>) {
   }
 
   return candidate;
+}
+
+function normalizeOneCProductCandidate(row: Record<string, unknown>) {
+  const value = (...keys: string[]) => {
+    for (const key of keys) {
+      const direct = normalizeOptionalText(row[key]);
+      if (direct) return direct;
+
+      const normalizedKey = normalizeColumnKey(key);
+      const matchingKey = Object.keys(row).find((candidateKey) => normalizeColumnKey(candidateKey) === normalizedKey);
+      if (matchingKey) {
+        const matched = normalizeOptionalText(row[matchingKey]);
+        if (matched) return matched;
+      }
+    }
+    return "";
+  };
+
+  return {
+    product_ref: value("product_ref", "Номенклатура", "Товар", "Ссылка", "Ref", "СсылкаНоменклатуры"),
+    code: value("code", "Код", "КодНоменклатуры"),
+    article: value("article", "Артикул", "SKU"),
+    name: value("name", "Наименование", "НоменклатураНаименование"),
+    full_name: value("full_name", "НаименованиеПолное", "ПолноеНаименование", "Полное наименование"),
+    unit: value("unit", "ЕдИзм", "Ед. изм.", "ЕдиницаИзмерения", "Единица измерения"),
+    vat_rate: value("vat_rate", "СтавкаНДС", "НДС", "Ставка НДС"),
+    raw: row,
+  };
 }
 
 function normalizeColumnKey(value: string): string {
