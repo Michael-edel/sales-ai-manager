@@ -129,6 +129,22 @@ export function getOneCStockAndPrices(query) {
   });
 }
 
+export function getOneCClientContracts(clientId) {
+  return request(`/1c/clients/${clientId}/contracts`);
+}
+
+export function getOneCClientOrders(clientId) {
+  return request(`/1c/clients/${clientId}/orders`);
+}
+
+export function getOneCClientInvoices(clientId) {
+  return request(`/1c/clients/${clientId}/invoices`);
+}
+
+export function getOneCClientDebt(clientId) {
+  return request(`/1c/clients/${clientId}/debt`);
+}
+
 export function listAiRules() {
   return request("/ai/rules");
 }

@@ -15,6 +15,10 @@ import {
   getCurrentUser,
   getEmailSmtpHealth,
   getOneCBusinessStatus,
+  getOneCClientContracts,
+  getOneCClientDebt,
+  getOneCClientInvoices,
+  getOneCClientOrders,
   getOneCMcpHealth,
   getOneCStockAndPrices,
   getParserHealth,
@@ -496,6 +500,59 @@ export default function App() {
       });
     } catch (err) {
       setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleOneCClientData(kind) {
+    if (authUser?.role !== "admin") return;
+    if (!selected?.client_id) {
+      setOnecLookupResult({
+        title: "1С по клиенту",
+        error: "Выберите заявку с CRM-клиентом.",
+      });
+      return;
+    }
+
+    const actions = {
+      contracts: {
+        loading: "client-contracts",
+        request: getOneCClientContracts,
+      },
+      orders: {
+        loading: "client-orders",
+        request: getOneCClientOrders,
+      },
+      invoices: {
+        loading: "client-invoices",
+        request: getOneCClientInvoices,
+      },
+      debt: {
+        loading: "client-debt",
+        request: getOneCClientDebt,
+      },
+    };
+    const action = actions[kind];
+    if (!action) return;
+
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading(action.loading);
+    try {
+      const response = await action.request(selected.client_id);
+      setOnecLookupResult({
+        title: response.title || "1С по клиенту",
+        body: [
+          `Клиент: ${response.onec_counterparty_name || response.client_name || "не указан"}`,
+          response.onec_counterparty_bin ? `БИН/ИНН: ${response.onec_counterparty_bin}` : "",
+          response.query_key ? `Запрос: ${response.query_key}` : "",
+          "",
+          response.result_text || "Нет данных",
+        ].filter((line) => line !== "").join("\n"),
+      });
+    } catch (err) {
+      setOnecLookupResult({ title: "1С по клиенту", error: err.message });
     } finally {
       setOnecLookupLoading("");
     }
@@ -1776,6 +1833,53 @@ export default function App() {
                 {onecLookupLoading === "stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
                 Проверить остатки и цены
               </button>
+            </div>
+
+            <div className="onec-client-actions">
+              <div>
+                <strong>1С по выбранной заявке</strong>
+                <span>
+                  {selected?.client_id
+                    ? selected.onec_counterparty_ref
+                      ? `Привязан: ${selected.onec_counterparty_name || selected.onec_counterparty_full_name || selected.client_company || "клиент"}`
+                      : `Поиск по CRM-клиенту: ${selected.client_company || "без названия"}`
+                    : "Выберите заявку в истории, чтобы проверить данные клиента."}
+                </span>
+              </div>
+              <div className="onec-button-row">
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("contracts")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-contracts" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                  Договоры клиента
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("orders")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-orders" ? <Loader2 className="spin" size={18} /> : <Clipboard size={18} />}
+                  Последние заказы
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("invoices")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-invoices" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                  Счета клиента
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("debt")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-debt" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                  Задолженность
+                </button>
+              </div>
             </div>
 
             {onecLookupResult ? (

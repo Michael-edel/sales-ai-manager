@@ -226,6 +226,235 @@ const ONEC_PRICE_SEARCH_QUERY = `
   Цены.ВидЦены
 `;
 
+const ONEC_CLIENT_CONTRACT_QUERIES = [
+  {
+    key: "contracts_by_partner",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Договоры.Ссылка КАК Договор,
+  Договоры.Наименование КАК Наименование,
+  Договоры.Партнер КАК Партнер,
+  Договоры.Организация КАК Организация,
+  Договоры.ДействуетС КАК ДействуетС,
+  Договоры.ДействуетПо КАК ДействуетПо
+ИЗ
+  Справочник.ДоговорыКонтрагентов КАК Договоры
+ГДЕ
+  НЕ Договоры.ПометкаУдаления
+  И (
+    Договоры.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Договоры.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Договоры.ДействуетС УБЫВ
+`,
+  },
+  {
+    key: "contracts_by_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Договоры.Ссылка КАК Договор,
+  Договоры.Наименование КАК Наименование,
+  Договоры.Контрагент КАК Контрагент,
+  Договоры.Организация КАК Организация
+ИЗ
+  Справочник.ДоговорыКонтрагентов КАК Договоры
+ГДЕ
+  НЕ Договоры.ПометкаУдаления
+  И (
+    Договоры.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Договоры.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Договоры.Наименование
+`,
+  },
+  {
+    key: "contracts_by_owner",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Договоры.Ссылка КАК Договор,
+  Договоры.Наименование КАК Наименование,
+  Договоры.Владелец КАК Владелец
+ИЗ
+  Справочник.ДоговорыКонтрагентов КАК Договоры
+ГДЕ
+  НЕ Договоры.ПометкаУдаления
+  И (
+    Договоры.Владелец.Наименование ПОДОБНО &Поиск
+    ИЛИ Договоры.Владелец.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Договоры.Наименование
+`,
+  },
+];
+
+const ONEC_CLIENT_ORDER_QUERIES = [
+  {
+    key: "customer_orders_partner_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Заказы.Ссылка КАК Заказ,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Партнер КАК Партнер,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Валюта КАК Валюта,
+  Заказы.Статус КАК Статус,
+  Заказы.Проведен КАК Проведен
+ИЗ
+  Документ.ЗаказКлиента КАК Заказы
+ГДЕ
+  НЕ Заказы.ПометкаУдаления
+  И (
+    Заказы.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Заказы.Дата УБЫВ
+`,
+  },
+  {
+    key: "customer_orders_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Заказы.Ссылка КАК Заказ,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Проведен КАК Проведен
+ИЗ
+  Документ.ЗаказКлиента КАК Заказы
+ГДЕ
+  НЕ Заказы.ПометкаУдаления
+  И (
+    Заказы.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Заказы.Дата УБЫВ
+`,
+  },
+];
+
+const ONEC_CLIENT_INVOICE_QUERIES = [
+  {
+    key: "customer_invoices_partner_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Счета.Ссылка КАК Счет,
+  Счета.Номер КАК Номер,
+  Счета.Дата КАК Дата,
+  Счета.Партнер КАК Партнер,
+  Счета.Контрагент КАК Контрагент,
+  Счета.Организация КАК Организация,
+  Счета.СуммаДокумента КАК Сумма,
+  Счета.Валюта КАК Валюта,
+  Счета.Проведен КАК Проведен
+ИЗ
+  Документ.СчетНаОплатуКлиенту КАК Счета
+ГДЕ
+  НЕ Счета.ПометкаУдаления
+  И (
+    Счета.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Счета.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Счета.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Счета.Дата УБЫВ
+`,
+  },
+  {
+    key: "customer_invoices_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Счета.Ссылка КАК Счет,
+  Счета.Номер КАК Номер,
+  Счета.Дата КАК Дата,
+  Счета.Контрагент КАК Контрагент,
+  Счета.Организация КАК Организация,
+  Счета.СуммаДокумента КАК Сумма,
+  Счета.Проведен КАК Проведен
+ИЗ
+  Документ.СчетНаОплатуКлиенту КАК Счета
+ГДЕ
+  НЕ Счета.ПометкаУдаления
+  И (
+    Счета.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Счета.Дата УБЫВ
+`,
+  },
+  {
+    key: "buyer_invoices_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Счета.Ссылка КАК Счет,
+  Счета.Номер КАК Номер,
+  Счета.Дата КАК Дата,
+  Счета.Контрагент КАК Контрагент,
+  Счета.СуммаДокумента КАК Сумма,
+  Счета.Проведен КАК Проведен
+ИЗ
+  Документ.СчетНаОплатуПокупателю КАК Счета
+ГДЕ
+  НЕ Счета.ПометкаУдаления
+  И (
+    Счета.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Счета.Дата УБЫВ
+`,
+  },
+];
+
+const ONEC_CLIENT_DEBT_QUERIES = [
+  {
+    key: "settlements_with_customers",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Остатки.Партнер КАК Партнер,
+  Остатки.Контрагент КАК Контрагент,
+  Остатки.Договор КАК Договор,
+  Остатки.СуммаОстаток КАК СуммаОстаток
+ИЗ
+  РегистрНакопления.РасчетыСКлиентами.Остатки() КАК Остатки
+ГДЕ
+  Остатки.Партнер.Наименование ПОДОБНО &Поиск
+  ИЛИ Остатки.Контрагент.Наименование ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Остатки.СуммаОстаток УБЫВ
+`,
+  },
+  {
+    key: "mutual_settlements_with_customers",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Остатки.Партнер КАК Партнер,
+  Остатки.Контрагент КАК Контрагент,
+  Остатки.СуммаОстаток КАК СуммаОстаток
+ИЗ
+  РегистрНакопления.ВзаиморасчетыСКлиентами.Остатки() КАК Остатки
+ГДЕ
+  Остатки.Партнер.Наименование ПОДОБНО &Поиск
+  ИЛИ Остатки.Контрагент.Наименование ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Остатки.СуммаОстаток УБЫВ
+`,
+  },
+];
+
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -419,6 +648,11 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/1c/products/stock-prices") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCStockAndPrices(request, env));
+      }
+      const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(contracts|orders|invoices|debt)$/);
+      if (request.method === "GET" && oneCClientActionMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
       }
       if (request.method === "GET" && url.pathname === "/api/ai/rules") {
         return json(await listAiRules(env));
@@ -1357,6 +1591,129 @@ async function getOneCStockAndPrices(request: Request, env: Env) {
       stock: stockResult,
       prices: priceResult,
     },
+  };
+}
+
+async function getOneCClientBusinessData(env: Env, clientId: number, action: string) {
+  const client = await getCrmClientForOneC(env, clientId);
+  if (!client) throw new UserInputError("CRM-клиент не найден.");
+
+  const descriptor = oneCClientActionDescriptor(action);
+  const search = oneCClientSearchText(client);
+  if (!search) throw new UserInputError("У CRM-клиента нет названия, БИН или привязки 1С для поиска.");
+
+  const result = await executeFirstSuccessfulOneCQuery(env, descriptor.queries, {
+    Поиск: oneCSearchPattern(search),
+    БИН: client.onec_counterparty_bin || "",
+  });
+
+  return {
+    tool: descriptor.tool,
+    title: descriptor.title,
+    client_id: clientId,
+    client_name: client.display_name,
+    onec_counterparty_name: client.onec_counterparty_name || client.onec_counterparty_full_name || null,
+    onec_counterparty_bin: client.onec_counterparty_bin || null,
+    onec_counterparty_ref: client.onec_counterparty_ref || null,
+    search,
+    query_key: result.queryKey,
+    result_text: result.text,
+    raw: result.raw,
+    query_errors: result.errors,
+  };
+}
+
+function oneCClientActionDescriptor(action: string) {
+  const descriptors: Record<string, { tool: string; title: string; queries: Array<{ key: string; query: string }> }> = {
+    contracts: {
+      tool: "get_client_contracts",
+      title: "Договоры клиента в 1С",
+      queries: ONEC_CLIENT_CONTRACT_QUERIES,
+    },
+    orders: {
+      tool: "get_client_orders",
+      title: "Последние заказы клиента в 1С",
+      queries: ONEC_CLIENT_ORDER_QUERIES,
+    },
+    invoices: {
+      tool: "get_client_invoices",
+      title: "Счета клиента в 1С",
+      queries: ONEC_CLIENT_INVOICE_QUERIES,
+    },
+    debt: {
+      tool: "get_client_debt",
+      title: "Задолженность клиента в 1С",
+      queries: ONEC_CLIENT_DEBT_QUERIES,
+    },
+  };
+  const descriptor = descriptors[action];
+  if (!descriptor) throw new UserInputError("Неизвестный вид проверки клиента 1С.");
+  return descriptor;
+}
+
+async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<string, string> | null> {
+  const client = await env.DB.prepare(`
+    SELECT
+      id,
+      display_name,
+      normalized_name,
+      onec_counterparty_ref,
+      onec_counterparty_name,
+      onec_counterparty_full_name,
+      onec_counterparty_bin,
+      onec_counterparty_partner,
+      onec_counterparty_linked_at
+    FROM crm_clients
+    WHERE id = ?
+  `).bind(clientId).first();
+  return client as Record<string, string> | null;
+}
+
+function oneCClientSearchText(client: Record<string, string>): string {
+  return normalizeOptionalText(
+    client.onec_counterparty_name ||
+      client.onec_counterparty_full_name ||
+      client.display_name ||
+      client.onec_counterparty_bin,
+  );
+}
+
+async function executeFirstSuccessfulOneCQuery(
+  env: Env,
+  candidates: Array<{ key: string; query: string }>,
+  parameters: Record<string, string>,
+) {
+  const errors: Array<{ query_key: string; detail: string }> = [];
+  for (const candidate of candidates) {
+    try {
+      const raw = await executeOneCMcpTool(env, "execute_query", {
+        query: candidate.query,
+        parameters,
+      });
+      return {
+        queryKey: candidate.key,
+        text: oneCMcpResultText(raw),
+        raw,
+        errors,
+      };
+    } catch (error) {
+      errors.push({
+        query_key: candidate.key,
+        detail: safeOneCErrorMessage(error),
+      });
+    }
+  }
+
+  return {
+    queryKey: "",
+    text: [
+      "Не удалось получить данные из 1С по этому разделу.",
+      "Возможная причина: в вашей конфигурации 1С отличаются имена документов, регистров или реквизитов.",
+      "Ошибки попыток:",
+      ...errors.map((item) => `- ${item.query_key}: ${item.detail}`),
+    ].join("\n"),
+    raw: null,
+    errors,
   };
 }
 
