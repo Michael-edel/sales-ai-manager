@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
+  callOneCMcpTool,
   checkEmail,
   createEmailSenderFilter,
   createWhatsAppTemplate,
@@ -162,6 +163,100 @@ const WHATSAPP_TEMPLATE_CATEGORY_OPTIONS = [
   ["AUTHENTICATION", "Authentication"],
 ];
 
+const ONEC_CLIENT_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Контрагенты.Ссылка КАК Контрагент,
+  Контрагенты.Наименование КАК Наименование,
+  Контрагенты.НаименованиеПолное КАК НаименованиеПолное,
+  Контрагенты.ИНН КАК БИН,
+  Контрагенты.Партнер КАК Партнер
+ИЗ
+  Справочник.Контрагенты КАК Контрагенты
+ГДЕ
+  НЕ Контрагенты.ПометкаУдаления
+  И (
+    Контрагенты.Наименование ПОДОБНО &Поиск
+    ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Контрагенты.ИНН ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Контрагенты.Наименование
+`;
+
+const ONEC_ITEM_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Номенклатура.Код КАК Код,
+  Номенклатура.Артикул КАК Артикул,
+  Номенклатура.Наименование КАК Наименование,
+  Номенклатура.НаименованиеПолное КАК НаименованиеПолное,
+  Номенклатура.ЕдиницаИзмерения КАК ЕдИзм,
+  Номенклатура.СтавкаНДС КАК СтавкаНДС
+ИЗ
+  Справочник.Номенклатура КАК Номенклатура
+ГДЕ
+  НЕ Номенклатура.ПометкаУдаления
+  И (
+    Номенклатура.Наименование ПОДОБНО &Поиск
+    ИЛИ Номенклатура.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Номенклатура.Артикул ПОДОБНО &Поиск
+    ИЛИ Номенклатура.Код ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Номенклатура.Наименование
+`;
+
+const ONEC_STOCK_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Остатки.Номенклатура КАК Номенклатура,
+  Остатки.Склад КАК Склад,
+  Остатки.ВНаличииОстаток КАК ВНаличии,
+  Остатки.ВРезервеСоСкладаОстаток КАК ВРезервеСоСклада,
+  Остатки.ВРезервеПодЗаказОстаток КАК ВРезервеПодЗаказ
+ИЗ
+  РегистрНакопления.СвободныеОстатки.Остатки() КАК Остатки
+ГДЕ
+  Остатки.Номенклатура.Наименование ПОДОБНО &Поиск
+  ИЛИ Остатки.Номенклатура.Артикул ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Остатки.Номенклатура,
+  Остатки.Склад
+`;
+
+const ONEC_PRICE_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Цены.Номенклатура КАК Номенклатура,
+  Цены.Характеристика КАК Характеристика,
+  Цены.ВидЦены КАК ВидЦены,
+  Цены.Цена КАК Цена,
+  Цены.Упаковка КАК Упаковка,
+  Цены.Валюта КАК Валюта
+ИЗ
+  РегистрСведений.ЦеныНоменклатуры.СрезПоследних() КАК Цены
+ГДЕ
+  Цены.Номенклатура.Наименование ПОДОБНО &Поиск
+  ИЛИ Цены.Номенклатура.Артикул ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Цены.Номенклатура,
+  Цены.ВидЦены
+`;
+
+function oneCResultText(response) {
+  const content = response?.result?.content || response?.content || [];
+  if (Array.isArray(content) && content.length > 0) {
+    return content
+      .map((item) => item?.text || item?.content || "")
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return JSON.stringify(response, null, 2);
+}
+
+function oneCSearchPattern(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.includes("%") ? text : `%${text}%`;
+}
+
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authUser, setAuthUser] = useState(null);
@@ -217,6 +312,12 @@ export default function App() {
   const [parserLoading, setParserLoading] = useState(false);
   const [onecMcpStatus, setOnecMcpStatus] = useState(null);
   const [onecMcpLoading, setOnecMcpLoading] = useState(false);
+  const [onecLookupDraft, setOnecLookupDraft] = useState({
+    client: "ТОО KBI Energy",
+    item: "",
+  });
+  const [onecLookupLoading, setOnecLookupLoading] = useState("");
+  const [onecLookupResult, setOnecLookupResult] = useState(null);
   const [requestEvents, setRequestEvents] = useState([]);
   const [requestTasks, setRequestTasks] = useState([]);
   const [openTasks, setOpenTasks] = useState([]);
@@ -330,6 +431,130 @@ export default function App() {
       });
     } finally {
       setOnecMcpLoading(false);
+    }
+  }
+
+  function updateOnecLookupDraft(field, value) {
+    setOnecLookupDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function handleOneCCheck() {
+    if (authUser?.role !== "admin") return;
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("health");
+    try {
+      const status = await getOneCMcpHealth();
+      setOnecMcpStatus(status);
+      let body = status.reachable
+        ? `1C MCP подключен. Доступных инструментов: ${status.tools_count || 0}.`
+        : `1C MCP не подключен: ${status.detail || status.status || "статус неизвестен"}.`;
+      if (status.reachable) {
+        const info = await callOneCMcpTool({ name: "get_configuration_info", arguments: {} });
+        body = `${body}\n\n${oneCResultText(info)}`;
+      }
+      setOnecLookupResult({ title: "Статус 1C", body });
+    } catch (err) {
+      setOnecLookupResult({ title: "Статус 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleOneCClientSearch() {
+    if (authUser?.role !== "admin") return;
+    const pattern = oneCSearchPattern(onecLookupDraft.client || metadata.client_company);
+    if (!pattern) {
+      setOnecLookupResult({ title: "Поиск клиента", error: "Введите название клиента или БИН." });
+      return;
+    }
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("client");
+    try {
+      const response = await callOneCMcpTool({
+        name: "execute_query",
+        arguments: {
+          query: ONEC_CLIENT_SEARCH_QUERY,
+          parameters: { Поиск: pattern },
+          limit: 10,
+        },
+      });
+      setOnecLookupResult({ title: "Клиенты в 1C", body: oneCResultText(response) });
+    } catch (err) {
+      setOnecLookupResult({ title: "Клиенты в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleOneCItemSearch() {
+    if (authUser?.role !== "admin") return;
+    const pattern = oneCSearchPattern(onecLookupDraft.item);
+    if (!pattern) {
+      setOnecLookupResult({ title: "Поиск товара", error: "Введите артикул, код или часть наименования товара." });
+      return;
+    }
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("item");
+    try {
+      const response = await callOneCMcpTool({
+        name: "execute_query",
+        arguments: {
+          query: ONEC_ITEM_SEARCH_QUERY,
+          parameters: { Поиск: pattern },
+          limit: 10,
+        },
+      });
+      setOnecLookupResult({ title: "Товары в 1C", body: oneCResultText(response) });
+    } catch (err) {
+      setOnecLookupResult({ title: "Товары в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
+    }
+  }
+
+  async function handleOneCStockAndPrices() {
+    if (authUser?.role !== "admin") return;
+    const pattern = oneCSearchPattern(onecLookupDraft.item);
+    if (!pattern) {
+      setOnecLookupResult({
+        title: "Остатки и цены",
+        error: "Введите артикул, код или часть наименования товара.",
+      });
+      return;
+    }
+    setError("");
+    setOnecLookupResult(null);
+    setOnecLookupLoading("stock");
+    try {
+      const [stockResponse, priceResponse] = await Promise.all([
+        callOneCMcpTool({
+          name: "execute_query",
+          arguments: {
+            query: ONEC_STOCK_SEARCH_QUERY,
+            parameters: { Поиск: pattern },
+            limit: 20,
+          },
+        }),
+        callOneCMcpTool({
+          name: "execute_query",
+          arguments: {
+            query: ONEC_PRICE_SEARCH_QUERY,
+            parameters: { Поиск: pattern },
+            limit: 20,
+          },
+        }),
+      ]);
+      setOnecLookupResult({
+        title: "Остатки и цены в 1C",
+        body: `### Остатки\n\n${oneCResultText(stockResponse)}\n\n### Цены\n\n${oneCResultText(priceResponse)}`,
+      });
+    } catch (err) {
+      setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
+    } finally {
+      setOnecLookupLoading("");
     }
   }
 
@@ -1555,6 +1780,78 @@ export default function App() {
           {!canManageRequests && <div className="role-note">Ваша роль не позволяет создавать новые AI-обработки.</div>}
           {error && <div className="error-box">{error}</div>}
         </section>
+
+        {authUser?.role === "admin" ? (
+          <section className="input-area onec-tools-area">
+            <div className="section-title section-title-with-action">
+              <div>
+                <h2>1C</h2>
+                <p>Безопасные проверки через MCP: только чтение из 1С, без создания и проведения документов.</p>
+              </div>
+              <div className={`service-status service-status-${onecMcpHealthClass}`}>
+                <Database size={18} />
+                <div>
+                  <strong>Статус</strong>
+                  <span>{onecMcpLoading ? "проверяется" : onecMcpHealthText}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="onec-tools-grid">
+              <label>
+                <span>Клиент / БИН</span>
+                <input
+                  value={onecLookupDraft.client}
+                  onChange={(event) => updateOnecLookupDraft("client", event.target.value)}
+                  placeholder="ТОО KBI Energy или БИН"
+                />
+              </label>
+              <label>
+                <span>Товар / артикул / код</span>
+                <input
+                  value={onecLookupDraft.item}
+                  onChange={(event) => updateOnecLookupDraft("item", event.target.value)}
+                  placeholder="Например: 03-0101, кабель, ЦБ-00009583"
+                />
+              </label>
+            </div>
+
+            <div className="onec-button-row">
+              <button className="secondary-button" onClick={handleOneCCheck} disabled={Boolean(onecLookupLoading)}>
+                {onecLookupLoading === "health" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+                Проверить 1C
+              </button>
+              <button className="secondary-button" onClick={handleOneCClientSearch} disabled={Boolean(onecLookupLoading)}>
+                {onecLookupLoading === "client" ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
+                Найти клиента в 1С
+              </button>
+              <button className="secondary-button" onClick={handleOneCItemSearch} disabled={Boolean(onecLookupLoading)}>
+                {onecLookupLoading === "item" ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
+                Найти товар в 1С
+              </button>
+              <button className="secondary-button" onClick={handleOneCStockAndPrices} disabled={Boolean(onecLookupLoading)}>
+                {onecLookupLoading === "stock" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                Проверить остатки и цены
+              </button>
+            </div>
+
+            {onecLookupResult ? (
+              <div className={onecLookupResult.error ? "onec-result onec-result-error" : "onec-result"}>
+                <div className="onec-result-header">
+                  <strong>{onecLookupResult.title}</strong>
+                  <button className="icon-button" onClick={() => setOnecLookupResult(null)} title="Свернуть результат 1C">
+                    <ChevronUp size={16} />
+                  </button>
+                </div>
+                {onecLookupResult.error ? (
+                  <div className="error-box">{onecLookupResult.error}</div>
+                ) : (
+                  <pre>{onecLookupResult.body}</pre>
+                )}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="input-area email-area">
           <div className="section-title section-title-with-action">

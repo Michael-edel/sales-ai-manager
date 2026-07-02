@@ -568,6 +568,73 @@ button:disabled,
   color: #9b1c14;
 }
 
+.onec-tools-area {
+  display: grid;
+  gap: 14px;
+}
+
+.onec-tools-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.onec-tools-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.onec-tools-grid span {
+  color: #4f5b53;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.onec-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.onec-button-row .secondary-button {
+  justify-content: center;
+  min-width: 190px;
+}
+
+.onec-result {
+  border: 1px solid #d9dfd7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.onec-result-error {
+  border-color: #ffc1bd;
+}
+
+.onec-result-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.onec-result pre {
+  background: #f7f8f6;
+  border: 1px solid #e1e6df;
+  border-radius: 8px;
+  color: #17201a;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .empty-state {
   align-items: center;
   color: #6b756e;
@@ -1371,6 +1438,7 @@ pre {
   .request-card-main,
   .status-editor,
   .deal-documents-grid,
+  .onec-tools-grid,
   .task-create,
   .user-create-grid,
   .whatsapp-template-create,
