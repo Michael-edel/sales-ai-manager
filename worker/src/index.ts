@@ -162,6 +162,8 @@ const ONEC_CLIENT_SEARCH_QUERY = `
     Контрагенты.Наименование ПОДОБНО &Поиск
     ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &Поиск
     ИЛИ Контрагенты.ИНН ПОДОБНО &Поиск
+    ИЛИ Контрагенты.Наименование ПОДОБНО &ПоискОчищенный
+    ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &ПоискОчищенный
   )
 УПОРЯДОЧИТЬ ПО
   Контрагенты.Наименование
@@ -1293,10 +1295,10 @@ async function getOneCBusinessStatus(env: Env) {
 }
 
 async function searchOneCCounterparties(request: Request, env: Env) {
-  const { pattern, search } = await oneCSearchPayload(request, "Введите название клиента или БИН.");
+  const { search } = await oneCSearchPayload(request, "Введите название клиента или БИН.");
   const result = await executeOneCMcpTool(env, "execute_query", {
     query: ONEC_CLIENT_SEARCH_QUERY,
-    parameters: { Поиск: pattern },
+    parameters: oneCClientSearchParameters(search),
     limit: 10,
   });
   return {
@@ -1372,7 +1374,7 @@ async function buildOneCAnalysisContext(env: Env, metadata: Metadata, sourceText
     if (clientSearch) {
       const clientResult = await executeOneCMcpTool(env, "execute_query", {
         query: ONEC_CLIENT_SEARCH_QUERY,
-        parameters: { Поиск: oneCSearchPattern(clientSearch) },
+        parameters: oneCClientSearchParameters(clientSearch),
         limit: 10,
       });
       sections.push(`Клиент, поиск "${clientSearch}":\n${limitText(oneCMcpResultText(clientResult), 4000)}`);
@@ -4010,6 +4012,24 @@ async function oneCSearchPayload(request: Request, emptyMessage: string): Promis
 
 function oneCSearchPattern(value: string): string {
   return value.includes("%") ? value : `%${value}%`;
+}
+
+function oneCClientSearchParameters(search: string): Record<string, string> {
+  const normalized = normalizeOneCClientSearch(search);
+  return {
+    Поиск: oneCSearchPattern(search),
+    ПоискОчищенный: oneCSearchPattern(normalized || search),
+  };
+}
+
+function normalizeOneCClientSearch(value: string): string {
+  const legalFormPattern = "(?:ТОО|ИП|АО|ЗАО|ОАО|TOO|LLP|LLC)";
+  return normalizeOptionalText(value)
+    .replace(/[«»"]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(new RegExp(`^${legalFormPattern}\\s+`, "i"), "")
+    .replace(new RegExp(`\\s+${legalFormPattern}$`, "i"), "")
+    .trim();
 }
 
 function oneCMcpResultText(response: any): string {
