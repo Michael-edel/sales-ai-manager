@@ -241,6 +241,8 @@ const SYSTEM_PROMPT = `
 Вы — интеллектуальный ассистент менеджера по продажам ТОО Michael, Казахстан.
 Работайте только по данным заявки. Не выдумывайте товары, цены, остатки, сроки, единицы измерения, аналоги или скидки.
 Если данных нет, пишите «уточняется».
+Если в заявке есть блок «Автоматическая проверка 1С», используйте эти данные как приоритетные справочные данные.
+Если автоматическая проверка 1С не нашла цену, остаток, договор или товар, не придумывайте их.
 
 Обязательные настройки:
 - Все коммерческие предложения, счета и клиентские цены формируются от ТОО Michael.
@@ -1005,7 +1007,8 @@ async function processText(request: Request, env: Env) {
   const body = (payload.original_text || "").trim();
   if (!body) throw new Error("Текст заявки пустой.");
 
-  const originalText = buildContextPrefix(payload) + body;
+  let originalText = buildContextPrefix(payload) + body;
+  originalText = await appendOneCAnalysisContext(env, payload, originalText);
   const aiResult = await analyzeText(env, originalText);
   return insertRequest(env, {
     source_type: "text",
@@ -1042,12 +1045,15 @@ async function processUpload(request: Request, env: Env) {
     const filePayload = await fileToPayload(file);
     originalText = `${context}Загружено изображение для vision-анализа: ${fileName}`;
     if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
-    aiResult = await analyzeImage(env, filePayload, fileName, `${context}${managerNote}`.trim());
+    const oneCContext = await buildOneCAnalysisContext(env, metadata, `${context}\n${managerNote}\n${fileName}`);
+    originalText = appendTextBlock(originalText, oneCContext);
+    aiResult = await analyzeImage(env, filePayload, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
     sourceType = "image";
   } else if (isAudio(lowerName)) {
     const transcription = await transcribeAudio(env, file, managerNote);
     originalText = `${context}Голосовое сообщение: ${fileName}\n\nТранскрибация:\n${transcription}`;
     if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
+    originalText = await appendOneCAnalysisContext(env, metadata, originalText);
     aiResult = await analyzeText(env, originalText);
     sourceType = "audio";
   } else if (isDocument(lowerName)) {
@@ -1055,7 +1061,9 @@ async function processUpload(request: Request, env: Env) {
       const filePayload = await fileToPayload(file);
       originalText = `${context}PDF-файл обработан напрямую через Gemini: ${fileName}`;
       if (managerNote) originalText += `\n\nПояснение менеджера:\n${managerNote}`;
-      aiResult = await analyzePdfGemini(env, filePayload, fileName, `${context}${managerNote}`.trim());
+      const oneCContext = await buildOneCAnalysisContext(env, metadata, `${context}\n${managerNote}\n${fileName}`);
+      originalText = appendTextBlock(originalText, oneCContext);
+      aiResult = await analyzePdfGemini(env, filePayload, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
     } else {
       const parsed = await parseDocumentWithService(env, file);
       const parsedText = parsedDocumentText(parsed);
@@ -1067,6 +1075,7 @@ async function processUpload(request: Request, env: Env) {
 
       if (parsedText) {
         originalText += `\n\nИзвлеченный текст:\n${limitText(parsedText, 120000)}`;
+        originalText = await appendOneCAnalysisContext(env, metadata, originalText);
         aiResult = await analyzeText(env, originalText);
       } else {
         const imagePages = parsedImagePages(parsed);
@@ -1074,12 +1083,15 @@ async function processUpload(request: Request, env: Env) {
           throw new Error("Parser service не нашел текст и не вернул изображения страниц для vision-анализа.");
         }
         originalText += `\n\nДокумент похож на скан. Parser service вернул ${imagePages.length} страниц для vision-анализа.`;
-        aiResult = await analyzeDocumentImages(env, imagePages, fileName, `${context}${managerNote}`.trim());
+        const oneCContext = await buildOneCAnalysisContext(env, metadata, `${context}\n${managerNote}\n${fileName}`);
+        originalText = appendTextBlock(originalText, oneCContext);
+        aiResult = await analyzeDocumentImages(env, imagePages, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
       }
     }
   } else {
     const text = await file.text().catch(() => "");
     originalText = `${context}Файл: ${fileName}\n\n${managerNote ? `Пояснение менеджера:\n${managerNote}\n\n` : ""}${text || "Текст файла не извлечен. Поддерживаются изображения, голосовые файлы и документы PDF/DOCX/XLSX через parser-service."}`;
+    originalText = await appendOneCAnalysisContext(env, metadata, originalText);
     aiResult = await analyzeText(env, originalText);
   }
 
@@ -1334,6 +1346,74 @@ async function getOneCStockAndPrices(request: Request, env: Env) {
       prices: priceResult,
     },
   };
+}
+
+async function appendOneCAnalysisContext(env: Env, metadata: Metadata, originalText: string): Promise<string> {
+  const oneCContext = await buildOneCAnalysisContext(env, metadata, originalText);
+  return appendTextBlock(originalText, oneCContext);
+}
+
+async function buildOneCAnalysisContext(env: Env, metadata: Metadata, sourceText: string): Promise<string> {
+  try {
+    const health = await checkOneCMcpBridge(env);
+    const sections = [
+      "Автоматическая проверка 1С:",
+      "Используйте эти данные как справочные данные из 1С. Если данных нет, не придумывайте цену, остаток, договор или товар.",
+    ];
+
+    if (!health.reachable) {
+      sections.push(`Статус 1С: не проверено (${safeOneCErrorMessage(health.detail || health.status)}).`);
+      return sections.join("\n");
+    }
+
+    sections.push(`Статус 1С: bridge доступен, инструментов: ${Number(health.tools_count || 0)}.`);
+
+    const clientSearch = detectOneCClientSearch(metadata, sourceText);
+    if (clientSearch) {
+      const clientResult = await executeOneCMcpTool(env, "execute_query", {
+        query: ONEC_CLIENT_SEARCH_QUERY,
+        parameters: { Поиск: oneCSearchPattern(clientSearch) },
+        limit: 10,
+      });
+      sections.push(`Клиент, поиск "${clientSearch}":\n${limitText(oneCMcpResultText(clientResult), 4000)}`);
+    } else {
+      sections.push("Клиент: поисковый признак не определен.");
+    }
+
+    const productSearch = detectOneCProductSearch(sourceText);
+    if (productSearch) {
+      const [productResult, stockResult, priceResult] = await Promise.all([
+        executeOneCMcpTool(env, "execute_query", {
+          query: ONEC_ITEM_SEARCH_QUERY,
+          parameters: { Поиск: oneCSearchPattern(productSearch) },
+          limit: 10,
+        }),
+        executeOneCMcpTool(env, "execute_query", {
+          query: ONEC_STOCK_SEARCH_QUERY,
+          parameters: { Поиск: oneCSearchPattern(productSearch) },
+          limit: 20,
+        }),
+        executeOneCMcpTool(env, "execute_query", {
+          query: ONEC_PRICE_SEARCH_QUERY,
+          parameters: { Поиск: oneCSearchPattern(productSearch) },
+          limit: 20,
+        }),
+      ]);
+      sections.push(`Товар, поиск "${productSearch}":\n${limitText(oneCMcpResultText(productResult), 4000)}`);
+      sections.push(`Остатки по "${productSearch}":\n${limitText(oneCMcpResultText(stockResult), 4000)}`);
+      sections.push(`Цены по "${productSearch}":\n${limitText(oneCMcpResultText(priceResult), 4000)}`);
+    } else {
+      sections.push("Товар: код, артикул или достаточно точное наименование для поиска автоматически не определены.");
+    }
+
+    return sections.join("\n\n");
+  } catch (error) {
+    return [
+      "Автоматическая проверка 1С:",
+      `1С не проверена: ${safeOneCErrorMessage(error)}.`,
+      "Не придумывайте цену, остаток, договор или товар, если их нет в заявке или документах.",
+    ].join("\n");
+  }
 }
 
 async function checkEmailBridge(env: Env) {
@@ -2369,7 +2449,8 @@ async function processEmailMessage(env: Env, emailId: number) {
     priority: clientCompany ? "high" : "normal",
     next_action: "Подготовить ответ клиенту",
   };
-  const originalText = `${buildContextPrefix(metadata)}${emailText}`;
+  let originalText = `${buildContextPrefix(metadata)}${emailText}`;
+  originalText = await appendOneCAnalysisContext(env, metadata, originalText);
   const aiResult = await analyzeText(env, originalText);
 
   const item = await insertRequest(env, {
@@ -3756,6 +3837,14 @@ function buildContextPrefix(metadata: Metadata): string {
   return parts.length ? `Контекст заявки:\n${parts.join("\n")}\n\n` : "";
 }
 
+function appendTextBlock(baseText: string, blockText: string): string {
+  const base = normalizeOptionalText(baseText);
+  const block = normalizeOptionalText(blockText);
+  if (!block) return base;
+  if (!base) return block;
+  return `${base}\n\n${block}`;
+}
+
 function normalizeOptionalText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -3915,8 +4004,12 @@ async function oneCSearchPayload(request: Request, emptyMessage: string): Promis
   if (!search) throw new UserInputError(emptyMessage);
   return {
     search,
-    pattern: search.includes("%") ? search : `%${search}%`,
+    pattern: oneCSearchPattern(search),
   };
+}
+
+function oneCSearchPattern(value: string): string {
+  return value.includes("%") ? value : `%${value}%`;
 }
 
 function oneCMcpResultText(response: any): string {
@@ -3930,6 +4023,60 @@ function oneCMcpResultText(response: any): string {
     if (text) return text;
   }
   return JSON.stringify(response, null, 2);
+}
+
+function detectOneCClientSearch(metadata: Metadata, sourceText: string): string {
+  const company = normalizeOptionalText(metadata.client_company);
+  if (company) return company;
+  const bin = sourceText.match(/\b(?:БИН|ИИН|бин|иин)\s*[:№#-]?\s*(\d{12})\b/);
+  if (bin) return bin[1];
+  if (detectKbiEnergy(sourceText)) return "KBI Energy";
+  return "";
+}
+
+function detectOneCProductSearch(sourceText: string): string {
+  const text = normalizeOptionalText(sourceText);
+  if (!text) return "";
+
+  const labeledMatch = text.match(/(?:артикул|арт\.?|код|sku)\s*[:№#-]?\s*([A-Za-zА-Яа-я0-9._/-]{3,40})/i);
+  const labeledValue = sanitizeOneCSearchTerm(labeledMatch?.[1] || "");
+  if (labeledValue) return labeledValue;
+
+  const codePatterns = [
+    /\b[А-ЯA-Z]{1,4}-\d{5,}\b/giu,
+    /\b\d{2}-\d{4,}\b/g,
+  ];
+  for (const pattern of codePatterns) {
+    const match = text.match(pattern);
+    const value = sanitizeOneCSearchTerm(match?.[0] || "");
+    if (value) return value;
+  }
+
+  const productLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /(?:товар|номенклатура|наименование|нужен|нужно|просит|запрашивает)/i.test(line) && line.length >= 10);
+  if (!productLine) return "";
+
+  const cleanedLine = productLine
+    .replace(/^.*?(?:товар|номенклатура|наименование|нужен|нужно|просит|запрашивает)\s*[:№#-]?\s*/i, "")
+    .split(/[.;]/)[0]
+    .trim();
+  return sanitizeOneCSearchTerm(cleanedLine).slice(0, 80);
+}
+
+function sanitizeOneCSearchTerm(value: string): string {
+  return normalizeOptionalText(value)
+    .replace(/^[:"'«»()[\]{}.,;]+|[:"'«»()[\]{}.,;]+$/g, "")
+    .trim();
+}
+
+function safeOneCErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : normalizeOptionalText(error);
+  if (!message) return "проверка не выполнена";
+  if (message.includes("ONEC_MCP_BRIDGE_URL")) return "bridge 1С не настроен";
+  if (message.includes("fetch failed") || message.includes("network") || message.includes("недоступен")) return "bridge 1С недоступен";
+  return limitText(message, 220);
 }
 
 function oneCMcpAllowedTools(env: Env): string[] {
