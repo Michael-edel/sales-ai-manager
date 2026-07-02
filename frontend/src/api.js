@@ -93,6 +93,34 @@ export function callOneCMcpTool(payload) {
   });
 }
 
+export function getOneCBusinessStatus() {
+  return request("/1c/status");
+}
+
+export function searchOneCCounterparties(query) {
+  return request("/1c/counterparties/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+}
+
+export function searchOneCProducts(query) {
+  return request("/1c/products/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+}
+
+export function getOneCStockAndPrices(query) {
+  return request("/1c/products/stock-prices", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+}
+
 export function listAiRules() {
   return request("/ai/rules");
 }

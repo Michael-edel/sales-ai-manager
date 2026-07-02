@@ -147,6 +147,83 @@ const DEFAULT_ONEC_MCP_ALLOWED_TOOLS = [
   "get_event_log",
 ];
 
+const ONEC_CLIENT_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Контрагенты.Ссылка КАК Контрагент,
+  Контрагенты.Наименование КАК Наименование,
+  Контрагенты.НаименованиеПолное КАК НаименованиеПолное,
+  Контрагенты.ИНН КАК БИН,
+  Контрагенты.Партнер КАК Партнер
+ИЗ
+  Справочник.Контрагенты КАК Контрагенты
+ГДЕ
+  НЕ Контрагенты.ПометкаУдаления
+  И (
+    Контрагенты.Наименование ПОДОБНО &Поиск
+    ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Контрагенты.ИНН ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Контрагенты.Наименование
+`;
+
+const ONEC_ITEM_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Номенклатура.Код КАК Код,
+  Номенклатура.Артикул КАК Артикул,
+  Номенклатура.Наименование КАК Наименование,
+  Номенклатура.НаименованиеПолное КАК НаименованиеПолное,
+  Номенклатура.ЕдиницаИзмерения КАК ЕдИзм,
+  Номенклатура.СтавкаНДС КАК СтавкаНДС
+ИЗ
+  Справочник.Номенклатура КАК Номенклатура
+ГДЕ
+  НЕ Номенклатура.ПометкаУдаления
+  И (
+    Номенклатура.Наименование ПОДОБНО &Поиск
+    ИЛИ Номенклатура.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Номенклатура.Артикул ПОДОБНО &Поиск
+    ИЛИ Номенклатура.Код ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Номенклатура.Наименование
+`;
+
+const ONEC_STOCK_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Остатки.Номенклатура КАК Номенклатура,
+  Остатки.Склад КАК Склад,
+  Остатки.ВНаличииОстаток КАК ВНаличии,
+  Остатки.ВРезервеСоСкладаОстаток КАК ВРезервеСоСклада,
+  Остатки.ВРезервеПодЗаказОстаток КАК ВРезервеПодЗаказ
+ИЗ
+  РегистрНакопления.СвободныеОстатки.Остатки() КАК Остатки
+ГДЕ
+  Остатки.Номенклатура.Наименование ПОДОБНО &Поиск
+  ИЛИ Остатки.Номенклатура.Артикул ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Остатки.Номенклатура,
+  Остатки.Склад
+`;
+
+const ONEC_PRICE_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Цены.Номенклатура КАК Номенклатура,
+  Цены.Характеристика КАК Характеристика,
+  Цены.ВидЦены КАК ВидЦены,
+  Цены.Цена КАК Цена,
+  Цены.Упаковка КАК Упаковка,
+  Цены.Валюта КАК Валюта
+ИЗ
+  РегистрСведений.ЦеныНоменклатуры.СрезПоследних() КАК Цены
+ГДЕ
+  Цены.Номенклатура.Наименование ПОДОБНО &Поиск
+  ИЛИ Цены.Номенклатура.Артикул ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Цены.Номенклатура,
+  Цены.ВидЦены
+`;
+
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -322,6 +399,22 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/1c/mcp/tools/call") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await callOneCMcpTool(request, env));
+      }
+      if (request.method === "GET" && url.pathname === "/api/1c/status") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await getOneCBusinessStatus(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/1c/counterparties/search") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await searchOneCCounterparties(request, env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/1c/products/search") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await searchOneCProducts(request, env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/1c/products/stock-prices") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await getOneCStockAndPrices(request, env));
       }
       if (request.method === "GET" && url.pathname === "/api/ai/rules") {
         return json(await listAiRules(env));
@@ -1149,25 +1242,98 @@ async function listOneCMcpTools(env: Env) {
   return data || { tools: [], allowed_tools: oneCMcpAllowedTools(env) };
 }
 
-async function callOneCMcpTool(request: Request, env: Env) {
-  const payload = (await request.json()) as { name?: unknown; tool_name?: unknown; arguments?: unknown };
-  const toolName = normalizeMcpToolName(payload.name || payload.tool_name);
-  if (!toolName) throw new UserInputError("Укажите MCP-инструмент 1С.");
-  if (!oneCMcpAllowedTools(env).includes(toolName)) throw new UserInputError("Этот MCP-инструмент 1С не разрешен.");
-
-  const toolArguments = payload.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)
-    ? payload.arguments as Record<string, unknown>
-    : {};
+async function executeOneCMcpTool(env: Env, toolName: string, toolArguments: Record<string, unknown>) {
+  const normalizedToolName = normalizeMcpToolName(toolName);
+  if (!normalizedToolName) throw new UserInputError("Укажите MCP-инструмент 1С.");
+  if (!oneCMcpAllowedTools(env).includes(normalizedToolName)) throw new UserInputError("Этот MCP-инструмент 1С не разрешен.");
 
   const baseUrl = oneCMcpBridgeBaseUrl(env);
   const response = await fetch(`${baseUrl}/tools/call`, {
     method: "POST",
     headers: oneCMcpBridgeHeaders(env, true),
-    body: JSON.stringify({ name: toolName, arguments: toolArguments }),
+    body: JSON.stringify({ name: normalizedToolName, arguments: toolArguments }),
   });
   const { raw, data } = await readJsonResponse(response);
   if (!response.ok) throw new Error(data?.detail || raw || "Не удалось выполнить MCP-инструмент 1С.");
   return data;
+}
+
+async function callOneCMcpTool(request: Request, env: Env) {
+  const payload = (await request.json()) as { name?: unknown; tool_name?: unknown; arguments?: unknown };
+  const toolName = normalizeMcpToolName(payload.name || payload.tool_name);
+  const toolArguments = payload.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)
+    ? payload.arguments as Record<string, unknown>
+    : {};
+  return executeOneCMcpTool(env, toolName, toolArguments);
+}
+
+async function getOneCBusinessStatus(env: Env) {
+  const health = await checkOneCMcpBridge(env);
+  let configurationText = "";
+  if (health.reachable) {
+    const configuration = await executeOneCMcpTool(env, "get_configuration_info", {});
+    configurationText = oneCMcpResultText(configuration);
+  }
+  return {
+    health,
+    configuration_text: configurationText,
+  };
+}
+
+async function searchOneCCounterparties(request: Request, env: Env) {
+  const { pattern, search } = await oneCSearchPayload(request, "Введите название клиента или БИН.");
+  const result = await executeOneCMcpTool(env, "execute_query", {
+    query: ONEC_CLIENT_SEARCH_QUERY,
+    parameters: { Поиск: pattern },
+    limit: 10,
+  });
+  return {
+    tool: "find_counterparty",
+    search,
+    result_text: oneCMcpResultText(result),
+    raw: result,
+  };
+}
+
+async function searchOneCProducts(request: Request, env: Env) {
+  const { pattern, search } = await oneCSearchPayload(request, "Введите артикул, код или часть наименования товара.");
+  const result = await executeOneCMcpTool(env, "execute_query", {
+    query: ONEC_ITEM_SEARCH_QUERY,
+    parameters: { Поиск: pattern },
+    limit: 10,
+  });
+  return {
+    tool: "find_product",
+    search,
+    result_text: oneCMcpResultText(result),
+    raw: result,
+  };
+}
+
+async function getOneCStockAndPrices(request: Request, env: Env) {
+  const { pattern, search } = await oneCSearchPayload(request, "Введите артикул, код или часть наименования товара.");
+  const [stockResult, priceResult] = await Promise.all([
+    executeOneCMcpTool(env, "execute_query", {
+      query: ONEC_STOCK_SEARCH_QUERY,
+      parameters: { Поиск: pattern },
+      limit: 20,
+    }),
+    executeOneCMcpTool(env, "execute_query", {
+      query: ONEC_PRICE_SEARCH_QUERY,
+      parameters: { Поиск: pattern },
+      limit: 20,
+    }),
+  ]);
+  return {
+    tool: "get_stock_and_prices",
+    search,
+    stock_result_text: oneCMcpResultText(stockResult),
+    price_result_text: oneCMcpResultText(priceResult),
+    raw: {
+      stock: stockResult,
+      prices: priceResult,
+    },
+  };
 }
 
 async function checkEmailBridge(env: Env) {
@@ -3741,6 +3907,29 @@ function normalizeWhatsAppBodyParameters(value: unknown): string[] {
 
 function normalizeMcpToolName(value: unknown): string {
   return normalizeOptionalText(value).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 128);
+}
+
+async function oneCSearchPayload(request: Request, emptyMessage: string): Promise<{ search: string; pattern: string }> {
+  const payload = await request.json().catch(() => ({})) as { query?: unknown; search?: unknown };
+  const search = normalizeOptionalText(payload.query || payload.search).slice(0, 160);
+  if (!search) throw new UserInputError(emptyMessage);
+  return {
+    search,
+    pattern: search.includes("%") ? search : `%${search}%`,
+  };
+}
+
+function oneCMcpResultText(response: any): string {
+  const content = response?.result?.content || response?.content || [];
+  if (Array.isArray(content) && content.length > 0) {
+    const text = content
+      .map((item: any) => normalizeOptionalText(item?.text || item?.content))
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+    if (text) return text;
+  }
+  return JSON.stringify(response, null, 2);
 }
 
 function oneCMcpAllowedTools(env: Env): string[] {

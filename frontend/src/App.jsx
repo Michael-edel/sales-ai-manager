@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
-  callOneCMcpTool,
   checkEmail,
   createEmailSenderFilter,
   createWhatsAppTemplate,
@@ -15,7 +14,9 @@ import {
   getCrmSummary,
   getCurrentUser,
   getEmailSmtpHealth,
+  getOneCBusinessStatus,
   getOneCMcpHealth,
+  getOneCStockAndPrices,
   getParserHealth,
   getWhatsAppHealth,
   listAiRules,
@@ -31,6 +32,8 @@ import {
   processEmailMessage,
   processText,
   resetUserPassword,
+  searchOneCCounterparties,
+  searchOneCProducts,
   sendEmailReply,
   sendWhatsAppTemplate,
   updateDealDocuments,
@@ -163,84 +166,9 @@ const WHATSAPP_TEMPLATE_CATEGORY_OPTIONS = [
   ["AUTHENTICATION", "Authentication"],
 ];
 
-const ONEC_CLIENT_SEARCH_QUERY = `
-ВЫБРАТЬ ПЕРВЫЕ 10
-  Контрагенты.Ссылка КАК Контрагент,
-  Контрагенты.Наименование КАК Наименование,
-  Контрагенты.НаименованиеПолное КАК НаименованиеПолное,
-  Контрагенты.ИНН КАК БИН,
-  Контрагенты.Партнер КАК Партнер
-ИЗ
-  Справочник.Контрагенты КАК Контрагенты
-ГДЕ
-  НЕ Контрагенты.ПометкаУдаления
-  И (
-    Контрагенты.Наименование ПОДОБНО &Поиск
-    ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &Поиск
-    ИЛИ Контрагенты.ИНН ПОДОБНО &Поиск
-  )
-УПОРЯДОЧИТЬ ПО
-  Контрагенты.Наименование
-`;
-
-const ONEC_ITEM_SEARCH_QUERY = `
-ВЫБРАТЬ ПЕРВЫЕ 10
-  Номенклатура.Код КАК Код,
-  Номенклатура.Артикул КАК Артикул,
-  Номенклатура.Наименование КАК Наименование,
-  Номенклатура.НаименованиеПолное КАК НаименованиеПолное,
-  Номенклатура.ЕдиницаИзмерения КАК ЕдИзм,
-  Номенклатура.СтавкаНДС КАК СтавкаНДС
-ИЗ
-  Справочник.Номенклатура КАК Номенклатура
-ГДЕ
-  НЕ Номенклатура.ПометкаУдаления
-  И (
-    Номенклатура.Наименование ПОДОБНО &Поиск
-    ИЛИ Номенклатура.НаименованиеПолное ПОДОБНО &Поиск
-    ИЛИ Номенклатура.Артикул ПОДОБНО &Поиск
-    ИЛИ Номенклатура.Код ПОДОБНО &Поиск
-  )
-УПОРЯДОЧИТЬ ПО
-  Номенклатура.Наименование
-`;
-
-const ONEC_STOCK_SEARCH_QUERY = `
-ВЫБРАТЬ ПЕРВЫЕ 20
-  Остатки.Номенклатура КАК Номенклатура,
-  Остатки.Склад КАК Склад,
-  Остатки.ВНаличииОстаток КАК ВНаличии,
-  Остатки.ВРезервеСоСкладаОстаток КАК ВРезервеСоСклада,
-  Остатки.ВРезервеПодЗаказОстаток КАК ВРезервеПодЗаказ
-ИЗ
-  РегистрНакопления.СвободныеОстатки.Остатки() КАК Остатки
-ГДЕ
-  Остатки.Номенклатура.Наименование ПОДОБНО &Поиск
-  ИЛИ Остатки.Номенклатура.Артикул ПОДОБНО &Поиск
-УПОРЯДОЧИТЬ ПО
-  Остатки.Номенклатура,
-  Остатки.Склад
-`;
-
-const ONEC_PRICE_SEARCH_QUERY = `
-ВЫБРАТЬ ПЕРВЫЕ 20
-  Цены.Номенклатура КАК Номенклатура,
-  Цены.Характеристика КАК Характеристика,
-  Цены.ВидЦены КАК ВидЦены,
-  Цены.Цена КАК Цена,
-  Цены.Упаковка КАК Упаковка,
-  Цены.Валюта КАК Валюта
-ИЗ
-  РегистрСведений.ЦеныНоменклатуры.СрезПоследних() КАК Цены
-ГДЕ
-  Цены.Номенклатура.Наименование ПОДОБНО &Поиск
-  ИЛИ Цены.Номенклатура.Артикул ПОДОБНО &Поиск
-УПОРЯДОЧИТЬ ПО
-  Цены.Номенклатура,
-  Цены.ВидЦены
-`;
-
 function oneCResultText(response) {
+  if (response?.result_text) return response.result_text;
+  if (response?.configuration_text) return response.configuration_text;
   const content = response?.result?.content || response?.content || [];
   if (Array.isArray(content) && content.length > 0) {
     return content
@@ -249,12 +177,6 @@ function oneCResultText(response) {
       .join("\n\n");
   }
   return JSON.stringify(response, null, 2);
-}
-
-function oneCSearchPattern(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-  return text.includes("%") ? text : `%${text}%`;
 }
 
 export default function App() {
@@ -444,15 +366,12 @@ export default function App() {
     setOnecLookupResult(null);
     setOnecLookupLoading("health");
     try {
-      const status = await getOneCMcpHealth();
+      const response = await getOneCBusinessStatus();
+      const status = response.health || {};
       setOnecMcpStatus(status);
-      let body = status.reachable
-        ? `1C MCP подключен. Доступных инструментов: ${status.tools_count || 0}.`
+      const body = status.reachable
+        ? `1C MCP подключен. Доступных инструментов: ${status.tools_count || 0}.\n\n${response.configuration_text || ""}`.trim()
         : `1C MCP не подключен: ${status.detail || status.status || "статус неизвестен"}.`;
-      if (status.reachable) {
-        const info = await callOneCMcpTool({ name: "get_configuration_info", arguments: {} });
-        body = `${body}\n\n${oneCResultText(info)}`;
-      }
       setOnecLookupResult({ title: "Статус 1C", body });
     } catch (err) {
       setOnecLookupResult({ title: "Статус 1C", error: err.message });
@@ -463,8 +382,8 @@ export default function App() {
 
   async function handleOneCClientSearch() {
     if (authUser?.role !== "admin") return;
-    const pattern = oneCSearchPattern(onecLookupDraft.client || metadata.client_company);
-    if (!pattern) {
+    const search = String(onecLookupDraft.client || metadata.client_company || "").trim();
+    if (!search) {
       setOnecLookupResult({ title: "Поиск клиента", error: "Введите название клиента или БИН." });
       return;
     }
@@ -472,14 +391,7 @@ export default function App() {
     setOnecLookupResult(null);
     setOnecLookupLoading("client");
     try {
-      const response = await callOneCMcpTool({
-        name: "execute_query",
-        arguments: {
-          query: ONEC_CLIENT_SEARCH_QUERY,
-          parameters: { Поиск: pattern },
-          limit: 10,
-        },
-      });
+      const response = await searchOneCCounterparties(search);
       setOnecLookupResult({ title: "Клиенты в 1C", body: oneCResultText(response) });
     } catch (err) {
       setOnecLookupResult({ title: "Клиенты в 1C", error: err.message });
@@ -490,8 +402,8 @@ export default function App() {
 
   async function handleOneCItemSearch() {
     if (authUser?.role !== "admin") return;
-    const pattern = oneCSearchPattern(onecLookupDraft.item);
-    if (!pattern) {
+    const search = String(onecLookupDraft.item || "").trim();
+    if (!search) {
       setOnecLookupResult({ title: "Поиск товара", error: "Введите артикул, код или часть наименования товара." });
       return;
     }
@@ -499,14 +411,7 @@ export default function App() {
     setOnecLookupResult(null);
     setOnecLookupLoading("item");
     try {
-      const response = await callOneCMcpTool({
-        name: "execute_query",
-        arguments: {
-          query: ONEC_ITEM_SEARCH_QUERY,
-          parameters: { Поиск: pattern },
-          limit: 10,
-        },
-      });
+      const response = await searchOneCProducts(search);
       setOnecLookupResult({ title: "Товары в 1C", body: oneCResultText(response) });
     } catch (err) {
       setOnecLookupResult({ title: "Товары в 1C", error: err.message });
@@ -517,8 +422,8 @@ export default function App() {
 
   async function handleOneCStockAndPrices() {
     if (authUser?.role !== "admin") return;
-    const pattern = oneCSearchPattern(onecLookupDraft.item);
-    if (!pattern) {
+    const search = String(onecLookupDraft.item || "").trim();
+    if (!search) {
       setOnecLookupResult({
         title: "Остатки и цены",
         error: "Введите артикул, код или часть наименования товара.",
@@ -529,27 +434,10 @@ export default function App() {
     setOnecLookupResult(null);
     setOnecLookupLoading("stock");
     try {
-      const [stockResponse, priceResponse] = await Promise.all([
-        callOneCMcpTool({
-          name: "execute_query",
-          arguments: {
-            query: ONEC_STOCK_SEARCH_QUERY,
-            parameters: { Поиск: pattern },
-            limit: 20,
-          },
-        }),
-        callOneCMcpTool({
-          name: "execute_query",
-          arguments: {
-            query: ONEC_PRICE_SEARCH_QUERY,
-            parameters: { Поиск: pattern },
-            limit: 20,
-          },
-        }),
-      ]);
+      const response = await getOneCStockAndPrices(search);
       setOnecLookupResult({
         title: "Остатки и цены в 1C",
-        body: `### Остатки\n\n${oneCResultText(stockResponse)}\n\n### Цены\n\n${oneCResultText(priceResponse)}`,
+        body: `### Остатки\n\n${response.stock_result_text || "нет данных"}\n\n### Цены\n\n${response.price_result_text || "нет данных"}`,
       });
     } catch (err) {
       setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
