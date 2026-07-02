@@ -21,6 +21,7 @@ import {
   getOneCClientInvoices,
   getOneCClientOrders,
   getOneCClientPaymentTerms,
+  getOneCClientProfile,
   getOneCMcpHealth,
   getOneCStockAndPrices,
   getRequestOneCProductStockPrices,
@@ -807,6 +808,10 @@ export default function App() {
     }
 
     const actions = {
+      profile: {
+        loading: "client-profile",
+        request: getOneCClientProfile,
+      },
       contracts: {
         loading: "client-contracts",
         request: getOneCClientContracts,
@@ -2176,6 +2181,14 @@ export default function App() {
                 </span>
               </div>
               <div className="onec-button-row">
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("profile")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-profile" ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
+                  Открыть карточку клиента
+                </button>
                 <button
                   className="secondary-button"
                   onClick={() => handleOneCClientData("contracts")}

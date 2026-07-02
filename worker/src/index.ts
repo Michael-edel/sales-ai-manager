@@ -800,7 +800,7 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await runOneCCommand(request, env, currentUser));
       }
-      const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(contracts|orders|invoices|debt|terms|addresses)$/);
+      const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(profile|contracts|orders|invoices|debt|terms|addresses)$/);
       if (request.method === "GET" && oneCClientActionMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
@@ -1872,6 +1872,7 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
 
   const result = await executeFirstSuccessfulOneCQuery(env, descriptor.queries, {
     Поиск: oneCSearchPattern(search),
+    ПоискОчищенный: oneCSearchPattern(normalizeOneCClientSearch(search) || search),
     БИН: client.onec_counterparty_bin || "",
   });
 
@@ -2138,6 +2139,11 @@ function oneCClientActionDescriptor(action: string) {
       title: "Договоры клиента в 1С",
       queries: ONEC_CLIENT_CONTRACT_QUERIES,
     },
+    profile: {
+      tool: "get_client_profile",
+      title: "Карточка клиента в 1С",
+      queries: [{ key: "counterparty_profile", query: ONEC_CLIENT_SEARCH_QUERY }],
+    },
     orders: {
       tool: "get_client_orders",
       title: "Последние заказы клиента в 1С",
@@ -2170,6 +2176,7 @@ function oneCClientActionDescriptor(action: string) {
 }
 
 function oneCCommandClientAction(normalizedCommand: string): string {
+  if (/(карточк|профил|контрагент|клиент)/.test(normalizedCommand) && /(открой|покажи|профил|карточк)/.test(normalizedCommand)) return "profile";
   if (/(договор|контракт)/.test(normalizedCommand)) return "contracts";
   if (/(заказ|последн.*заказ|order)/.test(normalizedCommand)) return "orders";
   if (/(счет|счета|invoice|оплат[ауые])/.test(normalizedCommand) && !/(услов|срок|порядок)/.test(normalizedCommand)) return "invoices";

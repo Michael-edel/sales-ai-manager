@@ -175,6 +175,10 @@ export function getOneCClientContracts(clientId) {
   return request(`/1c/clients/${clientId}/contracts`);
 }
 
+export function getOneCClientProfile(clientId) {
+  return request(`/1c/clients/${clientId}/profile`);
+}
+
 export function getOneCClientOrders(clientId) {
   return request(`/1c/clients/${clientId}/orders`);
 }
