@@ -16,9 +16,11 @@ import {
   getEmailSmtpHealth,
   getOneCBusinessStatus,
   getOneCClientContracts,
+  getOneCClientAddresses,
   getOneCClientDebt,
   getOneCClientInvoices,
   getOneCClientOrders,
+  getOneCClientPaymentTerms,
   getOneCMcpHealth,
   getOneCStockAndPrices,
   getRequestOneCProductStockPrices,
@@ -776,6 +778,14 @@ export default function App() {
       debt: {
         loading: "client-debt",
         request: getOneCClientDebt,
+      },
+      terms: {
+        loading: "client-terms",
+        request: getOneCClientPaymentTerms,
+      },
+      addresses: {
+        loading: "client-addresses",
+        request: getOneCClientAddresses,
       },
     };
     const action = actions[kind];
@@ -2135,6 +2145,22 @@ export default function App() {
                 >
                   {onecLookupLoading === "client-debt" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
                   Задолженность
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("terms")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-terms" ? <Loader2 className="spin" size={18} /> : <Clipboard size={18} />}
+                  Условия оплаты
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("addresses")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-addresses" ? <Loader2 className="spin" size={18} /> : <FolderOpen size={18} />}
+                  Адреса/доставка
                 </button>
                 <button
                   className="secondary-button"

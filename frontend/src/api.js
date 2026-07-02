@@ -179,6 +179,14 @@ export function getOneCClientDebt(clientId) {
   return request(`/1c/clients/${clientId}/debt`);
 }
 
+export function getOneCClientPaymentTerms(clientId) {
+  return request(`/1c/clients/${clientId}/terms`);
+}
+
+export function getOneCClientAddresses(clientId) {
+  return request(`/1c/clients/${clientId}/addresses`);
+}
+
 export function listAiRules() {
   return request("/ai/rules");
 }
