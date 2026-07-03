@@ -19,6 +19,7 @@ import {
   getOneCClientAddresses,
   getOneCClientDebt,
   getOneCClientInvoices,
+  getOneCClientInteractions,
   getOneCClientOrders,
   getOneCClientPaymentTerms,
   getOneCClientProfile,
@@ -195,15 +196,44 @@ function oneCResultText(response) {
 }
 
 function oneCCounterpartyTitle(item, index) {
-  return item?.name || item?.full_name || item?.counterparty_ref || `Вариант ${index + 1}`;
+  return item?.name || item?.full_name || item?.partner_name || item?.partner_full_name || item?.counterparty_ref || item?.partner_ref || `Вариант ${index + 1}`;
 }
 
 function oneCCounterpartyMeta(item) {
   return [
     item?.bin ? `БИН/ИНН: ${item.bin}` : "",
+    item?.partner_bin ? `БИН партнера: ${item.partner_bin}` : "",
     item?.partner ? `Партнер: ${item.partner}` : "",
+    item?.partner_ref ? `Партнер 1С: ${item.partner_ref}` : "",
     item?.counterparty_ref ? `1С: ${item.counterparty_ref}` : "",
   ].filter(Boolean).join(" · ");
+}
+
+function requestOneCClientLinked(item) {
+  return Boolean(
+    item?.onec_partner_ref ||
+      item?.onec_counterparty_ref ||
+      item?.onec_partner_name ||
+      item?.onec_counterparty_name,
+  );
+}
+
+function requestOneCClientTitle(item) {
+  return item?.onec_partner_name ||
+    item?.onec_partner_full_name ||
+    item?.onec_counterparty_name ||
+    item?.onec_counterparty_full_name ||
+    item?.client_company ||
+    "клиент";
+}
+
+function requestOneCClientMeta(item) {
+  const bin = item?.onec_partner_bin || item?.onec_counterparty_bin;
+  return `${requestOneCClientTitle(item)}${bin ? ` · БИН/ИНН ${bin}` : ""}`;
+}
+
+function requestOneCClientRef(item) {
+  return item?.onec_partner_ref || item?.onec_counterparty_ref || "";
 }
 
 function oneCProductTitle(item, index) {
@@ -824,6 +854,10 @@ export default function App() {
         loading: "client-invoices",
         request: getOneCClientInvoices,
       },
+      interactions: {
+        loading: "client-interactions",
+        request: getOneCClientInteractions,
+      },
       debt: {
         loading: "client-debt",
         request: getOneCClientDebt,
@@ -848,8 +882,10 @@ export default function App() {
       setOnecLookupResult({
         title: response.title || "1С по клиенту",
         body: [
-          `Клиент: ${response.onec_counterparty_name || response.client_name || "не указан"}`,
-          response.onec_counterparty_bin ? `БИН/ИНН: ${response.onec_counterparty_bin}` : "",
+          `Клиент: ${response.onec_partner_name || response.onec_counterparty_name || response.client_name || "не указан"}`,
+          response.onec_partner_bin || response.onec_counterparty_bin ? `БИН/ИНН: ${response.onec_partner_bin || response.onec_counterparty_bin}` : "",
+          response.onec_partner_ref ? `Партнер 1С: ${response.onec_partner_ref}` : "",
+          response.onec_counterparty_ref ? `Контрагент 1С: ${response.onec_counterparty_ref}` : "",
           response.query_key ? `Запрос: ${response.query_key}` : "",
           "",
           response.result_text || "Нет данных",
@@ -2174,8 +2210,8 @@ export default function App() {
                 <strong>1С по выбранной заявке</strong>
                 <span>
                   {selected?.client_id
-                    ? selected.onec_counterparty_ref
-                      ? `Привязан: ${selected.onec_counterparty_name || selected.onec_counterparty_full_name || selected.client_company || "клиент"}`
+                    ? requestOneCClientLinked(selected)
+                      ? `Привязан: ${requestOneCClientTitle(selected)}`
                       : `Поиск по CRM-клиенту: ${selected.client_company || "без названия"}`
                     : "Выберите заявку в истории, чтобы проверить данные клиента."}
                 </span>
@@ -2211,7 +2247,15 @@ export default function App() {
                   disabled={Boolean(onecLookupLoading) || !selected?.client_id}
                 >
                   {onecLookupLoading === "client-invoices" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
-                  Счета клиента
+                  Заказы/счета
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => handleOneCClientData("interactions")}
+                  disabled={Boolean(onecLookupLoading) || !selected?.client_id}
+                >
+                  {onecLookupLoading === "client-interactions" ? <Loader2 className="spin" size={18} /> : <MessageCircle size={18} />}
+                  Взаимодействия
                 </button>
                 <button
                   className="secondary-button"
@@ -2936,16 +2980,16 @@ export default function App() {
                 </div>
               ) : null}
 
-              <div className={selected.onec_counterparty_ref ? "onec-linked-card" : "onec-linked-card onec-linked-card-empty"}>
+              <div className={requestOneCClientLinked(selected) ? "onec-linked-card" : "onec-linked-card onec-linked-card-empty"}>
                 <Database size={18} />
                 <div>
-                  <strong>{selected.onec_counterparty_ref ? "Клиент привязан к 1С" : "Клиент 1С не выбран"}</strong>
+                  <strong>{requestOneCClientLinked(selected) ? "Клиент привязан к 1С" : "Клиент 1С не выбран"}</strong>
                   <span>
-                    {selected.onec_counterparty_ref
-                      ? `${selected.onec_counterparty_name || selected.onec_counterparty_full_name || "контрагент 1С"}${selected.onec_counterparty_bin ? ` · БИН/ИНН ${selected.onec_counterparty_bin}` : ""}`
+                    {requestOneCClientLinked(selected)
+                      ? requestOneCClientMeta(selected)
                       : "В блоке 1C найдите клиента и нажмите «Привязать» у правильного варианта."}
                   </span>
-                  {selected.onec_counterparty_ref ? <small>{selected.onec_counterparty_ref}</small> : null}
+                  {requestOneCClientRef(selected) ? <small>{requestOneCClientRef(selected)}</small> : null}
                 </div>
               </div>
 

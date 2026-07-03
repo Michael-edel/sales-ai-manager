@@ -187,6 +187,10 @@ export function getOneCClientInvoices(clientId) {
   return request(`/1c/clients/${clientId}/invoices`);
 }
 
+export function getOneCClientInteractions(clientId) {
+  return request(`/1c/clients/${clientId}/interactions`);
+}
+
 export function getOneCClientDebt(clientId) {
   return request(`/1c/clients/${clientId}/debt`);
 }

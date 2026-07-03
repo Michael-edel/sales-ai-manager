@@ -169,6 +169,68 @@ const ONEC_CLIENT_SEARCH_QUERY = `
   Контрагенты.Наименование
 `;
 
+const ONEC_PARTNER_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Партнеры.Ссылка КАК Партнер,
+  Партнеры.Наименование КАК Наименование,
+  Партнеры.НаименованиеПолное КАК НаименованиеПолное,
+  Партнеры.БИН КАК БИН,
+  Партнеры.Код КАК Код,
+  Партнеры.ОсновнойМенеджер КАК ОсновнойМенеджер
+ИЗ
+  Справочник.Партнеры КАК Партнеры
+ГДЕ
+  НЕ Партнеры.ПометкаУдаления
+  И (
+    Партнеры.Наименование ПОДОБНО &Поиск
+    ИЛИ Партнеры.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Партнеры.БИН ПОДОБНО &Поиск
+    ИЛИ Партнеры.Наименование ПОДОБНО &ПоискОчищенный
+    ИЛИ Партнеры.НаименованиеПолное ПОДОБНО &ПоискОчищенный
+  )
+УПОРЯДОЧИТЬ ПО
+  Партнеры.Наименование
+`;
+
+const ONEC_PARTNER_BASIC_SEARCH_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Партнеры.Ссылка КАК Партнер,
+  Партнеры.Наименование КАК Наименование,
+  Партнеры.Код КАК Код
+ИЗ
+  Справочник.Партнеры КАК Партнеры
+ГДЕ
+  НЕ Партнеры.ПометкаУдаления
+  И (
+    Партнеры.Наименование ПОДОБНО &Поиск
+    ИЛИ Партнеры.Наименование ПОДОБНО &ПоискОчищенный
+  )
+УПОРЯДОЧИТЬ ПО
+  Партнеры.Наименование
+`;
+
+const ONEC_PARTNER_BY_REF_QUERY = `
+ВЫБРАТЬ ПЕРВЫЕ 1
+  Партнеры.Ссылка КАК Партнер,
+  Партнеры.Наименование КАК Наименование,
+  Партнеры.НаименованиеПолное КАК НаименованиеПолное,
+  Партнеры.БИН КАК БИН,
+  Партнеры.Код КАК Код,
+  Партнеры.ОсновнойМенеджер КАК ОсновнойМенеджер
+ИЗ
+  Справочник.Партнеры КАК Партнеры
+ГДЕ
+  НЕ Партнеры.ПометкаУдаления
+  И Партнеры.Ссылка = &СсылкаПартнера
+`;
+
+const ONEC_CLIENT_PROFILE_QUERIES = [
+  { key: "partner_profile_by_ref", query: ONEC_PARTNER_BY_REF_QUERY },
+  { key: "partner_profile", query: ONEC_PARTNER_SEARCH_QUERY },
+  { key: "partner_profile_basic", query: ONEC_PARTNER_BASIC_SEARCH_QUERY },
+  { key: "counterparty_profile", query: ONEC_CLIENT_SEARCH_QUERY },
+];
+
 const ONEC_ITEM_SEARCH_QUERY = `
 ВЫБРАТЬ ПЕРВЫЕ 10
   Номенклатура.Ссылка КАК Номенклатура,
@@ -230,6 +292,25 @@ const ONEC_PRICE_SEARCH_QUERY = `
 `;
 
 const ONEC_CLIENT_CONTRACT_QUERIES = [
+  {
+    key: "contracts_by_partner_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Договоры.Ссылка КАК Договор,
+  Договоры.Наименование КАК Наименование,
+  Договоры.Партнер КАК Партнер,
+  Договоры.Организация КАК Организация,
+  Договоры.ДействуетС КАК ДействуетС,
+  Договоры.ДействуетПо КАК ДействуетПо
+ИЗ
+  Справочник.ДоговорыКонтрагентов КАК Договоры
+ГДЕ
+  НЕ Договоры.ПометкаУдаления
+  И Договоры.Партнер = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  Договоры.ДействуетС УБЫВ
+`,
+  },
   {
     key: "contracts_by_partner",
     query: `
@@ -295,6 +376,29 @@ const ONEC_CLIENT_CONTRACT_QUERIES = [
 
 const ONEC_CLIENT_ORDER_QUERIES = [
   {
+    key: "customer_orders_by_partner_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 10
+  Заказы.Ссылка КАК Заказ,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Партнер КАК Партнер,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Валюта КАК Валюта,
+  Заказы.Статус КАК Статус,
+  Заказы.Проведен КАК Проведен
+ИЗ
+  Документ.ЗаказКлиента КАК Заказы
+ГДЕ
+  НЕ Заказы.ПометкаУдаления
+  И Заказы.Партнер = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  Заказы.Дата УБЫВ
+`,
+  },
+  {
     key: "customer_orders_partner_counterparty",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 10
@@ -349,80 +453,187 @@ const ONEC_CLIENT_ORDER_QUERIES = [
 
 const ONEC_CLIENT_INVOICE_QUERIES = [
   {
-    key: "customer_invoices_partner_counterparty",
+    key: "customer_orders_as_invoice_by_partner_ref",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 20
-  Счета.Ссылка КАК Счет,
-  Счета.Номер КАК Номер,
-  Счета.Дата КАК Дата,
-  Счета.Партнер КАК Партнер,
-  Счета.Контрагент КАК Контрагент,
-  Счета.Организация КАК Организация,
-  Счета.СуммаДокумента КАК Сумма,
-  Счета.Валюта КАК Валюта,
-  Счета.Проведен КАК Проведен
+  Заказы.Ссылка КАК ЗаказСчет,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Партнер КАК Партнер,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Валюта КАК Валюта,
+  Заказы.Статус КАК Статус,
+  Заказы.Проведен КАК Проведен
 ИЗ
-  Документ.СчетНаОплатуКлиенту КАК Счета
+  Документ.ЗаказКлиента КАК Заказы
 ГДЕ
-  НЕ Счета.ПометкаУдаления
-  И (
-    Счета.Партнер.Наименование ПОДОБНО &Поиск
-    ИЛИ Счета.Партнер.НаименованиеПолное ПОДОБНО &Поиск
-    ИЛИ Счета.Контрагент.Наименование ПОДОБНО &Поиск
-    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
-  )
+  НЕ Заказы.ПометкаУдаления
+  И Заказы.Партнер = &СсылкаПартнера
 УПОРЯДОЧИТЬ ПО
-  Счета.Дата УБЫВ
+  Заказы.Дата УБЫВ
 `,
   },
   {
-    key: "customer_invoices_counterparty",
+    key: "customer_orders_as_invoice_partner_counterparty",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 20
-  Счета.Ссылка КАК Счет,
-  Счета.Номер КАК Номер,
-  Счета.Дата КАК Дата,
-  Счета.Контрагент КАК Контрагент,
-  Счета.Организация КАК Организация,
-  Счета.СуммаДокумента КАК Сумма,
-  Счета.Проведен КАК Проведен
+  Заказы.Ссылка КАК ЗаказСчет,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Партнер КАК Партнер,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Валюта КАК Валюта,
+  Заказы.Статус КАК Статус,
+  Заказы.Проведен КАК Проведен
 ИЗ
-  Документ.СчетНаОплатуКлиенту КАК Счета
+  Документ.ЗаказКлиента КАК Заказы
 ГДЕ
-  НЕ Счета.ПометкаУдаления
+  НЕ Заказы.ПометкаУдаления
   И (
-    Счета.Контрагент.Наименование ПОДОБНО &Поиск
-    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+    Заказы.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
   )
 УПОРЯДОЧИТЬ ПО
-  Счета.Дата УБЫВ
+  Заказы.Дата УБЫВ
 `,
   },
   {
-    key: "buyer_invoices_counterparty",
+    key: "customer_orders_as_invoice_counterparty",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 20
-  Счета.Ссылка КАК Счет,
-  Счета.Номер КАК Номер,
-  Счета.Дата КАК Дата,
-  Счета.Контрагент КАК Контрагент,
-  Счета.СуммаДокумента КАК Сумма,
-  Счета.Проведен КАК Проведен
+  Заказы.Ссылка КАК ЗаказСчет,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Контрагент КАК Контрагент,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Проведен КАК Проведен
 ИЗ
-  Документ.СчетНаОплатуПокупателю КАК Счета
+  Документ.ЗаказКлиента КАК Заказы
 ГДЕ
-  НЕ Счета.ПометкаУдаления
+  НЕ Заказы.ПометкаУдаления
   И (
-    Счета.Контрагент.Наименование ПОДОБНО &Поиск
-    ИЛИ Счета.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+    Заказы.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
   )
 УПОРЯДОЧИТЬ ПО
-  Счета.Дата УБЫВ
+  Заказы.Дата УБЫВ
+`,
+  },
+  {
+    key: "customer_orders_as_invoice_partner",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Заказы.Ссылка КАК ЗаказСчет,
+  Заказы.Номер КАК Номер,
+  Заказы.Дата КАК Дата,
+  Заказы.Партнер КАК Партнер,
+  Заказы.Организация КАК Организация,
+  Заказы.СуммаДокумента КАК Сумма,
+  Заказы.Проведен КАК Проведен
+ИЗ
+  Документ.ЗаказКлиента КАК Заказы
+ГДЕ
+  НЕ Заказы.ПометкаУдаления
+  И (
+    Заказы.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Заказы.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Заказы.Дата УБЫВ
+`,
+  },
+];
+
+const ONEC_CLIENT_INTERACTION_QUERIES = [
+  {
+    key: "client_interactions_by_partner_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 30
+  Взаимодействия.Ссылка КАК Взаимодействие,
+  Взаимодействия.Номер КАК Номер,
+  Взаимодействия.Дата КАК Дата,
+  Взаимодействия.Партнер КАК Партнер,
+  Взаимодействия.Контрагент КАК Контрагент,
+  Взаимодействия.Тема КАК Тема,
+  Взаимодействия.Ответственный КАК Ответственный
+ИЗ
+  Документ.ВзаимодействиеСКлиентом КАК Взаимодействия
+ГДЕ
+  НЕ Взаимодействия.ПометкаУдаления
+  И Взаимодействия.Партнер = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  Взаимодействия.Дата УБЫВ
+`,
+  },
+  {
+    key: "client_interactions_by_partner_counterparty",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 30
+  Взаимодействия.Ссылка КАК Взаимодействие,
+  Взаимодействия.Номер КАК Номер,
+  Взаимодействия.Дата КАК Дата,
+  Взаимодействия.Партнер КАК Партнер,
+  Взаимодействия.Контрагент КАК Контрагент,
+  Взаимодействия.Тема КАК Тема,
+  Взаимодействия.Ответственный КАК Ответственный
+ИЗ
+  Документ.ВзаимодействиеСКлиентом КАК Взаимодействия
+ГДЕ
+  НЕ Взаимодействия.ПометкаУдаления
+  И (
+    Взаимодействия.Партнер.Наименование ПОДОБНО &Поиск
+    ИЛИ Взаимодействия.Партнер.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Взаимодействия.Контрагент.Наименование ПОДОБНО &Поиск
+    ИЛИ Взаимодействия.Контрагент.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Взаимодействия.Дата УБЫВ
+`,
+  },
+  {
+    key: "client_interactions_basic",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 30
+  Взаимодействия.Ссылка КАК Взаимодействие,
+  Взаимодействия.Номер КАК Номер,
+  Взаимодействия.Дата КАК Дата,
+  Взаимодействия.Тема КАК Тема,
+  Взаимодействия.Ответственный КАК Ответственный
+ИЗ
+  Документ.ВзаимодействиеСКлиентом КАК Взаимодействия
+ГДЕ
+  НЕ Взаимодействия.ПометкаУдаления
+  И Взаимодействия.Тема ПОДОБНО &Поиск
+УПОРЯДОЧИТЬ ПО
+  Взаимодействия.Дата УБЫВ
 `,
   },
 ];
 
 const ONEC_CLIENT_DEBT_QUERIES = [
+  {
+    key: "settlements_with_customers_by_partner_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Остатки.Партнер КАК Партнер,
+  Остатки.Контрагент КАК Контрагент,
+  Остатки.Договор КАК Договор,
+  Остатки.СуммаОстаток КАК СуммаОстаток
+ИЗ
+  РегистрНакопления.РасчетыСКлиентами.Остатки() КАК Остатки
+ГДЕ
+  Остатки.Партнер = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  Остатки.СуммаОстаток УБЫВ
+`,
+  },
   {
     key: "settlements_with_customers",
     query: `
@@ -459,6 +670,29 @@ const ONEC_CLIENT_DEBT_QUERIES = [
 ];
 
 const ONEC_CLIENT_PAYMENT_TERMS_QUERIES = [
+  {
+    key: "agreements_with_clients_terms_by_partner_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Соглашения.Ссылка КАК Соглашение,
+  Соглашения.Наименование КАК Наименование,
+  Соглашения.Партнер КАК Партнер,
+  Соглашения.Контрагент КАК Контрагент,
+  Соглашения.Договор КАК Договор,
+  Соглашения.Организация КАК Организация,
+  Соглашения.УсловияОплаты КАК УсловияОплаты,
+  Соглашения.ПорядокОплаты КАК ПорядокОплаты,
+  Соглашения.СрокОплаты КАК СрокОплаты,
+  Соглашения.Валюта КАК Валюта
+ИЗ
+  Справочник.СоглашенияСКлиентами КАК Соглашения
+ГДЕ
+  НЕ Соглашения.ПометкаУдаления
+  И Соглашения.Партнер = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  Соглашения.Наименование
+`,
+  },
   {
     key: "agreements_with_clients_terms",
     query: `
@@ -542,6 +776,23 @@ const ONEC_CLIENT_PAYMENT_TERMS_QUERIES = [
 ];
 
 const ONEC_CLIENT_ADDRESS_QUERIES = [
+  {
+    key: "partner_contact_information_by_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 30
+  КонтактнаяИнформация.Объект КАК Партнер,
+  КонтактнаяИнформация.Вид КАК Вид,
+  КонтактнаяИнформация.Тип КАК Тип,
+  КонтактнаяИнформация.Представление КАК Представление,
+  КонтактнаяИнформация.Значение КАК Значение
+ИЗ
+  РегистрСведений.КонтактнаяИнформация КАК КонтактнаяИнформация
+ГДЕ
+  КонтактнаяИнформация.Объект = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  КонтактнаяИнформация.Вид
+`,
+  },
   {
     key: "contact_information_register",
     query: `
@@ -800,7 +1051,7 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await runOneCCommand(request, env, currentUser));
       }
-      const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(profile|contracts|orders|invoices|debt|terms|addresses)$/);
+      const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(profile|contracts|orders|invoices|debt|terms|addresses|interactions)$/);
       if (request.method === "GET" && oneCClientActionMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
@@ -1724,20 +1975,71 @@ async function getOneCBusinessStatus(env: Env) {
 
 async function searchOneCCounterparties(request: Request, env: Env) {
   const { search } = await oneCSearchPayload(request, "Введите название клиента или БИН.");
-  const result = await executeOneCMcpTool(env, "execute_query", {
-    query: ONEC_CLIENT_SEARCH_QUERY,
-    parameters: oneCClientSearchParameters(search),
-    limit: 10,
-  });
-  const resultText = oneCMcpResultText(result);
-  const items = parseOneCCounterpartyCandidates(resultText);
+  const refInput = parseOneCRefInput(search);
+  const parameters = {
+    ...oneCClientSearchParameters(search),
+    СсылкаПартнера: refInput?.ref || "",
+  };
+  const searches = await Promise.allSettled([
+    executeOneCMcpTool(env, "execute_query", {
+      query: ONEC_CLIENT_SEARCH_QUERY,
+      parameters,
+      limit: 10,
+    }),
+    executeFirstSuccessfulOneCQuery(env, [
+      { key: "partner_by_ref", query: ONEC_PARTNER_BY_REF_QUERY },
+      { key: "partners", query: ONEC_PARTNER_SEARCH_QUERY },
+      { key: "partners_basic", query: ONEC_PARTNER_BASIC_SEARCH_QUERY },
+    ], parameters),
+  ]);
+
+  const rawResults: unknown[] = [];
+  const resultParts: string[] = [];
+  const errors: string[] = [];
+
+  const counterpartySearch = searches[0];
+  if (counterpartySearch.status === "fulfilled") {
+    rawResults.push(counterpartySearch.value);
+    resultParts.push(`Контрагенты:\n${oneCMcpResultText(counterpartySearch.value)}`);
+  } else {
+    errors.push(`Контрагенты: ${safeOneCErrorMessage(counterpartySearch.reason)}`);
+  }
+
+  const partnerSearch = searches[1];
+  if (partnerSearch.status === "fulfilled" && partnerSearch.value.text) {
+    rawResults.push(partnerSearch.value.raw);
+    resultParts.push(`Партнеры:\n${partnerSearch.value.text}`);
+  } else if (partnerSearch.status === "rejected") {
+    errors.push(`Партнеры: ${safeOneCErrorMessage(partnerSearch.reason)}`);
+  }
+
+  if (resultParts.length === 0) {
+    throw new Error(errors.join("\n") || "Не удалось получить клиентов из 1С.");
+  }
+
+  const resultText = [
+    refInput ? `Распознана ссылка 1С: ${refInput.objectName || "объект"} ref=${refInput.ref}` : "",
+    ...resultParts,
+    errors.length ? `Ошибки отдельных запросов:\n${errors.join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+  const parsedItems = parseOneCCounterpartyCandidates(resultText);
+  const items = mergeOneCCounterpartyCandidates([
+    ...parsedItems,
+    refInput?.objectName && /Партнеры/i.test(refInput.objectName)
+      ? {
+        partner_ref: refInput.ref,
+        name: "Партнер 1С по точной ссылке",
+        raw: { input: search, ...refInput },
+      }
+      : null,
+  ]);
   return {
     tool: "find_counterparty",
     search,
     result_text: resultText,
     items,
     has_multiple: items.length > 1,
-    raw: result,
+    raw: rawResults,
   };
 }
 
@@ -1874,6 +2176,8 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
     Поиск: oneCSearchPattern(search),
     ПоискОчищенный: oneCSearchPattern(normalizeOneCClientSearch(search) || search),
     БИН: client.onec_counterparty_bin || "",
+    СсылкаПартнера: client.onec_partner_ref || "",
+    СсылкаКонтрагента: client.onec_counterparty_ref || "",
   });
 
   return {
@@ -1881,6 +2185,9 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
     title: descriptor.title,
     client_id: clientId,
     client_name: client.display_name,
+    onec_partner_name: client.onec_partner_name || client.onec_partner_full_name || null,
+    onec_partner_bin: client.onec_partner_bin || null,
+    onec_partner_ref: client.onec_partner_ref || null,
     onec_counterparty_name: client.onec_counterparty_name || client.onec_counterparty_full_name || null,
     onec_counterparty_bin: client.onec_counterparty_bin || null,
     onec_counterparty_ref: client.onec_counterparty_ref || null,
@@ -2142,7 +2449,7 @@ function oneCClientActionDescriptor(action: string) {
     profile: {
       tool: "get_client_profile",
       title: "Карточка клиента в 1С",
-      queries: [{ key: "counterparty_profile", query: ONEC_CLIENT_SEARCH_QUERY }],
+      queries: ONEC_CLIENT_PROFILE_QUERIES,
     },
     orders: {
       tool: "get_client_orders",
@@ -2150,9 +2457,14 @@ function oneCClientActionDescriptor(action: string) {
       queries: ONEC_CLIENT_ORDER_QUERIES,
     },
     invoices: {
-      tool: "get_client_invoices",
-      title: "Счета клиента в 1С",
+      tool: "get_client_order_invoices",
+      title: "Заказы/счета клиента в 1С",
       queries: ONEC_CLIENT_INVOICE_QUERIES,
+    },
+    interactions: {
+      tool: "get_client_interactions",
+      title: "Взаимодействия клиента в 1С",
+      queries: ONEC_CLIENT_INTERACTION_QUERIES,
     },
     debt: {
       tool: "get_client_debt",
@@ -2180,6 +2492,7 @@ function oneCCommandClientAction(normalizedCommand: string): string {
   if (/(договор|контракт)/.test(normalizedCommand)) return "contracts";
   if (/(заказ|последн.*заказ|order)/.test(normalizedCommand)) return "orders";
   if (/(счет|счета|invoice|оплат[ауые])/.test(normalizedCommand) && !/(услов|срок|порядок)/.test(normalizedCommand)) return "invoices";
+  if (/(взаимодейств|истори.*клиент|звон|переписк|письм.*клиент)/.test(normalizedCommand)) return "interactions";
   if (/(долг|задолж|дебитор|взаиморасчет)/.test(normalizedCommand)) return "debt";
   if (/(услов|срок оплат|порядок оплат|отсрочк|payment term)/.test(normalizedCommand)) return "terms";
   if (/(адрес|достав|контакт|телефон|email|почт)/.test(normalizedCommand)) return "addresses";
@@ -2233,12 +2546,17 @@ async function resolveOneCCommandClientId(
     FROM crm_clients
     WHERE lower(display_name) LIKE ?
        OR lower(normalized_name) LIKE ?
+       OR lower(COALESCE(onec_partner_name, '')) LIKE ?
+       OR lower(COALESCE(onec_partner_full_name, '')) LIKE ?
+       OR lower(COALESCE(onec_partner_bin, '')) LIKE ?
+       OR lower(COALESCE(onec_partner_ref, '')) LIKE ?
        OR lower(COALESCE(onec_counterparty_name, '')) LIKE ?
        OR lower(COALESCE(onec_counterparty_full_name, '')) LIKE ?
        OR lower(COALESCE(onec_counterparty_bin, '')) LIKE ?
+       OR lower(COALESCE(onec_counterparty_ref, '')) LIKE ?
     ORDER BY updated_at DESC, id DESC
     LIMIT 1
-  `).bind(like, like, like, like, like).first() as Record<string, unknown> | null;
+  `).bind(like, like, like, like, like, like, like, like, like, like).first() as Record<string, unknown> | null;
 
   return Number(row?.id || 0);
 }
@@ -2278,6 +2596,11 @@ async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<s
       id,
       display_name,
       normalized_name,
+      onec_partner_ref,
+      onec_partner_name,
+      onec_partner_full_name,
+      onec_partner_bin,
+      onec_partner_linked_at,
       onec_counterparty_ref,
       onec_counterparty_name,
       onec_counterparty_full_name,
@@ -2292,9 +2615,12 @@ async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<s
 
 function oneCClientSearchText(client: Record<string, string>): string {
   return normalizeOptionalText(
-    client.onec_counterparty_name ||
+    client.onec_partner_name ||
+      client.onec_partner_full_name ||
+      client.onec_counterparty_name ||
       client.onec_counterparty_full_name ||
       client.display_name ||
+      client.onec_partner_bin ||
       client.onec_counterparty_bin,
   );
 }
@@ -2395,6 +2721,10 @@ async function buildOneCAnalysisContext(env: Env, metadata: Metadata, sourceText
         sections.push([
           "Привязанный клиент 1С:",
           `CRM: ${linkedClient.display_name || clientSearch}`,
+          linkedClient.onec_partner_name || linkedClient.onec_partner_full_name ? `Партнер 1С: ${linkedClient.onec_partner_name || linkedClient.onec_partner_full_name}` : "",
+          linkedClient.onec_partner_full_name ? `Полное наименование партнера: ${linkedClient.onec_partner_full_name}` : "",
+          linkedClient.onec_partner_bin ? `БИН партнера: ${linkedClient.onec_partner_bin}` : "",
+          linkedClient.onec_partner_ref ? `Ссылка партнера 1С: ${linkedClient.onec_partner_ref}` : "",
           `Контрагент 1С: ${linkedClient.onec_counterparty_name || linkedClient.onec_counterparty_full_name || "не указано"}`,
           linkedClient.onec_counterparty_full_name ? `Полное наименование: ${linkedClient.onec_counterparty_full_name}` : "",
           linkedClient.onec_counterparty_bin ? `БИН/ИНН: ${linkedClient.onec_counterparty_bin}` : "",
@@ -3015,6 +3345,11 @@ async function listRequests(env: Env) {
   const result = await env.DB.prepare(`
     SELECT
       r.*,
+      c.onec_partner_ref,
+      c.onec_partner_name,
+      c.onec_partner_full_name,
+      c.onec_partner_bin,
+      c.onec_partner_linked_at,
       c.onec_counterparty_ref,
       c.onec_counterparty_name,
       c.onec_counterparty_full_name,
@@ -3639,6 +3974,11 @@ async function getRequest(env: Env, id: number) {
   return env.DB.prepare(`
     SELECT
       r.*,
+      c.onec_partner_ref,
+      c.onec_partner_name,
+      c.onec_partner_full_name,
+      c.onec_partner_bin,
+      c.onec_partner_linked_at,
       c.onec_counterparty_ref,
       c.onec_counterparty_name,
       c.onec_counterparty_full_name,
@@ -4922,29 +5262,42 @@ async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientI
 
   const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const candidate = normalizeOneCCounterpartyCandidate(payload);
-  if (!candidate.counterparty_ref && !candidate.name && !candidate.bin) {
-    throw new UserInputError("Выберите найденного контрагента 1С или передайте имя/БИН.");
+  if (!candidate.counterparty_ref && !candidate.partner_ref && !candidate.name && !candidate.bin) {
+    throw new UserInputError("Выберите найденного клиента 1С или передайте имя/БИН.");
   }
 
   await env.DB.prepare(`
     UPDATE crm_clients
     SET
+      onec_partner_ref = ?,
+      onec_partner_name = ?,
+      onec_partner_full_name = ?,
+      onec_partner_bin = ?,
+      onec_partner_payload_json = ?,
+      onec_partner_linked_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE onec_partner_linked_at END,
       onec_counterparty_ref = ?,
       onec_counterparty_name = ?,
       onec_counterparty_full_name = ?,
       onec_counterparty_bin = ?,
       onec_counterparty_partner = ?,
       onec_counterparty_payload_json = ?,
-      onec_counterparty_linked_at = datetime('now'),
+      onec_counterparty_linked_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE onec_counterparty_linked_at END,
       updated_at = datetime('now')
     WHERE id = ?
   `).bind(
+    candidate.partner_ref || candidate.partner_name || null,
+    candidate.partner_name || candidate.name || null,
+    candidate.partner_full_name || candidate.full_name || null,
+    candidate.partner_bin || candidate.bin || null,
+    JSON.stringify(candidate.raw || payload),
+    candidate.partner_ref || null,
     candidate.counterparty_ref || null,
     candidate.name || null,
     candidate.full_name || null,
     candidate.bin || null,
     candidate.partner || null,
     JSON.stringify(candidate.raw || payload),
+    candidate.counterparty_ref || null,
     clientId,
   ).run();
 
@@ -4954,6 +5307,7 @@ async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientI
     if (requestItem && Number(requestItem.client_id || 0) === clientId) {
       await createRequestEvent(env, requestId, "client.onec_counterparty_linked", user.display_name || user.username, {
         client_id: clientId,
+        partner_ref: candidate.partner_ref || null,
         counterparty_ref: candidate.counterparty_ref || null,
         name: candidate.name || null,
         full_name: candidate.full_name || null,
@@ -5166,6 +5520,27 @@ function oneCSearchPattern(value: string): string {
   return value.includes("%") ? value : `%${value}%`;
 }
 
+function parseOneCRefInput(value: string): { objectName: string; ref: string } | null {
+  const text = normalizeOptionalText(value);
+  const e1cibMatch = text.match(/e1cib\/data\/([^?\s]+)\?ref=([0-9a-f-]{20,})/i);
+  if (e1cibMatch) {
+    return {
+      objectName: decodeURIComponent(e1cibMatch[1]),
+      ref: e1cibMatch[2],
+    };
+  }
+  const refMatch = text.match(/(?:^|[?&\s])ref=([0-9a-f-]{20,})/i);
+  if (refMatch) return { objectName: "", ref: refMatch[1] };
+  return null;
+}
+
+function normalizeOneCRefValue(value: string): string {
+  const refInput = parseOneCRefInput(value);
+  if (refInput?.ref) return refInput.ref;
+  const normalized = normalizeOptionalText(value);
+  return /^[0-9a-f-]{20,}$/i.test(normalized) ? normalized : "";
+}
+
 function oneCClientSearchParameters(search: string): Record<string, string> {
   const normalized = normalizeOneCClientSearch(search);
   return {
@@ -5191,6 +5566,11 @@ async function findLinkedOneCCounterparty(env: Env, company: string): Promise<Re
     SELECT
       display_name,
       normalized_name,
+      onec_partner_ref,
+      onec_partner_name,
+      onec_partner_full_name,
+      onec_partner_bin,
+      onec_partner_linked_at,
       onec_counterparty_ref,
       onec_counterparty_name,
       onec_counterparty_full_name,
@@ -5198,7 +5578,7 @@ async function findLinkedOneCCounterparty(env: Env, company: string): Promise<Re
       onec_counterparty_partner,
       onec_counterparty_linked_at
     FROM crm_clients
-    WHERE onec_counterparty_linked_at IS NOT NULL
+    WHERE (onec_counterparty_linked_at IS NOT NULL OR onec_partner_linked_at IS NOT NULL)
       AND (
         normalized_name = ?
         OR normalized_name = ?
@@ -5230,8 +5610,28 @@ function parseOneCCounterpartyCandidates(text: string): Record<string, unknown>[
   ];
   return rows
     .map((row) => normalizeOneCCounterpartyCandidate(row))
-    .filter((item) => Boolean(item.counterparty_ref || item.name || item.full_name || item.bin))
+    .filter((item) => Boolean(item.counterparty_ref || item.partner_ref || item.name || item.full_name || item.bin))
     .slice(0, 10);
+}
+
+function mergeOneCCounterpartyCandidates(items: Array<Record<string, unknown> | null | undefined>): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const result: Record<string, unknown>[] = [];
+  for (const item of items) {
+    if (!item) continue;
+    const key = normalizeOptionalText(
+      item.counterparty_ref ||
+        item.partner_ref ||
+        item.bin ||
+        item.name ||
+        item.full_name,
+    ).toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+    if (result.length >= 10) break;
+  }
+  return result;
 }
 
 function parseOneCProductCandidates(text: string): Record<string, unknown>[] {
@@ -5310,8 +5710,17 @@ function normalizeOneCCounterpartyCandidate(row: Record<string, unknown>) {
     return "";
   };
 
+  const rawCounterpartyRef = value("counterparty_ref", "Контрагент", "Ссылка", "Ref", "СсылкаКонтрагента");
+  const rawPartnerRef = value("partner_ref", "Партнер", "Партнёр", "СсылкаПартнера", "СсылкаПартнёра");
+  const counterpartyRef = normalizeOneCRefValue(rawCounterpartyRef);
+  const partnerRef = normalizeOneCRefValue(rawPartnerRef);
+
   const candidate = {
-    counterparty_ref: value("counterparty_ref", "Контрагент", "Ссылка", "Ref", "СсылкаКонтрагента"),
+    counterparty_ref: counterpartyRef,
+    partner_ref: partnerRef,
+    partner_name: value("partner_name", "ПартнерНаименование", "ПартнёрНаименование") || (partnerRef ? "" : rawPartnerRef),
+    partner_full_name: value("partner_full_name", "ПартнерНаименованиеПолное", "ПартнёрНаименованиеПолное"),
+    partner_bin: value("partner_bin", "ПартнерБИН", "ПартнёрБИН"),
     name: value("name", "Наименование", "КонтрагентНаименование"),
     full_name: value("full_name", "НаименованиеПолное", "ПолноеНаименование", "Полное наименование"),
     bin: value("bin", "БИН", "ИНН", "ИИН", "Код"),
@@ -5319,8 +5728,12 @@ function normalizeOneCCounterpartyCandidate(row: Record<string, unknown>) {
     raw: row,
   };
 
-  if (!candidate.name && candidate.counterparty_ref && !/^[0-9a-f-]{20,}$/i.test(candidate.counterparty_ref)) {
-    candidate.name = candidate.counterparty_ref;
+  if (!candidate.partner_name && candidate.partner_ref && !/^[0-9a-f-]{20,}$/i.test(candidate.partner_ref)) {
+    candidate.partner_name = candidate.partner_ref;
+  }
+
+  if (!candidate.name && rawCounterpartyRef && !counterpartyRef) {
+    candidate.name = rawCounterpartyRef;
   }
 
   return candidate;
