@@ -701,52 +701,48 @@ const ONEC_CLIENT_INTERACTION_QUERIES = [
 
 const ONEC_CLIENT_DEBT_QUERIES = [
   {
-    key: "settlements_with_customers_by_partner_ref",
+    key: "customer_operational_settlements_by_partner_code",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 20
-  Остатки.Партнер КАК Партнер,
-  Остатки.Контрагент КАК Контрагент,
-  Остатки.Договор КАК Договор,
-  Остатки.СуммаОстаток КАК СуммаОстаток
+  Остатки.АналитикаУчетаПоПартнерам.Партнер КАК Партнер,
+  Остатки.АналитикаУчетаПоПартнерам.Контрагент КАК Контрагент,
+  Остатки.АналитикаУчетаПоПартнерам.Организация КАК Организация,
+  Остатки.АналитикаУчетаПоПартнерам.Договор КАК Договор,
+  Остатки.ЗаказКлиента КАК ОбъектРасчетов,
+  Остатки.Валюта КАК Валюта,
+  Остатки.СуммаОстаток КАК ОперативныйОстаток,
+  Остатки.КОплатеОстаток КАК КОплате,
+  Остатки.КОтгрузкеОстаток КАК КОтгрузке
 ИЗ
   РегистрНакопления.РасчетыСКлиентами.Остатки() КАК Остатки
 ГДЕ
-  Остатки.Партнер = &СсылкаПартнера
+  Остатки.АналитикаУчетаПоПартнерам.Партнер.Код = &КодПартнера
 УПОРЯДОЧИТЬ ПО
-  Остатки.СуммаОстаток УБЫВ
+  Остатки.СуммаОстаток УБЫВ,
+  Остатки.КОплатеОстаток УБЫВ
 `,
   },
   {
-    key: "settlements_with_customers",
+    key: "customer_operational_settlements_by_name",
     query: `
 ВЫБРАТЬ ПЕРВЫЕ 20
-  Остатки.Партнер КАК Партнер,
-  Остатки.Контрагент КАК Контрагент,
-  Остатки.Договор КАК Договор,
-  Остатки.СуммаОстаток КАК СуммаОстаток
+  Остатки.АналитикаУчетаПоПартнерам.Партнер КАК Партнер,
+  Остатки.АналитикаУчетаПоПартнерам.Контрагент КАК Контрагент,
+  Остатки.АналитикаУчетаПоПартнерам.Организация КАК Организация,
+  Остатки.АналитикаУчетаПоПартнерам.Договор КАК Договор,
+  Остатки.ЗаказКлиента КАК ОбъектРасчетов,
+  Остатки.Валюта КАК Валюта,
+  Остатки.СуммаОстаток КАК ОперативныйОстаток,
+  Остатки.КОплатеОстаток КАК КОплате,
+  Остатки.КОтгрузкеОстаток КАК КОтгрузке
 ИЗ
   РегистрНакопления.РасчетыСКлиентами.Остатки() КАК Остатки
 ГДЕ
-  Остатки.Партнер.Наименование ПОДОБНО &Поиск
-  ИЛИ Остатки.Контрагент.Наименование ПОДОБНО &Поиск
+  Остатки.АналитикаУчетаПоПартнерам.Партнер.Наименование ПОДОБНО &Поиск
+  ИЛИ Остатки.АналитикаУчетаПоПартнерам.Контрагент.Наименование ПОДОБНО &Поиск
 УПОРЯДОЧИТЬ ПО
-  Остатки.СуммаОстаток УБЫВ
-`,
-  },
-  {
-    key: "mutual_settlements_with_customers",
-    query: `
-ВЫБРАТЬ ПЕРВЫЕ 20
-  Остатки.Партнер КАК Партнер,
-  Остатки.Контрагент КАК Контрагент,
-  Остатки.СуммаОстаток КАК СуммаОстаток
-ИЗ
-  РегистрНакопления.ВзаиморасчетыСКлиентами.Остатки() КАК Остатки
-ГДЕ
-  Остатки.Партнер.Наименование ПОДОБНО &Поиск
-  ИЛИ Остатки.Контрагент.Наименование ПОДОБНО &Поиск
-УПОРЯДОЧИТЬ ПО
-  Остатки.СуммаОстаток УБЫВ
+  Остатки.СуммаОстаток УБЫВ,
+  Остатки.КОплатеОстаток УБЫВ
 `,
   },
 ];
@@ -2374,7 +2370,10 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
 
     for (const section of oneCFullClientCardDescriptors()) {
       const sectionResult = await executeFirstSuccessfulOneCQuery(env, section.queries, queryParameters);
-      sectionBlocks.push(`## ${section.title}\n${limitText(sectionResult.text || "Нет данных", 6000)}`);
+      const sectionText = section.tool === "get_client_debt"
+        ? oneCClientDebtResultText(client, sectionResult.text)
+        : sectionResult.text || "Нет данных";
+      sectionBlocks.push(`## ${section.title}\n${limitText(sectionText, 6000)}`);
       rawSections.push({
         tool: section.tool,
         title: section.title,
@@ -2411,6 +2410,9 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
 
   const descriptor = oneCClientActionDescriptor(action);
   const result = await executeFirstSuccessfulOneCQuery(env, descriptor.queries, queryParameters);
+  const resultText = descriptor.tool === "get_client_debt"
+    ? oneCClientDebtResultText(client, result.text)
+    : result.text;
 
   return {
     tool: descriptor.tool,
@@ -2427,10 +2429,41 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
     onec_counterparty_ref: client.onec_counterparty_ref || null,
     search,
     query_key: result.queryKey,
-    result_text: result.text,
+    result_text: resultText,
     raw: result.raw,
     query_errors: result.errors,
   };
+}
+
+function oneCClientDebtResultText(client: Record<string, unknown>, operationalSettlementsText: string): string {
+  const clientName = normalizeOptionalText(
+    client.onec_partner_name ||
+      client.onec_partner_full_name ||
+      client.onec_counterparty_name ||
+      client.onec_counterparty_full_name ||
+      client.display_name,
+  ) || "выбранный клиент";
+  const partnerCode = normalizeOptionalText(client.onec_partner_code || client.onec_counterparty_code);
+  const bin = normalizeOptionalText(client.onec_partner_bin || client.onec_counterparty_bin);
+  const operationalText = normalizeOptionalText(operationalSettlementsText) || "Нет данных.";
+
+  return [
+    [
+      "### Проверка задолженности",
+      `Клиент: ${clientName}`,
+      partnerCode ? `Код 1С: ${partnerCode}` : "",
+      bin ? `БИН/ИИН: ${bin}` : "",
+      "",
+      "Текущий оперативный остаток читается из регистра накопления `РасчетыСКлиентами` с детализацией по партнеру, организации, контрагенту, объекту расчетов/заказу и валюте.",
+      "Поля `ОперативныйОстаток`, `КОплате` и `КОтгрузке` показывают текущие управленческие взаиморасчеты. Это не расчет глубины просрочки.",
+      "",
+      "Просроченную дебиторскую и кредиторскую задолженность нужно проверять в 1С через отчет `Анализ расчетов с клиентами`, потому что просрочка считается относительно плановой даты платежа/отгрузки и выбранного варианта классификации задолженности.",
+      "Рекомендуемые интервалы для классификатора: 1-3 дня — допустимая задержка; 4-15 дней — высокая просрочка; свыше 15 дней — критичная просрочка.",
+      "Если отчет показывает критичную просрочку, не подтверждайте новую отгрузку без согласования.",
+    ].filter(Boolean).join("\n"),
+    "### Оперативные взаиморасчеты из 1С",
+    limitText(operationalText, 5000),
+  ].join("\n\n");
 }
 
 async function listRequestOneCProducts(env: Env, requestId: number) {
