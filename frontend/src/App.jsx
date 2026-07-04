@@ -187,6 +187,136 @@ function oneCResultText(response) {
   return JSON.stringify(response, null, 2);
 }
 
+function splitOneCMarkdownRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isOneCMarkdownSeparator(line) {
+  const cells = splitOneCMarkdownRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseOneCMarkdownBlocks(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    const value = paragraph.join("\n").trim();
+    if (value) blocks.push({ type: "text", value });
+    paragraph = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+
+    if (trimmed.startsWith("## ")) {
+      flushParagraph();
+      blocks.push({ type: "heading", value: trimmed.replace(/^##\s+/, "") });
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && lines[index + 1]?.trim().startsWith("|") && isOneCMarkdownSeparator(lines[index + 1])) {
+      flushParagraph();
+      const headers = splitOneCMarkdownRow(trimmed);
+      index += 2;
+      const rows = [];
+      while (index < lines.length && lines[index].trim().startsWith("|")) {
+        rows.push(splitOneCMarkdownRow(lines[index]));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push({ type: "table", headers, rows });
+      continue;
+    }
+
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  return blocks;
+}
+
+function formatOneCCell(value) {
+  const text = String(value || "").trim();
+  if (!text) return "—";
+  if (/^true$/i.test(text)) return "Да";
+  if (/^false$/i.test(text)) return "Нет";
+  if (/^01\.01\.0001\s+0:00:00$/.test(text)) return "—";
+  return text;
+}
+
+function isOneCProfileTable(headers, rows) {
+  return rows.length === 1 && headers.includes("Контрагент") && headers.includes("БИН") && headers.includes("КодПартнера");
+}
+
+function OneCStructuredResult({ text }) {
+  const blocks = parseOneCMarkdownBlocks(text);
+  if (!blocks.length) return null;
+
+  return (
+    <div className="onec-structured-result">
+      {blocks.map((block, blockIndex) => {
+        if (block.type === "heading") {
+          return <h4 key={`heading-${blockIndex}`}>{block.value}</h4>;
+        }
+
+        if (block.type === "table") {
+          if (isOneCProfileTable(block.headers, block.rows)) {
+            const row = block.rows[0] || [];
+            return (
+              <div className="onec-profile-grid" key={`profile-${blockIndex}`}>
+                {block.headers.map((header, columnIndex) => (
+                  <div className="onec-profile-field" key={`${header}-${columnIndex}`}>
+                    <span>{header}</span>
+                    <strong>{formatOneCCell(row[columnIndex])}</strong>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          return (
+            <div className="onec-table-wrap" key={`table-${blockIndex}`}>
+              <table className="onec-data-table">
+                <thead>
+                  <tr>
+                    {block.headers.map((header, columnIndex) => (
+                      <th key={`${header}-${columnIndex}`}>{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={`row-${rowIndex}`}>
+                      {block.headers.map((header, columnIndex) => (
+                        <td key={`${header}-${rowIndex}-${columnIndex}`}>{formatOneCCell(row[columnIndex])}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
+        return <pre className="onec-text-block" key={`text-${blockIndex}`}>{block.value}</pre>;
+      })}
+    </div>
+  );
+}
+
 function oneCCounterpartyTitle(item, index) {
   return item?.partner_name || item?.partner_full_name || item?.name || item?.full_name || item?.partner_ref || item?.counterparty_ref || `Вариант ${index + 1}`;
 }
@@ -2258,7 +2388,7 @@ export default function App() {
                     )}
                   </div>
                 ) : null}
-                {onecLookupResult.body ? <pre>{onecLookupResult.body}</pre> : null}
+                {onecLookupResult.body ? <OneCStructuredResult text={onecLookupResult.body} /> : null}
               </div>
             ) : null}
           </section>
