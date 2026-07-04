@@ -142,6 +142,7 @@ const TASK_STATUS_LABELS = {
 };
 
 const EMAIL_FOLDERS = [
+  ["all", "Все активные"],
   ["inbox", "Полученные"],
   ["in_work", "В работе"],
   ["suppliers", "Поставщики"],
@@ -173,6 +174,28 @@ const WHATSAPP_TEMPLATE_CATEGORY_OPTIONS = [
   ["MARKETING", "Marketing"],
   ["AUTHENTICATION", "Authentication"],
 ];
+
+function emailFolderStatsForTab(stats, folder) {
+  if (folder === "all") {
+    return ["inbox", "in_work", "suppliers", "buyers", "done"].reduce((summary, key) => {
+      const item = stats?.[key] || { total: 0, unread: 0 };
+      summary.total += Number(item.total || 0);
+      summary.unread += Number(item.unread || 0);
+      return summary;
+    }, { total: 0, unread: 0 });
+  }
+
+  return stats?.[folder] || { total: 0, unread: 0 };
+}
+
+function emailEmptyMessage(folder, stats) {
+  const activeTotal = emailFolderStatsForTab(stats, "all").total;
+  const label = EMAIL_FOLDER_LABELS[folder] || "выбранной папке";
+  if (activeTotal > 0) {
+    return `В папке «${label}» сейчас нет писем. Выберите другую папку выше: письма могли быть перенесены в «Поставщики», «Покупатели», «В работе» или скрыты правилом отправителя.`;
+  }
+  return "Писем пока нет. Запустите IMAP-ingest для нужного ящика edel.kz и нажмите «Обновить письма».";
+}
 
 function oneCResultText(response) {
   if (response?.result_text) return response.result_text;
@@ -462,7 +485,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [emails, setEmails] = useState([]);
-  const [emailFolder, setEmailFolder] = useState("inbox");
+  const [emailFolder, setEmailFolder] = useState("all");
   const [emailStats, setEmailStats] = useState({});
   const [emailSenderFilters, setEmailSenderFilters] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
@@ -1290,7 +1313,7 @@ export default function App() {
     setLoading(true);
     try {
       const updated = await updateEmailMessage(email.id, payload);
-      if (payload.folder && payload.folder !== emailFolder) {
+      if (payload.folder && payload.folder !== emailFolder && emailFolder !== "all") {
         setSelectedEmail(null);
       } else {
         setSelectedEmail(updated);
@@ -2433,7 +2456,7 @@ export default function App() {
 
               <div className="email-folder-tabs">
                 {EMAIL_FOLDERS.map(([folder, label]) => {
-                  const stats = emailStats[folder] || { total: 0, unread: 0 };
+                  const stats = emailFolderStatsForTab(emailStats, folder);
                   return (
                     <button
                       key={folder}
@@ -2480,7 +2503,7 @@ export default function App() {
               <div className="email-list">
                 {emails.length === 0 && (
                   <p className="muted">
-                    Писем пока нет. Запустите IMAP-ingest для нужного ящика edel.kz и нажмите «Обновить письма».
+                    {emailEmptyMessage(emailFolder, emailStats)}
                   </p>
                 )}
                 {emails.map((email) => (

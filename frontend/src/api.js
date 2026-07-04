@@ -341,7 +341,7 @@ export function sendEmailReply(payload) {
   });
 }
 
-export function listEmailMessages(folder = "inbox") {
+export function listEmailMessages(folder = "all") {
   return request(`/email/messages?folder=${encodeURIComponent(folder)}`);
 }
 

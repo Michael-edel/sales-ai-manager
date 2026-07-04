@@ -3675,8 +3675,12 @@ async function listRequests(env: Env) {
 }
 
 async function listEmailMessages(env: Env, user: CurrentUser, folderParam: string | null) {
-  const folder = normalizeEmailFolder(folderParam) || "inbox";
+  const requestedFolder = normalizeOptionalText(folderParam);
+  const showAllActive = requestedFolder === "all";
+  const folder = showAllActive ? "all" : normalizeEmailFolder(folderParam) || "inbox";
   const scope = emailMailboxScope(user);
+  const folderSql = showAllActive ? "folder <> 'trash'" : "folder = ?";
+  const bindings = showAllActive ? scope.bindings : [folder, ...scope.bindings];
   const result = await env.DB.prepare(`
     SELECT
       *,
@@ -3688,7 +3692,7 @@ async function listEmailMessages(env: Env, user: CurrentUser, folderParam: strin
       ) AS is_sender_hidden,
       substr(body_text, 1, 420) AS body_preview
     FROM email_messages
-    WHERE folder = ?
+    WHERE ${folderSql}
       ${scope.sql}
       AND NOT EXISTS (
         SELECT 1
@@ -3698,7 +3702,7 @@ async function listEmailMessages(env: Env, user: CurrentUser, folderParam: strin
       )
     ORDER BY COALESCE(received_at, created_at) DESC, id DESC
     LIMIT 100
-  `).bind(folder, ...scope.bindings).all();
+  `).bind(...bindings).all();
   return {
     folder,
     items: result.results,
