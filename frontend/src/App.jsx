@@ -810,7 +810,7 @@ export default function App() {
     if (!canManageRequests) return;
     if (!selected?.client_id) {
       setOnecLookupResult({
-        title: "Карточка партнера 1С",
+        title: "Полная карточка партнера 1С",
         error: "Выберите заявку с CRM-клиентом.",
       });
       return;
@@ -822,7 +822,7 @@ export default function App() {
     try {
       const response = await getOneCClientProfile(selected.client_id);
       setOnecLookupResult({
-        title: response.title || "Карточка партнера 1С",
+        title: response.title || "Полная карточка партнера 1С",
         body: [
           `Партнер/контрагент: ${response.onec_partner_name || response.onec_counterparty_name || response.client_name || "не указан"}`,
           response.onec_partner_bin || response.onec_counterparty_bin ? `БИН: ${response.onec_partner_bin || response.onec_counterparty_bin}` : "",
@@ -835,7 +835,7 @@ export default function App() {
         ].filter((line) => line !== "").join("\n"),
       });
     } catch (err) {
-      setOnecLookupResult({ title: "Карточка партнера 1С", error: err.message });
+      setOnecLookupResult({ title: "Полная карточка партнера 1С", error: err.message });
     } finally {
       setOnecLookupLoading("");
     }
@@ -2146,7 +2146,7 @@ export default function App() {
 
             <div className="onec-client-actions">
               <div>
-                <strong>Карточка партнера по выбранной заявке</strong>
+                <strong>Полная карточка партнера по выбранной заявке</strong>
                 <span>
                   {selected?.client_id
                     ? requestOneCClientLinked(selected)
@@ -2162,7 +2162,7 @@ export default function App() {
                   disabled={Boolean(onecLookupLoading) || !selected?.client_id}
                 >
                   {onecLookupLoading === "client-profile" ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
-                  Карточка партнера
+                  Полная карточка
                 </button>
                 <button
                   className="secondary-button"

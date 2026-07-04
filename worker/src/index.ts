@@ -860,6 +860,90 @@ const ONEC_CLIENT_ADDRESS_QUERIES = [
   },
 ];
 
+const ONEC_CLIENT_BANK_ACCOUNT_QUERIES = [
+  {
+    key: "counterparty_bank_accounts_by_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  БанковскиеСчета.Ссылка КАК БанковскийСчет,
+  БанковскиеСчета.Наименование КАК Наименование,
+  БанковскиеСчета.Владелец КАК Владелец,
+  БанковскиеСчета.НомерСчета КАК НомерСчета,
+  БанковскиеСчета.Банк КАК Банк,
+  БанковскиеСчета.ВалютаДенежныхСредств КАК Валюта
+ИЗ
+  Справочник.БанковскиеСчетаКонтрагентов КАК БанковскиеСчета
+ГДЕ
+  НЕ БанковскиеСчета.ПометкаУдаления
+  И БанковскиеСчета.Владелец = &СсылкаКонтрагента
+УПОРЯДОЧИТЬ ПО
+  БанковскиеСчета.Наименование
+`,
+  },
+  {
+    key: "partner_bank_accounts_by_ref",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  БанковскиеСчета.Ссылка КАК БанковскийСчет,
+  БанковскиеСчета.Наименование КАК Наименование,
+  БанковскиеСчета.Владелец КАК Владелец,
+  БанковскиеСчета.НомерСчета КАК НомерСчета,
+  БанковскиеСчета.Банк КАК Банк,
+  БанковскиеСчета.ВалютаДенежныхСредств КАК Валюта
+ИЗ
+  Справочник.БанковскиеСчетаКонтрагентов КАК БанковскиеСчета
+ГДЕ
+  НЕ БанковскиеСчета.ПометкаУдаления
+  И БанковскиеСчета.Владелец = &СсылкаПартнера
+УПОРЯДОЧИТЬ ПО
+  БанковскиеСчета.Наименование
+`,
+  },
+  {
+    key: "counterparty_main_bank_account",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  Контрагенты.Ссылка КАК Контрагент,
+  Контрагенты.Наименование КАК Наименование,
+  Контрагенты.БИН_ИИН КАК БИН,
+  Контрагенты.ОсновнойБанковскийСчет КАК ОсновнойБанковскийСчет
+ИЗ
+  Справочник.Контрагенты КАК Контрагенты
+ГДЕ
+  НЕ Контрагенты.ПометкаУдаления
+  И (
+    Контрагенты.Ссылка = &СсылкаКонтрагента
+    ИЛИ Контрагенты.Наименование ПОДОБНО &Поиск
+    ИЛИ Контрагенты.НаименованиеПолное ПОДОБНО &Поиск
+    ИЛИ Контрагенты.БИН_ИИН ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  Контрагенты.Наименование
+`,
+  },
+  {
+    key: "generic_bank_accounts_by_owner_name",
+    query: `
+ВЫБРАТЬ ПЕРВЫЕ 20
+  БанковскиеСчета.Ссылка КАК БанковскийСчет,
+  БанковскиеСчета.Наименование КАК Наименование,
+  БанковскиеСчета.Владелец КАК Владелец,
+  БанковскиеСчета.НомерСчета КАК НомерСчета,
+  БанковскиеСчета.Банк КАК Банк
+ИЗ
+  Справочник.БанковскиеСчета КАК БанковскиеСчета
+ГДЕ
+  НЕ БанковскиеСчета.ПометкаУдаления
+  И (
+    БанковскиеСчета.Владелец.Наименование ПОДОБНО &Поиск
+    ИЛИ БанковскиеСчета.Владелец.НаименованиеПолное ПОДОБНО &Поиск
+  )
+УПОРЯДОЧИТЬ ПО
+  БанковскиеСчета.Наименование
+`,
+  },
+];
+
 const SESSION_COOKIE_NAME = "sales_ai_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -2175,17 +2259,61 @@ async function getOneCClientBusinessData(env: Env, clientId: number, action: str
   const client = await getCrmClientForOneC(env, clientId);
   if (!client) throw new UserInputError("CRM-клиент не найден.");
 
-  const descriptor = oneCClientActionDescriptor(action);
   const search = oneCClientSearchText(client);
   if (!search) throw new UserInputError("У CRM-клиента нет названия, БИН или привязки 1С для поиска.");
 
-  const result = await executeFirstSuccessfulOneCQuery(env, descriptor.queries, {
+  const queryParameters = {
     Поиск: oneCSearchPattern(search),
     ПоискОчищенный: oneCSearchPattern(normalizeOneCClientSearch(search) || search),
     БИН: client.onec_counterparty_bin || "",
     СсылкаПартнера: client.onec_partner_ref || "",
     СсылкаКонтрагента: client.onec_counterparty_ref || "",
-  });
+  };
+
+  if (action === "profile") {
+    const sectionBlocks: string[] = [];
+    const rawSections: Array<Record<string, unknown>> = [];
+    const allErrors: Array<{ section: string; query_key: string; detail: string }> = [];
+
+    for (const section of oneCFullClientCardDescriptors()) {
+      const sectionResult = await executeFirstSuccessfulOneCQuery(env, section.queries, queryParameters);
+      sectionBlocks.push(`## ${section.title}\n${limitText(sectionResult.text || "Нет данных", 6000)}`);
+      rawSections.push({
+        tool: section.tool,
+        title: section.title,
+        query_key: sectionResult.queryKey,
+        raw: sectionResult.raw,
+      });
+      allErrors.push(...sectionResult.errors.map((item) => ({
+        section: section.title,
+        query_key: item.query_key,
+        detail: item.detail,
+      })));
+    }
+
+    return {
+      tool: "get_client_full_profile",
+      title: "Полная карточка клиента в 1С",
+      client_id: clientId,
+      client_name: client.display_name,
+      onec_partner_name: client.onec_partner_name || client.onec_partner_full_name || null,
+      onec_partner_code: client.onec_partner_code || null,
+      onec_partner_bin: client.onec_partner_bin || null,
+      onec_partner_ref: client.onec_partner_ref || null,
+      onec_counterparty_name: client.onec_counterparty_name || client.onec_counterparty_full_name || null,
+      onec_counterparty_code: client.onec_counterparty_code || null,
+      onec_counterparty_bin: client.onec_counterparty_bin || null,
+      onec_counterparty_ref: client.onec_counterparty_ref || null,
+      search,
+      query_key: "full_client_profile",
+      result_text: sectionBlocks.join("\n\n"),
+      raw: rawSections,
+      query_errors: allErrors,
+    };
+  }
+
+  const descriptor = oneCClientActionDescriptor(action);
+  const result = await executeFirstSuccessfulOneCQuery(env, descriptor.queries, queryParameters);
 
   return {
     tool: descriptor.tool,
@@ -2490,10 +2618,28 @@ function oneCClientActionDescriptor(action: string) {
       title: "Адреса и контакты клиента в 1С",
       queries: ONEC_CLIENT_ADDRESS_QUERIES,
     },
+    bank_accounts: {
+      tool: "get_client_bank_accounts",
+      title: "Банковские счета клиента в 1С",
+      queries: ONEC_CLIENT_BANK_ACCOUNT_QUERIES,
+    },
   };
   const descriptor = descriptors[action];
   if (!descriptor) throw new UserInputError("Неизвестный вид проверки клиента 1С.");
   return descriptor;
+}
+
+function oneCFullClientCardDescriptors() {
+  return [
+    oneCClientActionDescriptor("profile"),
+    oneCClientActionDescriptor("contracts"),
+    oneCClientActionDescriptor("bank_accounts"),
+    oneCClientActionDescriptor("addresses"),
+    oneCClientActionDescriptor("invoices"),
+    oneCClientActionDescriptor("interactions"),
+    oneCClientActionDescriptor("debt"),
+    oneCClientActionDescriptor("terms"),
+  ];
 }
 
 function oneCCommandClientAction(normalizedCommand: string): string {
