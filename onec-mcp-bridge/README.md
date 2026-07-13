@@ -43,7 +43,7 @@ cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sale
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8091
+.\start-onec-mcp-bridge.ps1
 ```
 
 6. Для production сделайте доступ к bridge только через VPN или Cloudflare Tunnel и задайте в Worker:
@@ -55,6 +55,38 @@ npx wrangler secret put ONEC_MCP_BRIDGE_URL
 ```
 
 `ONEC_MCP_BRIDGE_URL` должен быть HTTPS URL до этого bridge, например `https://onec-mcp.michael.kz`.
+
+## Автозапуск на Windows
+
+Bridge должен запускаться рядом с базой 1С после перезагрузки сервера. Для этого добавлены скрипты:
+
+```text
+start-onec-mcp-bridge.ps1       # читает .env и запускает uvicorn на 127.0.0.1:8091
+install-autostart-task.ps1      # создает задачу Windows Scheduler от SYSTEM при старте Windows
+uninstall-autostart-task.ps1    # удаляет задачу автозапуска
+```
+
+Установка задачи:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\onec-mcp-bridge
+.\install-autostart-task.ps1
+```
+
+Запустить задачу сразу без перезагрузки:
+
+```powershell
+Start-ScheduledTask -TaskName SalesAiManager-1C-MCP-Bridge
+```
+
+Проверка:
+
+```powershell
+$token = (Get-Content .env | Select-String 'ONEC_MCP_BRIDGE_TOKEN=(.+)').Matches[0].Groups[1].Value.Trim()
+Invoke-RestMethod http://127.0.0.1:8091/health -Headers @{ Authorization = "Bearer $token" }
+```
+
+Лог пишется в `onec-mcp-bridge/logs/onec-mcp-bridge.log`. Файл `.env` и логи не коммитятся в git.
 
 ## Ограничения
 

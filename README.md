@@ -218,7 +218,7 @@ notepad .env
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8091
+.\start-onec-mcp-bridge.ps1
 ```
 
 В `.env` укажите путь к скачанному `mcp-1c`:
@@ -239,6 +239,20 @@ npx wrangler deploy
 ```
 
 `ONEC_MCP_BRIDGE_URL` должен быть доступен Worker по HTTPS. Для production используйте Cloudflare Tunnel, VPN или другой закрытый канал. Не открывайте bridge в интернет без ограничения доступа.
+
+Автозапуск bridge на Windows-сервере 1С:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\onec-mcp-bridge
+.\install-autostart-task.ps1
+Start-ScheduledTask -TaskName SalesAiManager-1C-MCP-Bridge
+```
+
+Задача `SalesAiManager-1C-MCP-Bridge` запускается от `SYSTEM` при старте Windows, читает локальный `.env`, поднимает `uvicorn` на `127.0.0.1:8091` и пишет лог в `onec-mcp-bridge/logs/onec-mcp-bridge.log`. Чтобы удалить автозапуск:
+
+```powershell
+.\uninstall-autostart-task.ps1
+```
 
 Ограничения текущего этапа:
 
