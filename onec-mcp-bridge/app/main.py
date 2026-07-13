@@ -10,6 +10,8 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .source_reader import READ_SOURCE_TOOL, SourceReader, SourceReaderError
+
 
 DEFAULT_ALLOWED_TOOLS = {
     "get_metadata_tree",
@@ -21,6 +23,7 @@ DEFAULT_ALLOWED_TOOLS = {
     "execute_query",
     "validate_query",
     "get_event_log",
+    "read_source",
 }
 
 
@@ -216,6 +219,7 @@ class McpClient:
 
 app = FastAPI(title="Sales AI Manager 1C MCP Bridge", version="0.1.0")
 client = McpClient()
+source_reader = SourceReader(env_text("ONEC_MCP_DUMP_PATH"))
 
 
 def require_token(
@@ -244,6 +248,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
             "service": "onec-mcp-bridge",
             "allowed_tools": sorted(allowed_tools()),
             "tools_count": len(tools),
+            "source_reader": source_reader.status(),
             **client.health(),
         }
     except McpRuntimeError as exc:
@@ -255,6 +260,10 @@ def list_tools(_: None = Depends(require_token)) -> dict[str, Any]:
     allowed = allowed_tools()
     try:
         tools = [tool for tool in client.tools() if tool.get("name") in allowed]
+        if source_reader.available and "read_source" in allowed and not any(
+            tool.get("name") == "read_source" for tool in tools
+        ):
+            tools.append(READ_SOURCE_TOOL)
         return {"tools": tools, "allowed_tools": sorted(allowed)}
     except McpRuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -269,7 +278,16 @@ async def call_tool(payload: ToolCallRequest, request: Request, _: None = Depend
         raise HTTPException(status_code=400, detail="arguments должен быть объектом.")
 
     try:
+        if payload.name == "read_source":
+            if not source_reader.available:
+                raise HTTPException(
+                    status_code=503,
+                    detail="read_source не настроен: укажите ONEC_MCP_DUMP_PATH.",
+                )
+            return {"tool": payload.name, "result": source_reader.read(payload.arguments)}
         result = client.call_tool(payload.name, payload.arguments)
         return {"tool": payload.name, "result": result}
+    except SourceReaderError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except McpRuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

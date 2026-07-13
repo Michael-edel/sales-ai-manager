@@ -19,6 +19,13 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 - требует токен `ONEC_MCP_BRIDGE_TOKEN`;
 - по умолчанию разрешает только read-only/diagnostic инструменты `mcp-1c`.
 
+При заданном `ONEC_MCP_DUMP_PATH` bridge также публикует собственный read-only
+инструмент `read_source`. Он читает полный BSL-файл из выгрузки
+`DumpConfigToFiles`, возвращает `sourceComplete: true` и не принимает произвольные
+пути. Файлы за пределами dump-каталога, включая symlink на внешний файл,
+отбрасываются. После обновления выгрузки перезапустите bridge, чтобы пересобрать
+индекс модулей.
+
 ## Настройка
 
 1. Скачайте `mcp-1c` с GitHub: https://github.com/feenlace/mcp-1c
@@ -35,6 +42,16 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 Copy-Item .env.example .env
 notepad .env
 ```
+
+Для полного исходного текста задайте путь к read-only выгрузке 1С:
+
+```env
+ONEC_MCP_DUMP_PATH=C:\1C\DumpConfigToFiles
+```
+
+Сама выгрузка создается штатной операцией `DumpConfigToFiles`; конфигурация 1С
+не изменяется. Если переменная не задана, доступны только инструменты
+`mcp-1c`, а Inspector корректно показывает частичное покрытие источника.
 
 5. Установите зависимости и запустите bridge:
 

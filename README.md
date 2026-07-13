@@ -186,6 +186,7 @@ onec-mcp-bridge/
 - `mcp-1c` запускается локальным процессом рядом с 1С и обращается к HTTP-сервису 1С;
 - Cloudflare Worker не может запускать `mcp-1c.exe` и не должен иметь прямой доступ в локальную сеть 1С;
 - `onec-mcp-bridge` принимает HTTPS-запрос от Worker, проверяет токен и вызывает разрешенные MCP-инструменты.
+- При настройке `ONEC_MCP_DUMP_PATH` bridge дополнительно публикует read-only `read_source` для полного BSL-модуля; без dump-каталога приложение использует только доступные фрагменты `search_code`.
 
 Разрешенные инструменты по умолчанию:
 
@@ -226,6 +227,7 @@ pip install -r requirements.txt
 ```env
 ONEC_MCP_COMMAND=C:\tools\mcp-1c.exe
 ONEC_MCP_ARGS=--base http://localhost:8080/hs/mcp-1c
+# ONEC_MCP_DUMP_PATH=C:\1C\DumpConfigToFiles
 ONEC_MCP_BRIDGE_TOKEN=сложный-токен
 ```
 
