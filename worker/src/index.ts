@@ -138,6 +138,11 @@ type EmailStatus = "received" | "in_work" | "done" | "deleted";
 const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers", "done", "trash"];
 const EMAIL_SENDER_ROUTE_FOLDERS: EmailFolder[] = ["suppliers", "buyers"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
+const PASSWORD_PBKDF2_ITERATIONS = 600_000;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+const DUMMY_PASSWORD_SALT = "AAAAAAAAAAAAAAAAAAAAAA==";
 const DEFAULT_ONEC_MCP_ALLOWED_TOOLS = [
   "get_metadata_tree",
   "get_object_structure",
@@ -1519,23 +1524,73 @@ async function ensureInitialUser(env: Env): Promise<void> {
   const username = normalizeUsername(env.ACCESS_USERNAME || "manager");
   const password = await hashPassword(env.ACCESS_PASSWORD);
   await env.DB.prepare(`
-    INSERT OR IGNORE INTO app_users (username, display_name, role, password_hash, password_salt)
-    VALUES (?, ?, ?, ?, ?)
-  `).bind(username, "Администратор", "admin", password.hash, password.salt).run();
+    INSERT OR IGNORE INTO app_users (
+      username, display_name, role, password_hash, password_salt, password_iterations
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(
+    username,
+    "Администратор",
+    "admin",
+    password.hash,
+    password.salt,
+    PASSWORD_PBKDF2_ITERATIONS,
+  ).run();
 }
 
 async function login(request: Request, env: Env): Promise<Response> {
-  const payload = (await request.json()) as { username?: string; password?: string };
+  let payload: { username?: string; password?: string };
+  try {
+    payload = (await request.json()) as { username?: string; password?: string };
+  } catch {
+    return json({ detail: "Передайте логин и пароль в формате JSON." }, 400);
+  }
   const username = normalizeUsername(payload.username || "");
   const password = typeof payload.password === "string" ? payload.password : "";
   if (!username || !password) return json({ detail: "Введите имя пользователя и пароль." }, 400);
+  if (username.length > 64 || password.length > 256) {
+    return json({ detail: "Неверное имя пользователя или пароль." }, 401);
+  }
+
+  const attemptKey = await loginAttemptKey(request, username);
+  const blockedUntil = await getLoginBlockedUntil(env, attemptKey);
+  if (blockedUntil) {
+    const retryAfter = Math.max(1, Math.ceil((blockedUntil.getTime() - Date.now()) / 1000));
+    return jsonWithHeaders({
+      detail: "Слишком много неудачных попыток. Повторите вход позже.",
+    }, 429, { "Retry-After": String(retryAfter) });
+  }
 
   const user = await env.DB.prepare(`
     SELECT * FROM app_users WHERE username = ? AND is_active = 1
   `).bind(username).first() as Record<string, any> | null;
 
-  if (!user || !(await verifyPassword(password, String(user.password_salt), String(user.password_hash)))) {
+  const passwordIterations = normalizePasswordIterations(user?.password_iterations);
+  const passwordMatches = await verifyPassword(
+    password,
+    user ? String(user.password_salt) : DUMMY_PASSWORD_SALT,
+    user ? String(user.password_hash) : "",
+    user ? passwordIterations : PASSWORD_PBKDF2_ITERATIONS,
+  );
+  if (!user || !passwordMatches) {
+    await recordLoginFailure(env, attemptKey);
     return json({ detail: "Неверное имя пользователя или пароль." }, 401);
+  }
+
+  await env.DB.prepare("DELETE FROM auth_login_attempts WHERE attempt_key = ?").bind(attemptKey).run();
+
+  if (passwordIterations < PASSWORD_PBKDF2_ITERATIONS) {
+    const upgradedPassword = await hashPassword(password);
+    await env.DB.prepare(`
+      UPDATE app_users
+      SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      upgradedPassword.hash,
+      upgradedPassword.salt,
+      PASSWORD_PBKDF2_ITERATIONS,
+      Number(user.id),
+    ).run();
   }
 
   const token = generateSessionToken();
@@ -1616,9 +1671,19 @@ async function createUser(request: Request, env: Env) {
 
   const password = await hashPassword(passwordValue);
   const result = await env.DB.prepare(`
-    INSERT INTO app_users (username, display_name, role, email_address, password_hash, password_salt)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(username, displayName, role, emailAddress || null, password.hash, password.salt).run();
+    INSERT INTO app_users (
+      username, display_name, role, email_address, password_hash, password_salt, password_iterations
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    username,
+    displayName,
+    role,
+    emailAddress || null,
+    password.hash,
+    password.salt,
+    PASSWORD_PBKDF2_ITERATIONS,
+  ).run();
   const id = Number(result.meta.last_row_id);
   if (emailAddress) {
     await assignExistingEmailsToUser(env, emailAddress, displayName || username);
@@ -1637,9 +1702,9 @@ async function resetUserPassword(request: Request, env: Env, userId: number) {
   const password = await hashPassword(passwordValue);
   const result = await env.DB.prepare(`
     UPDATE app_users
-    SET password_hash = ?, password_salt = ?, updated_at = datetime('now')
+    SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
     WHERE id = ?
-  `).bind(password.hash, password.salt, userId).run();
+  `).bind(password.hash, password.salt, PASSWORD_PBKDF2_ITERATIONS, userId).run();
   if (!result.meta.changes) return null;
   await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
   return env.DB.prepare(`
@@ -6591,7 +6656,11 @@ function normalizeRole(value: unknown): string {
   return ["admin", "manager", "accountant", "viewer"].includes(role) ? role : "manager";
 }
 
-async function hashPassword(password: string, saltBase64 = ""): Promise<{ hash: string; salt: string }> {
+async function hashPassword(
+  password: string,
+  saltBase64 = "",
+  iterations = PASSWORD_PBKDF2_ITERATIONS,
+): Promise<{ hash: string; salt: string }> {
   const salt = saltBase64 ? base64ToBytes(saltBase64) : crypto.getRandomValues(new Uint8Array(16));
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
@@ -6600,7 +6669,7 @@ async function hashPassword(password: string, saltBase64 = ""): Promise<{ hash: 
       name: "PBKDF2",
       hash: "SHA-256",
       salt,
-      iterations: 100000,
+      iterations,
     },
     key,
     256,
@@ -6611,9 +6680,66 @@ async function hashPassword(password: string, saltBase64 = ""): Promise<{ hash: 
   };
 }
 
-async function verifyPassword(password: string, salt: string, expectedHash: string): Promise<boolean> {
-  const actual = await hashPassword(password, salt);
+async function verifyPassword(
+  password: string,
+  salt: string,
+  expectedHash: string,
+  iterations = PASSWORD_PBKDF2_ITERATIONS,
+): Promise<boolean> {
+  const actual = await hashPassword(password, salt, iterations);
   return timingSafeEqualBytes(base64ToBytes(actual.hash), base64ToBytes(expectedHash));
+}
+
+function normalizePasswordIterations(value: unknown): number {
+  const iterations = Number(value || 100_000);
+  return Number.isFinite(iterations) && iterations >= 100_000
+    ? Math.floor(iterations)
+    : 100_000;
+}
+
+async function loginAttemptKey(request: Request, username: string): Promise<string> {
+  const source = request.headers.get("CF-Connecting-IP") || "unknown";
+  return sha256Base64(`${username}|${source}`);
+}
+
+async function getLoginBlockedUntil(env: Env, attemptKey: string): Promise<Date | null> {
+  const row = await env.DB.prepare(`
+    SELECT blocked_until
+    FROM auth_login_attempts
+    WHERE attempt_key = ?
+  `).bind(attemptKey).first() as Record<string, unknown> | null;
+  const blockedUntil = normalizeOptionalText(row?.blocked_until);
+  if (!blockedUntil) return null;
+  const value = new Date(`${blockedUntil.replace(" ", "T")}Z`);
+  return Number.isNaN(value.getTime()) || value.getTime() <= Date.now() ? null : value;
+}
+
+async function recordLoginFailure(env: Env, attemptKey: string): Promise<void> {
+  const row = await env.DB.prepare(`
+    SELECT failed_count, window_started_at
+    FROM auth_login_attempts
+    WHERE attempt_key = ?
+  `).bind(attemptKey).first() as Record<string, unknown> | null;
+  const now = Date.now();
+  const startedAtText = normalizeOptionalText(row?.window_started_at);
+  const startedAt = startedAtText ? new Date(`${startedAtText.replace(" ", "T")}Z`).getTime() : 0;
+  const withinWindow = Number.isFinite(startedAt) && now - startedAt < LOGIN_WINDOW_MS;
+  const failedCount = withinWindow ? Number(row?.failed_count || 0) + 1 : 1;
+  const windowStartedAt = toSqlDateTime(new Date(withinWindow ? startedAt : now));
+  const blockedUntil = failedCount >= LOGIN_FAILURE_LIMIT
+    ? toSqlDateTime(new Date(now + LOGIN_BLOCK_MS))
+    : null;
+
+  await env.DB.prepare(`
+    INSERT INTO auth_login_attempts (
+      attempt_key, failed_count, window_started_at, blocked_until, updated_at
+    ) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(attempt_key) DO UPDATE SET
+      failed_count = excluded.failed_count,
+      window_started_at = excluded.window_started_at,
+      blocked_until = excluded.blocked_until,
+      updated_at = datetime('now')
+  `).bind(attemptKey, failedCount, windowStartedAt, blockedUntil).run();
 }
 
 function timingSafeEqualBytes(actual: Uint8Array, expected: Uint8Array): boolean {
