@@ -3,6 +3,7 @@ import PostalMime from "postal-mime";
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  EMAIL_ATTACHMENTS: R2Bucket;
   AI_PROVIDER: string;
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
@@ -108,7 +109,15 @@ type EmailIngestPayload = {
   body_text?: unknown;
   attachment_names?: unknown;
   attachment_text?: unknown;
+  attachments?: unknown;
   received_at?: unknown;
+};
+
+type EmailIngestAttachment = {
+  filename?: unknown;
+  content_type?: unknown;
+  size_bytes?: unknown;
+  content_base64?: unknown;
 };
 
 type EmailMessageInput = {
@@ -1545,6 +1554,9 @@ const MAX_UPLOAD_REQUEST_BYTES = MAX_AUDIO_UPLOAD_BYTES + 1024 * 1024;
 const DEFAULT_EXTERNAL_TIMEOUT_MS = 30_000;
 const AI_EXTERNAL_TIMEOUT_MS = 90_000;
 const PARSER_EXTERNAL_TIMEOUT_MS = 60_000;
+const MAX_EMAIL_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+const MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES = 20 * 1024 * 1024;
+const MAX_EMAIL_ATTACHMENTS = 20;
 
 async function fetchWithTimeout(
   input: RequestInfo | URL,
@@ -4137,7 +4149,7 @@ async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
     .join("; ");
   const receivedAt = normalizeEmailDate(parsed.date || message.headers.get("date"));
 
-  await storeEmailMessage(env, {
+  const stored = await storeEmailMessage(env, {
     mailbox_name: "Cloudflare Email Routing",
     mailbox_email: normalizeOptionalText(message.to) || toAddress || null,
     michael_manager: null,
@@ -4150,6 +4162,9 @@ async function storeRoutedEmail(env: Env, message: ForwardableEmailMessage) {
     attachment_text: null,
     received_at: receivedAt || null,
   });
+  if (stored.id && attachments.length) {
+    await storeRoutedEmailAttachments(env, stored.id, messageUid, attachments);
+  }
 }
 
 async function ingestEmailMessage(request: Request, env: Env): Promise<Response> {
@@ -4190,13 +4205,148 @@ async function ingestEmailMessage(request: Request, env: Env): Promise<Response>
   };
 
   const stored = await storeEmailMessage(env, item);
+  const attachmentResult = stored.id
+    ? await storeIngestedEmailAttachments(env, stored.id, item.message_uid, payload.attachments)
+    : { stored: 0, skipped: 0 };
   return json({
     ok: true,
     inserted: stored.inserted,
     id: stored.id,
     mailbox_email: item.mailbox_email,
     message_uid: item.message_uid,
+    attachments_stored: attachmentResult.stored,
+    attachments_skipped: attachmentResult.skipped,
   });
+}
+
+async function storeIngestedEmailAttachments(
+  env: Env,
+  emailMessageId: number,
+  messageUid: string,
+  value: unknown,
+): Promise<{ stored: number; skipped: number }> {
+  if (!Array.isArray(value)) return { stored: 0, skipped: 0 };
+
+  let stored = 0;
+  let skipped = 0;
+  let totalBytes = 0;
+  for (const [index, rawAttachment] of value.slice(0, MAX_EMAIL_ATTACHMENTS).entries()) {
+    const attachment = rawAttachment as EmailIngestAttachment;
+    const fileName = normalizeEmailAttachmentName(attachment?.filename, index);
+    if (!isDocument(fileName.toLowerCase())) {
+      skipped += 1;
+      continue;
+    }
+
+    const declaredSize = Number(attachment?.size_bytes || 0);
+    const base64 = normalizeOptionalText(attachment?.content_base64).replace(/\s+/g, "");
+    if (!base64 || declaredSize <= 0 || declaredSize > MAX_EMAIL_ATTACHMENT_BYTES) {
+      skipped += 1;
+      continue;
+    }
+    const estimatedSize = Math.floor(base64.length * 3 / 4);
+    if (estimatedSize > MAX_EMAIL_ATTACHMENT_BYTES || totalBytes + estimatedSize > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) {
+      skipped += 1;
+      continue;
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = base64ToBytes(base64);
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    if (!bytes.length || bytes.length > MAX_EMAIL_ATTACHMENT_BYTES || totalBytes + bytes.length > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) {
+      skipped += 1;
+      continue;
+    }
+
+    await storeEmailAttachmentBytes(
+      env,
+      emailMessageId,
+      index,
+      messageUid,
+      fileName,
+      normalizeOptionalText(attachment?.content_type) || "application/octet-stream",
+      bytes,
+    );
+    totalBytes += bytes.length;
+    stored += 1;
+  }
+  skipped += Math.max(0, value.length - MAX_EMAIL_ATTACHMENTS);
+  return { stored, skipped };
+}
+
+async function storeRoutedEmailAttachments(
+  env: Env,
+  emailMessageId: number,
+  messageUid: string,
+  attachments: Record<string, any>[],
+): Promise<void> {
+  let totalBytes = 0;
+  for (const [index, attachment] of attachments.slice(0, MAX_EMAIL_ATTACHMENTS).entries()) {
+    const fileName = normalizeEmailAttachmentName(attachment.filename, index);
+    if (!isDocument(fileName.toLowerCase())) continue;
+
+    const content = attachment.content instanceof Uint8Array
+      ? attachment.content
+      : attachment.content instanceof ArrayBuffer
+        ? new Uint8Array(attachment.content)
+        : null;
+    if (!content?.length || content.length > MAX_EMAIL_ATTACHMENT_BYTES) continue;
+    if (totalBytes + content.length > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) break;
+
+    await storeEmailAttachmentBytes(
+      env,
+      emailMessageId,
+      index,
+      messageUid,
+      fileName,
+      normalizeOptionalText(attachment.mimeType || attachment.contentType) || "application/octet-stream",
+      content,
+    );
+    totalBytes += content.length;
+  }
+}
+
+async function storeEmailAttachmentBytes(
+  env: Env,
+  emailMessageId: number,
+  ordinal: number,
+  messageUid: string,
+  fileName: string,
+  contentType: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const existing = await env.DB.prepare(`
+    SELECT id
+    FROM email_attachments
+    WHERE email_message_id = ? AND ordinal = ?
+  `).bind(emailMessageId, ordinal).first();
+  if (existing) return;
+
+  const digest = await sha256Base64Url(`${messageUid}|${ordinal}|${fileName}`);
+  const r2Key = `email/${emailMessageId}/${ordinal}-${digest}-${safeR2FileName(fileName)}`;
+  await env.EMAIL_ATTACHMENTS.put(r2Key, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { email_message_id: String(emailMessageId), file_name: fileName },
+  });
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO email_attachments (
+      email_message_id, ordinal, file_name, content_type, size_bytes, r2_key, parse_status
+    ) VALUES (?, ?, ?, ?, ?, ?, 'stored')
+  `).bind(emailMessageId, ordinal, fileName, contentType.slice(0, 200), bytes.length, r2Key).run();
+}
+
+function normalizeEmailAttachmentName(value: unknown, index: number): string {
+  const fallback = `attachment-${index + 1}`;
+  const name = normalizeOptionalText(value).replace(/[\\/\u0000-\u001f]/g, "_").slice(0, 255);
+  return name || fallback;
+}
+
+function safeR2FileName(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120) || "attachment";
 }
 
 async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ inserted: boolean; id: number | null }> {
@@ -4258,7 +4408,8 @@ async function processEmailMessage(env: Env, emailId: number) {
     if (existing) return existing;
   }
 
-  const emailText = buildEmailAnalysisText(emailItem);
+  const storedAttachmentText = await buildStoredEmailAttachmentText(env, emailId);
+  const emailText = buildEmailAnalysisText(emailItem, storedAttachmentText);
   const clientCompany = detectKbiEnergy(emailText) ? "ТОО KBI Energy" : "";
   const metadata: Metadata = {
     client_company: clientCompany,
@@ -4304,7 +4455,101 @@ async function processEmailMessage(env: Env, emailId: number) {
   return getRequest(env, Number(item.id));
 }
 
-function buildEmailAnalysisText(emailItem: Record<string, any>): string {
+async function buildStoredEmailAttachmentText(env: Env, emailId: number): Promise<string> {
+  const result = await env.DB.prepare(`
+    SELECT id, file_name, content_type, size_bytes, r2_key, parsed_text, parse_status
+    FROM email_attachments
+    WHERE email_message_id = ?
+    ORDER BY ordinal ASC
+  `).bind(emailId).all();
+  if (!result.results.length) return "";
+
+  const parts: string[] = [];
+  for (const row of result.results as Record<string, any>[]) {
+    const fileName = normalizeEmailAttachmentName(row.file_name, 0);
+    let text = normalizeOptionalText(row.parsed_text);
+    if (!text) {
+      try {
+        const object = await env.EMAIL_ATTACHMENTS.get(String(row.r2_key || ""));
+        if (!object) throw new Error("Вложение отсутствует в R2.");
+        const content = await object.arrayBuffer();
+        if (!content.byteLength || content.byteLength > MAX_EMAIL_ATTACHMENT_BYTES) {
+          throw new Error("Размер вложения недопустим.");
+        }
+        const file = new File([content], fileName, {
+          type: normalizeOptionalText(row.content_type) || "application/octet-stream",
+        });
+        const parsed = await parseDocumentWithService(env, file);
+        text = parsedDocumentText(parsed);
+        if (!text) {
+          const pages = parsedImagePages(parsed);
+          if (pages.length) text = await extractTextFromDocumentImages(env, pages, fileName);
+        }
+        if (!text) throw new Error("Текст во вложении не найден.");
+
+        text = limitText(text, 120000);
+        await env.DB.prepare(`
+          UPDATE email_attachments
+          SET parsed_text = ?, parse_status = 'parsed', parse_error = NULL, updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(text, Number(row.id)).run();
+      } catch (error) {
+        console.error("Email attachment parsing failed", {
+          email_id: emailId,
+          attachment_id: Number(row.id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await env.DB.prepare(`
+          UPDATE email_attachments
+          SET parse_status = 'failed', parse_error = ?, updated_at = datetime('now')
+          WHERE id = ?
+        `).bind("Не удалось извлечь текст из вложения.", Number(row.id)).run();
+        parts.push(`Вложение ${fileName}: текст не извлечен; менеджеру нужно проверить файл вручную.`);
+        continue;
+      }
+    }
+    parts.push(`Вложение ${fileName}:\n${text}`);
+  }
+  return limitText(parts.join("\n\n"), 200000);
+}
+
+async function extractTextFromDocumentImages(
+  env: Env,
+  pages: ParsedImagePage[],
+  fileName: string,
+): Promise<string> {
+  if (useGemini(env)) {
+    requireGemini(env);
+    const parts: Record<string, unknown>[] = [
+      { text: `Распознай и верни только полный текст страниц вложения ${fileName}. Не анализируй и не добавляй выводы.` },
+    ];
+    for (const page of pages) {
+      parts.push({ text: `Страница ${page.pageNumber}` });
+      parts.push({ inline_data: { mime_type: page.payload.mimeType, data: page.payload.base64 } });
+    }
+    return readGeminiText(await fetchGeminiGenerateContent(env, { contents: [{ parts }] }));
+  }
+
+  requireOpenAI(env);
+  const content: Array<Record<string, string>> = [
+    { type: "input_text", text: `Распознай и верни только полный текст страниц вложения ${fileName}. Не анализируй и не добавляй выводы.` },
+  ];
+  for (const page of pages) {
+    content.push({ type: "input_text", text: `Страница ${page.pageNumber}` });
+    content.push({ type: "input_image", image_url: page.payload.dataUrl });
+  }
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: openAIHeaders(env),
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL || "gpt-5.5",
+      input: [{ role: "user", content }],
+    }),
+  }, AI_EXTERNAL_TIMEOUT_MS);
+  return readOpenAIText(response);
+}
+
+function buildEmailAnalysisText(emailItem: Record<string, any>, storedAttachmentText = ""): string {
   const parts = [
     "Входящее письмо из почтового ящика Michael.",
     `От: ${emailItem.from_address || "уточняется"}`,
@@ -4319,6 +4564,7 @@ function buildEmailAnalysisText(emailItem: Record<string, any>): string {
   ];
   if (emailItem.attachment_names) parts.push("", "Вложения:", emailItem.attachment_names);
   if (emailItem.attachment_text) parts.push("", "Текст из поддерживаемых вложений:", emailItem.attachment_text);
+  if (storedAttachmentText) parts.push("", "Текст из PDF/DOCX/XLSX, сохраненных в R2:", storedAttachmentText);
   return parts.join("\n");
 }
 
@@ -6803,6 +7049,11 @@ function generateSessionToken(): string {
 async function sha256Base64(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return bytesToBase64(new Uint8Array(digest));
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return bytesToBase64Url(new Uint8Array(digest));
 }
 
 async function sha256Base64UrlBytes(value: ArrayBuffer): Promise<string> {

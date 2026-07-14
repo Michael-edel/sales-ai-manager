@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import email
 import imaplib
 import json
@@ -44,6 +45,8 @@ class Config:
     mailbox_name: str
     michael_manager: str
     attachment_text_max_chars: int
+    attachment_binary_max_bytes: int
+    attachment_total_max_bytes: int
 
 
 def main() -> int:
@@ -109,6 +112,8 @@ def load_config(base_dir: Path) -> Config:
         mailbox_name=getenv("MAILBOX_NAME", "direktor@edel.kz mailcow"),
         michael_manager=getenv("MICHAEL_MANAGER", ""),
         attachment_text_max_chars=getenv_int("ATTACHMENT_TEXT_MAX_CHARS", 60000),
+        attachment_binary_max_bytes=getenv_int("ATTACHMENT_BINARY_MAX_MB", 15) * 1024 * 1024,
+        attachment_total_max_bytes=getenv_int("ATTACHMENT_TOTAL_MAX_MB", 20) * 1024 * 1024,
     )
 
 
@@ -231,7 +236,12 @@ def build_ingest_payload(config: Config, uidvalidity: str, uid: str, raw_message
         raise RuntimeError("Unable to parse message as EmailMessage")
 
     body_text = extract_body_text(msg)
-    attachment_names, attachment_text = extract_attachments(msg, config.attachment_text_max_chars)
+    attachment_names, attachment_text, attachments = extract_attachments(
+        msg,
+        config.attachment_text_max_chars,
+        config.attachment_binary_max_bytes,
+        config.attachment_total_max_bytes,
+    )
     message_uid = f"imap:{config.imap_username}:{config.imap_mailbox}:{uidvalidity}:{uid}"
 
     return {
@@ -245,6 +255,7 @@ def build_ingest_payload(config: Config, uidvalidity: str, uid: str, raw_message
         "body_text": body_text,
         "attachment_names": attachment_names,
         "attachment_text": attachment_text,
+        "attachments": attachments,
         "received_at": normalize_message_date(msg.get("date")),
     }
 
@@ -276,10 +287,17 @@ def extract_body_text(msg: EmailMessage) -> str:
     return "\n\n".join(part for part in html_parts if part).strip()
 
 
-def extract_attachments(msg: EmailMessage, max_chars: int) -> tuple[list[str], str]:
+def extract_attachments(
+    msg: EmailMessage,
+    max_chars: int,
+    max_attachment_bytes: int,
+    max_total_bytes: int,
+) -> tuple[list[str], str, list[dict[str, object]]]:
     names: list[str] = []
     text_parts: list[str] = []
+    binary_attachments: list[dict[str, object]] = []
     current_chars = 0
+    current_binary_bytes = 0
 
     for part in msg.walk():
         if part.is_multipart():
@@ -293,6 +311,21 @@ def extract_attachments(msg: EmailMessage, max_chars: int) -> tuple[list[str], s
         names.append(display_name)
 
         content_type = part.get_content_type()
+        extension = Path(display_name).suffix.lower()
+        if extension in {".pdf", ".docx", ".xlsx"}:
+            payload = part.get_payload(decode=True)
+            if isinstance(payload, bytes) and payload:
+                if len(payload) <= max_attachment_bytes and current_binary_bytes + len(payload) <= max_total_bytes:
+                    binary_attachments.append(
+                        {
+                            "filename": display_name,
+                            "content_type": content_type or "application/octet-stream",
+                            "size_bytes": len(payload),
+                            "content_base64": base64.b64encode(payload).decode("ascii"),
+                        }
+                    )
+                    current_binary_bytes += len(payload)
+
         if content_type not in {"text/plain", "text/csv", "text/html"}:
             continue
 
@@ -314,7 +347,7 @@ def extract_attachments(msg: EmailMessage, max_chars: int) -> tuple[list[str], s
         text_parts.append(f"Вложение {display_name}:\n{clipped}")
         current_chars += len(clipped)
 
-    return names, "\n\n".join(text_parts).strip()
+    return names, "\n\n".join(text_parts).strip(), binary_attachments
 
 
 def normalize_addresses(value: object) -> str:

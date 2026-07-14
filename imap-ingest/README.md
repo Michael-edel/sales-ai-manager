@@ -8,6 +8,7 @@ user@edel.kz -> IMAP ingest -> https://ai.michael.kz/api/email/ingest -> D1 emai
 
 Worker не хранит пароль от почтового ящика. Пароль находится только в локальном `.env` этого сервиса.
 В приложении администратор привязывает такой же email `@edel.kz` к пользователю. После загрузки письма Worker назначает письмо этому пользователю по `mailbox_email`.
+PDF/DOCX/XLSX-вложения передаются в защищенный ingest endpoint в base64, после чего Worker сохраняет бинарные данные в приватном R2. По умолчанию допускается до 15 МБ на файл и до 20 МБ вложений на письмо.
 
 ## Настройка
 
@@ -24,6 +25,7 @@ notepad .env
 - `MAILBOX_NAME` — понятное имя ящика для интерфейса;
 - `STATE_DB` — отдельный sqlite-файл состояния для каждого запуска/ящика;
 - `EMAIL_INGEST_TOKEN` — тот же секрет, который задан в Worker через `npx wrangler secret put EMAIL_INGEST_TOKEN`.
+- `ATTACHMENT_BINARY_MAX_MB` и `ATTACHMENT_TOTAL_MAX_MB` — локальные лимиты передачи бинарных PDF/DOCX/XLSX; они должны быть не выше серверных 15/20 МБ.
 
 Для mailcow `mail-edel.edel.kz` используется порт `143` + `STARTTLS`.
 

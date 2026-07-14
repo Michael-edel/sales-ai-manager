@@ -29,3 +29,7 @@ binding = "DB"
 database_name = "sales-ai-manager"
 database_id = "5c15e8fa-320e-435a-a4ba-8f4925ee0490"
 migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "EMAIL_ATTACHMENTS"
+bucket_name = "sales-ai-manager-email-attachments"
