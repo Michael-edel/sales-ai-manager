@@ -55,6 +55,8 @@ https://ai.michael.kz
 
 Docker/FastAPI версия в проекте оставлена как legacy-прототип, но для дальнейшей работы используйте папку `worker/`.
 
+Рабочий код постепенно разделяется по ответственности: общие политики загрузки и HTTP-таймауты находятся в `worker/src/lib/`, а навигация и список входящей почты — в `frontend/src/components/email/`. `worker/src/index.ts` остается точкой маршрутизации Worker, `frontend/src/App.jsx` — контейнером состояния приложения.
+
 ## Что входит
 
 - React + Vite frontend.
