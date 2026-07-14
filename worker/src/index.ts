@@ -1538,6 +1538,33 @@ async function ensureInitialUser(env: Env): Promise<void> {
   ).run();
 }
 
+const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_DOCUMENT_UPLOAD_BYTES = 15 * 1024 * 1024;
+const MAX_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = MAX_AUDIO_UPLOAD_BYTES + 1024 * 1024;
+const DEFAULT_EXTERNAL_TIMEOUT_MS = 30_000;
+const AI_EXTERNAL_TIMEOUT_MS = 90_000;
+const PARSER_EXTERNAL_TIMEOUT_MS = 60_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_EXTERNAL_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Внешний сервис не ответил за ${Math.ceil(timeoutMs / 1000)} секунд.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function login(request: Request, env: Env): Promise<Response> {
   let payload: { username?: string; password?: string };
   try {
@@ -1965,6 +1992,10 @@ async function processText(request: Request, env: Env) {
 }
 
 async function processUpload(request: Request, env: Env) {
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_REQUEST_BYTES) {
+    throw new UserInputError("Файл слишком большой. Максимальный размер загрузки: 20 МБ.", 413);
+  }
   const formData = await request.formData();
   const file = formData.get("file");
   if (!isUploadedFile(file)) throw new UserInputError("Файл не передан.");
@@ -1981,6 +2012,7 @@ async function processUpload(request: Request, env: Env) {
   const context = buildContextPrefix(metadata);
   const fileName = file.name || "uploaded-file";
   const lowerName = fileName.toLowerCase();
+  validateUploadedFile(file, lowerName);
 
   let originalText = "";
   let aiResult = "";
@@ -2033,11 +2065,6 @@ async function processUpload(request: Request, env: Env) {
         aiResult = await analyzeDocumentImages(env, imagePages, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
       }
     }
-  } else {
-    const text = await file.text().catch(() => "");
-    originalText = `${context}Файл: ${fileName}\n\n${managerNote ? `Пояснение менеджера:\n${managerNote}\n\n` : ""}${text || "Текст файла не извлечен. Поддерживаются изображения, голосовые файлы и документы PDF/DOCX/XLSX через parser-service."}`;
-    originalText = await appendOneCAnalysisContext(env, metadata, originalText);
-    aiResult = await analyzeText(env, originalText);
   }
 
   return insertRequest(env, {
@@ -2190,7 +2217,7 @@ async function checkOneCMcpBridge(env: Env) {
 
 async function listOneCMcpTools(env: Env) {
   const baseUrl = oneCMcpBridgeBaseUrl(env);
-  const response = await fetch(`${baseUrl}/tools`, {
+  const response = await fetchWithTimeout(`${baseUrl}/tools`, {
     method: "GET",
     headers: oneCMcpBridgeHeaders(env),
   });
@@ -2205,7 +2232,7 @@ async function executeOneCMcpTool(env: Env, toolName: string, toolArguments: Rec
   if (!oneCMcpAllowedTools(env).includes(normalizedToolName)) throw new UserInputError("Этот MCP-инструмент 1С не разрешен.");
 
   const baseUrl = oneCMcpBridgeBaseUrl(env);
-  const response = await fetch(`${baseUrl}/tools/call`, {
+  const response = await fetchWithTimeout(`${baseUrl}/tools/call`, {
     method: "POST",
     headers: oneCMcpBridgeHeaders(env, true),
     body: JSON.stringify({ name: normalizedToolName, arguments: toolArguments }),
@@ -3281,7 +3308,7 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   const headers = new Headers({ "Content-Type": "application/json" });
   if (env.EMAIL_BRIDGE_TOKEN) headers.set("X-Email-Bridge-Token", env.EMAIL_BRIDGE_TOKEN);
 
-  const response = await fetch(`${baseUrl}/send`, {
+  const response = await fetchWithTimeout(`${baseUrl}/send`, {
     method: "POST",
     headers,
     body: JSON.stringify({ to, subject, body }),
@@ -3381,7 +3408,7 @@ async function sendWhatsAppTemplateMessage(request: Request, env: Env, currentUs
     },
   };
 
-  const response = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+  const response = await fetchWithTimeout(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -3478,7 +3505,7 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
     return analyzeTextGemini(env, originalText, systemPrompt);
   }
   requireOpenAI(env);
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: openAIHeaders(env),
     body: JSON.stringify({
@@ -3486,7 +3513,7 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
       instructions: systemPrompt,
       input: `Проанализируй входящую заявку менеджера по продажам.\n\nЗаявка:\n${originalText}`,
     }),
-  });
+  }, AI_EXTERNAL_TIMEOUT_MS);
   return readOpenAIText(response);
 }
 
@@ -3496,7 +3523,7 @@ async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string
     return analyzeImageGemini(env, filePayload, fileName, managerNote, systemPrompt);
   }
   requireOpenAI(env);
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: openAIHeaders(env),
     body: JSON.stringify({
@@ -3515,7 +3542,7 @@ async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string
         },
       ],
     }),
-  });
+  }, AI_EXTERNAL_TIMEOUT_MS);
   return readOpenAIText(response);
 }
 
@@ -3542,7 +3569,7 @@ async function analyzeDocumentImages(
     content.push({ type: "input_image", image_url: page.payload.dataUrl });
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: openAIHeaders(env),
     body: JSON.stringify({
@@ -3550,7 +3577,7 @@ async function analyzeDocumentImages(
       instructions: systemPrompt,
       input: [{ role: "user", content }],
     }),
-  });
+  }, AI_EXTERNAL_TIMEOUT_MS);
   return readOpenAIText(response);
 }
 
@@ -3566,11 +3593,11 @@ async function transcribeAudio(env: Env, file: File, managerNote: string): Promi
   formData.append("response_format", "text");
   formData.append("prompt", `Голосовое сообщение из WhatsApp/Telegram по B2B-продажам электротехники. Контекст: ${managerNote || "нет"}`);
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
     body: formData,
-  });
+  }, AI_EXTERNAL_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Ошибка OpenAI transcription: ${await response.text()}`);
   return (await response.text()).trim();
 }
@@ -5883,6 +5910,24 @@ function isDocument(fileName: string): boolean {
   return [".pdf", ".docx", ".xlsx"].some((extension) => fileName.endsWith(extension));
 }
 
+function validateUploadedFile(file: File, fileName: string): void {
+  if (!isImage(fileName) && !isAudio(fileName) && !isDocument(fileName)) {
+    throw new UserInputError(
+      "Формат файла не поддерживается. Используйте PDF, DOCX, XLSX, PNG, JPG, WEBP, MP3, M4A, WAV, OGG, OPUS или WEBM.",
+    );
+  }
+  if (file.size <= 0) throw new UserInputError("Файл пустой.");
+
+  const maxBytes = isImage(fileName)
+    ? MAX_IMAGE_UPLOAD_BYTES
+    : isDocument(fileName)
+      ? MAX_DOCUMENT_UPLOAD_BYTES
+      : MAX_AUDIO_UPLOAD_BYTES;
+  if (file.size > maxBytes) {
+    throw new UserInputError(`Файл слишком большой. Максимальный размер для этого формата: ${maxBytes / 1024 / 1024} МБ.`, 413);
+  }
+}
+
 function normalizeWhatsAppTemplateName(value: unknown): string {
   return normalizeOptionalText(value).toLowerCase().replace(/[^a-z0-9_]/g, "");
 }
@@ -6357,11 +6402,11 @@ async function parseDocumentWithService(env: Env, file: File): Promise<ParsedDoc
   const headers = new Headers();
   if (env.PARSER_SERVICE_TOKEN) headers.set("X-Parser-Token", env.PARSER_SERVICE_TOKEN);
 
-  const response = await fetch(`${baseUrl}/parse`, {
+  const response = await fetchWithTimeout(`${baseUrl}/parse`, {
     method: "POST",
     headers,
     body: formData,
-  });
+  }, PARSER_EXTERNAL_TIMEOUT_MS);
   const raw = await response.text();
   let data: any = null;
   try {
@@ -6484,11 +6529,11 @@ async function fetchGeminiWithRetry(
       try {
         const url = endpoint === "interactions" ? geminiInteractionsUrl() : geminiGenerateUrl(model);
         const requestBody = endpoint === "interactions" ? { ...body, model } : body;
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
           method: "POST",
           headers: geminiHeaders(env),
           body: JSON.stringify(requestBody),
-        });
+        }, AI_EXTERNAL_TIMEOUT_MS);
         const raw = await response.text();
         lastResponse = cloneTextResponse(response, raw);
 

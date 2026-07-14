@@ -60,6 +60,8 @@ Docker/FastAPI версия в проекте оставлена как legacy-�
 - Python + FastAPI backend.
 - PostgreSQL для истории заявок.
 - Загрузка `.xlsx`, `.pdf`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.mp3`, `.m4a`, `.wav`, `.ogg`, `.opus`, `.webm`.
+- Проверка файла до чтения и отправки в ИИ: изображения до 10 МБ, PDF/DOCX/XLSX до 15 МБ, аудио до 20 МБ; пустые и неподдерживаемые файлы отклоняются с понятной ошибкой.
+- Вызовы Gemini/OpenAI ограничены 90 секундами, parser-service — 60 секундами, 1С MCP/email/WhatsApp — 30 секундами; временные ошибки Gemini повторяются с ограниченным backoff.
 - Обработка `.pdf` напрямую через Gemini, если `AI_PROVIDER=gemini` и `PARSER_SERVICE_URL` не задан.
 - Извлечение текста из `.docx`, `.xlsx` и расширенный разбор `.pdf`; в Cloudflare-версии это делает отдельный Python `parser-service`.
 - Vision-анализ сканированных PDF, если parser-service не нашел текст и вернул изображения страниц.

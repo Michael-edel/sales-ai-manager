@@ -12,6 +12,7 @@ from pypdf import PdfReader
 
 
 DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
+READ_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(title="Sales AI Manager Parser Service")
 
@@ -36,16 +37,10 @@ async def parse_file(
             detail="Поддерживаются только .pdf, .docx и .xlsx.",
         )
 
-    content = await file.read()
+    max_bytes = max_upload_bytes()
+    content = await read_upload_limited(file, max_bytes)
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл пустой.")
-
-    max_bytes = int(os.getenv("MAX_UPLOAD_MB", "15")) * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Файл слишком большой. Максимальный размер: {os.getenv('MAX_UPLOAD_MB', '15')} МБ.",
-        )
 
     try:
         if extension == ".pdf":
@@ -66,6 +61,30 @@ async def parse_file(
     parsed["extension"] = extension
     parsed["text"] = (parsed.get("text") or "").strip()
     return parsed
+
+
+def max_upload_bytes() -> int:
+    try:
+        max_upload_mb = int(os.getenv("MAX_UPLOAD_MB", "15"))
+    except ValueError:
+        max_upload_mb = 15
+    return min(max(max_upload_mb, 1), 100) * 1024 * 1024
+
+
+async def read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Файл слишком большой. Максимальный размер: {max_bytes // 1024 // 1024} МБ.",
+            )
+        chunks.append(chunk)
 
 
 def verify_token(value: str | None) -> None:

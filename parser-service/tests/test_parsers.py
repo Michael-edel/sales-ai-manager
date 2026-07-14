@@ -1,11 +1,13 @@
+import asyncio
 from io import BytesIO
 
 import pytest
 from docx import Document
 from fastapi import HTTPException
+from fastapi import UploadFile
 from openpyxl import Workbook
 
-from app.main import extract_docx, extract_xlsx, parse_pdf, verify_token
+from app.main import extract_docx, extract_xlsx, parse_pdf, read_upload_limited, verify_token
 
 
 def test_extract_docx_reads_paragraphs_and_tables() -> None:
@@ -97,3 +99,20 @@ def test_verify_token_accepts_matching_value(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("PARSER_SERVICE_TOKEN", "expected-token")
 
     verify_token("expected-token")
+
+
+def test_read_upload_limited_rejects_oversized_file() -> None:
+    upload = UploadFile(filename="large.pdf", file=BytesIO(b"12345"))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(read_upload_limited(upload, 4))
+
+    assert exc.value.status_code == 413
+
+
+def test_read_upload_limited_reads_within_limit() -> None:
+    upload = UploadFile(filename="small.pdf", file=BytesIO(b"1234"))
+
+    content = asyncio.run(read_upload_limited(upload, 4))
+
+    assert content == b"1234"
