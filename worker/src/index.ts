@@ -1363,11 +1363,11 @@ export default {
         return json(await listEmailMessages(env, currentUser, url.searchParams.get("folder")));
       }
       if (request.method === "GET" && url.pathname === "/api/email/sender-filters") {
-        return json(await listEmailSenderFilters(env));
+        return json(await listEmailSenderFilters(env, currentUser));
       }
       if (request.method === "POST" && url.pathname === "/api/email/sender-filters") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        return json(await createEmailSenderFilter(request, env));
+        return json(await createEmailSenderFilter(request, env, currentUser));
       }
       if (request.method === "GET" && url.pathname === "/api/email/smtp/health") {
         return json(await checkEmailBridge(env));
@@ -1404,7 +1404,7 @@ export default {
       const emailSenderFilterMatch = url.pathname.match(/^\/api\/email\/sender-filters\/(\d+)$/);
       if (request.method === "DELETE" && emailSenderFilterMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        return json(await deleteEmailSenderFilter(env, Number(emailSenderFilterMatch[1])));
+        return json(await deleteEmailSenderFilter(env, Number(emailSenderFilterMatch[1]), currentUser));
       }
 
       const emailMessageMatch = url.pathname.match(/^\/api\/email\/messages\/(\d+)$/);
@@ -3311,6 +3311,8 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   if (!to || !to.includes("@")) throw new UserInputError("Укажите email получателя.");
   if (!subject) throw new UserInputError("Тема письма пустая.");
   if (!body) throw new UserInputError("Текст письма пустой.");
+  const fromAddress = normalizeCompanyMailboxAddress(currentUser.email_address);
+  if (!fromAddress) throw new UserInputError("К пользователю не привязан рабочий email @edel.kz.");
 
   const baseUrl = (env.EMAIL_BRIDGE_URL || "").trim().replace(/\/+$/, "");
   if (!baseUrl) {
@@ -3323,7 +3325,7 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   const response = await fetchWithTimeout(`${baseUrl}/send`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ to, subject, body }),
+    body: JSON.stringify({ to, subject, body, from_address: fromAddress }),
   });
   const raw = await response.text();
   let data: any = null;
@@ -3341,6 +3343,7 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
     if (existing) {
       await createRequestEvent(env, requestId, "email.sent", currentUser.display_name || currentUser.username, {
         to,
+        from_address: fromAddress,
         subject,
         bridge_status: data?.status || "sent",
       });
@@ -3350,6 +3353,7 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   return {
     sent: true,
     to,
+    from_address: fromAddress,
     subject,
     detail: data?.detail || "Письмо отправлено через email-bridge.",
   };
@@ -3842,6 +3846,7 @@ async function listEmailMessages(env: Env, user: CurrentUser, folderParam: strin
         SELECT 1
         FROM email_sender_filters sender_filters
         WHERE sender_filters.is_hidden = 1
+          AND sender_filters.mailbox_email = lower(trim(COALESCE(email_messages.mailbox_email, email_messages.to_address, '')))
           AND sender_filters.sender_email = lower(trim(email_messages.from_address))
       ) AS is_sender_hidden,
       substr(body_text, 1, 420) AS body_preview
@@ -3852,6 +3857,7 @@ async function listEmailMessages(env: Env, user: CurrentUser, folderParam: strin
         SELECT 1
         FROM email_sender_filters sender_filters
         WHERE sender_filters.is_hidden = 1
+          AND sender_filters.mailbox_email = lower(trim(COALESCE(email_messages.mailbox_email, email_messages.to_address, '')))
           AND sender_filters.sender_email = lower(trim(email_messages.from_address))
       )
     ORDER BY COALESCE(received_at, created_at) DESC, id DESC
@@ -3861,7 +3867,7 @@ async function listEmailMessages(env: Env, user: CurrentUser, folderParam: strin
     folder,
     items: result.results,
     stats: await getEmailFolderStats(env, user),
-    hidden_senders: await listEmailSenderFilters(env),
+    hidden_senders: await listEmailSenderFilters(env, user),
   };
 }
 
@@ -3890,6 +3896,7 @@ async function getEmailFolderStats(env: Env, user: CurrentUser) {
       SELECT 1
       FROM email_sender_filters sender_filters
       WHERE sender_filters.is_hidden = 1
+        AND sender_filters.mailbox_email = lower(trim(COALESCE(email_messages.mailbox_email, email_messages.to_address, '')))
         AND sender_filters.sender_email = lower(trim(email_messages.from_address))
     )
     GROUP BY folder
@@ -3913,80 +3920,89 @@ async function getEmailFolderStats(env: Env, user: CurrentUser) {
   return stats;
 }
 
-async function listEmailSenderFilters(env: Env) {
+async function listEmailSenderFilters(env: Env, user: CurrentUser) {
+  const mailboxEmail = normalizeCompanyMailboxAddress(user.email_address);
+  if (!mailboxEmail && !isAdmin(user)) return [];
+  const mailboxSql = isAdmin(user) ? "" : "AND mailbox_email = ?";
+  const bindings = isAdmin(user) ? [] : [mailboxEmail];
   const result = await env.DB.prepare(`
-    SELECT id, sender_email, sender_label, is_hidden, created_at, updated_at
+    SELECT id, mailbox_email, sender_email, sender_label, is_hidden, created_at, updated_at
     FROM email_sender_filters
-    WHERE is_hidden = 1
-    ORDER BY sender_email
-  `).all();
+    WHERE is_hidden = 1 ${mailboxSql}
+    ORDER BY mailbox_email, sender_email
+  `).bind(...bindings).all();
   return result.results;
 }
 
-async function createEmailSenderFilter(request: Request, env: Env) {
+async function createEmailSenderFilter(request: Request, env: Env, user: CurrentUser) {
   const payload = (await request.json()) as {
     sender_email?: unknown;
     sender_label?: unknown;
+    mailbox_email?: unknown;
   };
   const senderEmail = normalizeEmailFilterAddress(payload.sender_email);
   if (!senderEmail) throw new UserInputError("Не удалось определить адрес отправителя.");
+  const mailboxEmail = resolveEmailRuleMailbox(user, payload.mailbox_email);
   const senderLabel = normalizeOptionalText(payload.sender_label) || senderEmail;
 
   await env.DB.prepare(`
-    INSERT INTO email_sender_filters (sender_email, sender_label, is_hidden, updated_at)
-    VALUES (?, ?, 1, datetime('now'))
-    ON CONFLICT(sender_email) DO UPDATE SET
+    INSERT INTO email_sender_filters (mailbox_email, sender_email, sender_label, is_hidden, updated_at)
+    VALUES (?, ?, ?, 1, datetime('now'))
+    ON CONFLICT(mailbox_email, sender_email) DO UPDATE SET
       sender_label = excluded.sender_label,
       is_hidden = 1,
       updated_at = datetime('now')
-  `).bind(senderEmail, senderLabel).run();
+  `).bind(mailboxEmail, senderEmail, senderLabel).run();
 
   const item = await env.DB.prepare(`
-    SELECT id, sender_email, sender_label, is_hidden, created_at, updated_at
+    SELECT id, mailbox_email, sender_email, sender_label, is_hidden, created_at, updated_at
     FROM email_sender_filters
-    WHERE sender_email = ?
-  `).bind(senderEmail).first();
+    WHERE mailbox_email = ? AND sender_email = ?
+  `).bind(mailboxEmail, senderEmail).first();
   return item;
 }
 
-async function deleteEmailSenderFilter(env: Env, id: number) {
+async function deleteEmailSenderFilter(env: Env, id: number, user: CurrentUser) {
   const existing = await env.DB.prepare(`
-    SELECT id, sender_email, sender_label
+    SELECT id, mailbox_email, sender_email, sender_label
     FROM email_sender_filters
     WHERE id = ?
   `).bind(id).first() as Record<string, unknown> | null;
   if (!existing) return { ok: true, id };
+  assertEmailRuleMailboxAccess(user, existing.mailbox_email);
 
   await env.DB.prepare("DELETE FROM email_sender_filters WHERE id = ?").bind(id).run();
   return { ok: true, id, sender_email: existing.sender_email };
 }
 
-async function getEmailSenderFolderRule(env: Env, sender: unknown): Promise<EmailFolder | ""> {
+async function getEmailSenderFolderRule(env: Env, sender: unknown, mailbox: unknown): Promise<EmailFolder | ""> {
   const senderEmail = normalizeEmailFilterAddress(sender);
-  if (!senderEmail) return "";
+  const mailboxEmail = normalizeCompanyMailboxAddress(mailbox);
+  if (!senderEmail || !mailboxEmail) return "";
 
   const row = await env.DB.prepare(`
     SELECT target_folder
     FROM email_sender_folder_rules
-    WHERE sender_email = ?
-  `).bind(senderEmail).first() as Record<string, unknown> | null;
+    WHERE mailbox_email = ? AND sender_email = ?
+  `).bind(mailboxEmail, senderEmail).first() as Record<string, unknown> | null;
 
   return normalizeEmailSenderRouteFolder(row?.target_folder);
 }
 
-async function upsertEmailSenderFolderRule(env: Env, sender: unknown, targetFolder: EmailFolder) {
+async function upsertEmailSenderFolderRule(env: Env, sender: unknown, mailbox: unknown, targetFolder: EmailFolder) {
   const folder = normalizeEmailSenderRouteFolder(targetFolder);
   const senderEmail = normalizeEmailFilterAddress(sender);
-  if (!folder || !senderEmail) return;
+  const mailboxEmail = normalizeCompanyMailboxAddress(mailbox);
+  if (!folder || !senderEmail || !mailboxEmail) return;
 
   await env.DB.prepare(`
-    INSERT INTO email_sender_folder_rules (sender_email, sender_label, target_folder, updated_at)
-    VALUES (?, ?, ?, datetime('now'))
-    ON CONFLICT(sender_email) DO UPDATE SET
+    INSERT INTO email_sender_folder_rules (mailbox_email, sender_email, sender_label, target_folder, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(mailbox_email, sender_email) DO UPDATE SET
       sender_label = excluded.sender_label,
       target_folder = excluded.target_folder,
       updated_at = datetime('now')
-  `).bind(senderEmail, senderEmail, folder).run();
+  `).bind(mailboxEmail, senderEmail, senderEmail, folder).run();
 
   await env.DB.prepare(`
     UPDATE email_messages
@@ -3997,11 +4013,29 @@ async function upsertEmailSenderFolderRule(env: Env, sender: unknown, targetFold
       updated_at = datetime('now')
     WHERE folder <> 'trash'
       AND processed_request_id IS NULL
+      AND lower(trim(COALESCE(mailbox_email, to_address, ''))) = ?
       AND (
         lower(trim(from_address)) = ?
         OR lower(trim(from_address)) LIKE ?
       )
-  `).bind(folder, emailStatusForFolder(folder), senderEmail, `%${senderEmail}%`).run();
+  `).bind(folder, emailStatusForFolder(folder), mailboxEmail, senderEmail, `%${senderEmail}%`).run();
+}
+
+function resolveEmailRuleMailbox(user: CurrentUser, requestedMailbox: unknown): string {
+  const ownMailbox = normalizeCompanyMailboxAddress(user.email_address);
+  const requested = normalizeCompanyMailboxAddress(requestedMailbox);
+  if (isAdmin(user) && requested) return requested;
+  if (!ownMailbox) throw new UserInputError("К пользователю не привязан рабочий email @edel.kz.");
+  if (requested && requested !== ownMailbox) throw new UserInputError("Нельзя изменить правила другого почтового ящика.", 403);
+  return ownMailbox;
+}
+
+function assertEmailRuleMailboxAccess(user: CurrentUser, mailbox: unknown): void {
+  const mailboxEmail = normalizeCompanyMailboxAddress(mailbox);
+  if (isAdmin(user)) return;
+  if (!mailboxEmail || mailboxEmail !== normalizeCompanyMailboxAddress(user.email_address)) {
+    throw new UserInputError("Нельзя изменить правила другого почтового ящика.", 403);
+  }
 }
 
 async function getUserByMailboxEmail(env: Env, mailboxEmail: unknown) {
@@ -4037,6 +4071,7 @@ async function getEmailMessage(env: Env, id: number) {
         SELECT 1
         FROM email_sender_filters sender_filters
         WHERE sender_filters.is_hidden = 1
+          AND sender_filters.mailbox_email = lower(trim(COALESCE(email_messages.mailbox_email, email_messages.to_address, '')))
           AND sender_filters.sender_email = lower(trim(email_messages.from_address))
       ) AS is_sender_hidden
     FROM email_messages
@@ -4100,7 +4135,7 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
   ).run();
 
   if (requestedFolder && isEmailSenderRouteFolder(requestedFolder) && existing.from_address) {
-    await upsertEmailSenderFolderRule(env, existing.from_address, requestedFolder);
+    await upsertEmailSenderFolderRule(env, existing.from_address, existing.mailbox_email || existing.to_address, requestedFolder);
   }
 
   return getEmailMessage(env, id);
@@ -4353,7 +4388,7 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
   const existing = await getEmailMessageByUid(env, item.mailbox_email, item.message_uid);
   if (existing?.id) return { inserted: false, id: Number(existing.id) };
 
-  const routedFolder = await getEmailSenderFolderRule(env, item.from_address);
+  const routedFolder = await getEmailSenderFolderRule(env, item.from_address, item.mailbox_email || item.to_address);
   const folder = routedFolder || "inbox";
   const mailboxUser = await getUserByMailboxEmail(env, item.mailbox_email || item.to_address);
   const assignedManager = item.michael_manager

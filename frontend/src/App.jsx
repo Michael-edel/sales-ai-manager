@@ -1350,6 +1350,7 @@ export default function App() {
       const filter = await createEmailSenderFilter({
         sender_email: email.from_address,
         sender_label: email.from_address,
+        mailbox_email: email.mailbox_email || email.to_address,
       });
       setSelectedEmail(null);
       await refreshEmails(emailFolder);
@@ -2487,6 +2488,7 @@ export default function App() {
                     {emailSenderFilters.map((filter) => (
                       <span className="email-sender-filter" key={filter.id}>
                         {filter.sender_label || filter.sender_email}
+                        {authUser?.role === "admin" && filter.mailbox_email ? ` (${filter.mailbox_email})` : ""}
                         <button
                           type="button"
                           onClick={() => handleRestoreEmailSender(filter)}
