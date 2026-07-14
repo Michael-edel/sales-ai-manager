@@ -182,6 +182,25 @@ npm run dev
 Для доступа к 1С через MCP отдельно запустите `onec-mcp-bridge` рядом с базой 1С и задайте `ONEC_MCP_BRIDGE_URL` + `ONEC_MCP_BRIDGE_TOKEN`.
 Для отправки email через SMTP отдельно запустите `email-bridge` и задайте `EMAIL_BRIDGE_URL`.
 
+### Права Cloudflare для GitHub Actions
+
+Repository secret `CLOUDFLARE_API_TOKEN` должен быть отдельным пользовательским API token для CI, ограниченным аккаунтом приложения и зоной `michael.kz`. Для текущей конфигурации Worker ему нужны:
+
+- `Account Settings: Read`;
+- `Workers Scripts: Edit`;
+- `D1: Edit`;
+- `Workers R2 Storage: Edit`;
+- `Workers Routes: Edit` для зоны `michael.kz`;
+- `User Details: Read` и `Memberships: Read`.
+
+В GitHub также должен быть repository secret `CLOUDFLARE_ACCOUNT_ID`. Workflow сначала выполняет `Verify Cloudflare R2 access`, затем применяет D1 migrations и только после этого публикует Worker. Если проверка R2 завершилась ошибкой, замените значение `CLOUDFLARE_API_TOKEN` в `Settings -> Secrets and variables -> Actions`; секрет токена нельзя хранить в Git или `.env` репозитория.
+
+Повторный запуск после замены секрета:
+
+```powershell
+gh run rerun --repo Michael-edel/sales-ai-manager --failed
+```
+
 ## 1С MCP через mcp-1c
 
 В проект добавлен локальный мост:

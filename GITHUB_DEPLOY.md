@@ -5,10 +5,10 @@
 ## 1. Что нужно установить локально
 
 - Git
-- Node.js 22+
+- Node.js 24
 - Wrangler
 
-GitHub CLI `gh` у вас сейчас не установлен. Для автоматического создания репозитория установите его:
+Для управления репозиторием из PowerShell используется GitHub CLI `gh`. Если его нет, установите:
 
 ```powershell
 winget install --id GitHub.cli
@@ -49,7 +49,7 @@ npx wrangler secret put OPENAI_API_KEY
 
 ## 3.0. Закрыть доступ к приложению паролем
 
-Приложение защищено HTTP Basic Auth. Логин по умолчанию:
+Приложение защищено встроенной формой входа и cookie-сессиями. Первый логин по умолчанию:
 
 ```text
 manager
@@ -61,7 +61,7 @@ manager
 npx wrangler secret put ACCESS_PASSWORD
 ```
 
-После этого при открытии сайта браузер попросит логин и пароль. Если `ACCESS_PASSWORD` не задан, Worker специально не откроет приложение.
+Если `ACCESS_PASSWORD` не задан, Worker специально не создаст первого администратора.
 
 ## 3.1. Добавить Gemini API key
 
@@ -131,7 +131,11 @@ Settings -> Secrets and variables -> Actions -> New repository secret
 CLOUDFLARE_API_TOKEN
 ```
 
-`CLOUDFLARE_ACCOUNT_ID` больше не обязателен: Account ID указан в `worker/wrangler.toml`.
+Добавьте также:
+
+```text
+CLOUDFLARE_ACCOUNT_ID
+```
 
 Пароль доступа `ACCESS_PASSWORD` задается не в GitHub Secrets, а в Cloudflare Worker secrets через Wrangler:
 
@@ -142,18 +146,25 @@ npx wrangler secret put ACCESS_PASSWORD
 
 API token должен иметь права:
 
-- Workers Scripts: Edit
-- D1: Edit
-- Account Settings: Read
+- Account Settings: Read;
+- Workers Scripts: Edit;
+- D1: Edit;
+- Workers R2 Storage: Edit;
+- Workers Routes: Edit для зоны `michael.kz`;
+- User Details: Read;
+- Memberships: Read.
+
+Ограничьте token только аккаунтом приложения и зоной `michael.kz`. Не сохраняйте его значение в Git, README или `.env` репозитория.
 
 ## 7. Автоматический запуск
 
 После каждого push в ветку `main` GitHub Actions выполнит:
 
-1. сборку React frontend;
-2. установку Worker dependencies;
-3. применение D1 migrations;
-4. деплой Cloudflare Worker.
+1. тесты email-bridge, IMAP-ingest, parser-service и Worker;
+2. проверку типов, production-аудит зависимостей и сборку React frontend;
+3. проверку доступа CI token к R2 bucket;
+4. применение D1 migrations;
+5. деплой Cloudflare Worker.
 
 Workflow:
 
