@@ -16,8 +16,22 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
   - `GET /health`
   - `GET /tools`
   - `POST /tools/call`
-- требует токен `ONEC_MCP_BRIDGE_TOKEN`;
-- по умолчанию разрешает только read-only/diagnostic инструменты `mcp-1c`.
+- разделяет доступ по независимым токенам и профилям инструментов;
+- ограничивает размер HTTP-запроса и частоту обращений;
+- возвращает безопасные коды ошибок с `X-Request-ID`, не раскрывая stderr и внутренние пути.
+
+Профили доступа:
+
+- `business` (`ONEC_MCP_BRIDGE_TOKEN`) используется Worker и разрешает метаданные,
+  валидацию и серверные read-only запросы через `execute_query`;
+- `development` (`ONEC_MCP_INSPECTOR_TOKEN`) используется 1C AI Inspector и
+  разрешает только метаданные, поиск, справку BSL, валидацию и `read_source`;
+- `diagnostics` (`ONEC_MCP_DIAGNOSTICS_TOKEN`) опционален и отдельно разрешает
+  `get_event_log`. Не используйте диагностический токен в приложениях.
+
+Значения всех настроенных токенов должны отличаться. Bridge отклоняет запуск
+авторизации при совпадающих токенах, поэтому один секрет нельзя использовать для
+нескольких контуров.
 
 При заданном `ONEC_MCP_DUMP_PATH` bridge также публикует собственный read-only
 инструмент `read_source`. Он читает полный BSL-файл из выгрузки
@@ -42,6 +56,13 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 Copy-Item .env.example .env
 notepad .env
 ```
+
+Обязательно задайте два разных секрета: `ONEC_MCP_BRIDGE_TOKEN` для
+`sales-ai-manager` и `ONEC_MCP_INSPECTOR_TOKEN` для Inspector. Диагностический
+токен оставьте пустым, пока доступ к журналу событий действительно не нужен.
+Лимиты по умолчанию: тело запроса не более 1 МиБ и 120 запросов в минуту на
+IP/токен. Они настраиваются через `ONEC_MCP_MAX_BODY_BYTES` и
+`ONEC_MCP_RATE_LIMIT_PER_MINUTE`.
 
 Для полного исходного текста задайте путь к read-only выгрузке 1С:
 
@@ -99,12 +120,14 @@ Start-ScheduledTask -TaskName SalesAiManager-1C-MCP-Bridge
 Проверка:
 
 ```powershell
-$token = (Get-Content .env | Select-String 'ONEC_MCP_BRIDGE_TOKEN=(.+)').Matches[0].Groups[1].Value.Trim()
-Invoke-RestMethod http://127.0.0.1:8091/health -Headers @{ Authorization = "Bearer $token" }
+$businessToken = (Get-Content .env | Select-String 'ONEC_MCP_BRIDGE_TOKEN=(.+)').Matches[0].Groups[1].Value.Trim()
+$inspectorToken = (Get-Content .env | Select-String 'ONEC_MCP_INSPECTOR_TOKEN=(.+)').Matches[0].Groups[1].Value.Trim()
+Invoke-RestMethod http://127.0.0.1:8091/health -Headers @{ Authorization = "Bearer $businessToken" }
+Invoke-RestMethod http://127.0.0.1:8091/tools -Headers @{ Authorization = "Bearer $inspectorToken" }
 ```
 
 Лог пишется в `onec-mcp-bridge/logs/onec-mcp-bridge.log`. Файл `.env` и логи не коммитятся в git.
 
 ## Ограничения
 
-Это не интеграция проведения документов. На текущем этапе bridge нужен, чтобы ИИ-менеджер мог безопасно получать метаданные и проверочные данные из 1С. Счета и документы по-прежнему выставляются в 1С менеджером.
+Это не интеграция проведения документов. На текущем этапе bridge нужен, чтобы ИИ-менеджер мог безопасно получать метаданные и проверочные данные из 1С. Счета и документы по-прежнему выставляются в 1С менеджером. Ограничение частоты работает в памяти одного процесса и не заменяет Cloudflare Access/WAF перед публичным Tunnel endpoint.

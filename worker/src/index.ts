@@ -171,11 +171,8 @@ const DEFAULT_ONEC_MCP_ALLOWED_TOOLS = [
   "get_object_structure",
   "get_form_structure",
   "get_configuration_info",
-  "search_code",
-  "bsl_syntax_help",
   "execute_query",
   "validate_query",
-  "get_event_log",
 ];
 
 const ONEC_CLIENT_SEARCH_QUERY = `

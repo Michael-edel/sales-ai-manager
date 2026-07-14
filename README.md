@@ -215,24 +215,20 @@ onec-mcp-bridge/
 
 - `mcp-1c` запускается локальным процессом рядом с 1С и обращается к HTTP-сервису 1С;
 - Cloudflare Worker не может запускать `mcp-1c.exe` и не должен иметь прямой доступ в локальную сеть 1С;
-- `onec-mcp-bridge` принимает HTTPS-запрос от Worker, проверяет токен и вызывает разрешенные MCP-инструменты.
+- `onec-mcp-bridge` принимает HTTPS-запрос, определяет профиль по отдельному токену и вызывает только разрешенные для этого контура MCP-инструменты.
 - При настройке `ONEC_MCP_DUMP_PATH` bridge дополнительно публикует read-only `read_source` для полного BSL-модуля; без dump-каталога приложение использует только доступные фрагменты `search_code`.
 
-Разрешенные инструменты по умолчанию:
+Разрешенные профили по умолчанию:
 
 ```text
-get_metadata_tree
-get_object_structure
-get_form_structure
-get_configuration_info
-search_code
-bsl_syntax_help
-execute_query
-validate_query
-get_event_log
+business:    metadata/structure/configuration + execute_query + validate_query
+development: metadata/structure/configuration + search_code + bsl_syntax_help + validate_query + read_source
+diagnostics: configuration + get_event_log
 ```
 
-Фактический список зависит от установленного `mcp-1c`: текущий bridge может вернуть меньше инструментов, чем разрешено в настройках. На тестовой базе сейчас доступны 8 инструментов; `search_code` разрешен в Worker, но может отсутствовать в ответе bridge.
+Worker использует только `ONEC_MCP_BRIDGE_TOKEN`, а 1C AI Inspector — отдельный `ONEC_MCP_INSPECTOR_TOKEN`. Диагностический токен не передается ни одному приложению. Фактический список зависит от установленного `mcp-1c`: bridge возвращает пересечение доступных инструментов и списка выбранного профиля.
+
+Bridge ограничивает тело HTTP-запроса (1 МиБ по умолчанию), частоту обращений (120 в минуту на IP/токен), добавляет `X-Request-ID` и не возвращает клиенту stderr или внутренние пути. Эти меры дополняют, но не заменяют Cloudflare Access/WAF перед публичным endpoint.
 
 Схема:
 
@@ -258,7 +254,10 @@ pip install -r requirements.txt
 ONEC_MCP_COMMAND=C:\tools\mcp-1c.exe
 ONEC_MCP_ARGS=--base http://localhost:8080/hs/mcp-1c
 # ONEC_MCP_DUMP_PATH=C:\1C\DumpConfigToFiles
-ONEC_MCP_BRIDGE_TOKEN=сложный-токен
+ONEC_MCP_BRIDGE_TOKEN=отдельный-бизнес-токен
+ONEC_MCP_INSPECTOR_TOKEN=отдельный-development-токен
+ONEC_MCP_MAX_BODY_BYTES=1048576
+ONEC_MCP_RATE_LIMIT_PER_MINUTE=120
 ```
 
 После запуска bridge задайте Worker secrets:

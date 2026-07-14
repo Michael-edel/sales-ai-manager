@@ -16,7 +16,7 @@ GEMINI_RETRY_ATTEMPTS = "3"
 GEMINI_RETRY_BASE_DELAY_MS = "800"
 WHATSAPP_API_VERSION = "v24.0"
 ACCESS_USERNAME = "manager"
-ONEC_MCP_ALLOWED_TOOLS = "get_metadata_tree,get_object_structure,get_form_structure,get_configuration_info,search_code,bsl_syntax_help,execute_query,validate_query,get_event_log,read_source"
+ONEC_MCP_ALLOWED_TOOLS = "get_metadata_tree,get_object_structure,get_form_structure,get_configuration_info,execute_query,validate_query"
 
 [assets]
 directory = "../frontend/dist"
