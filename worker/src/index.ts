@@ -1,4 +1,12 @@
 import PostalMime from "postal-mime";
+import {
+  MAX_UPLOAD_REQUEST_BYTES,
+  UploadPolicyError,
+  isAudioFile,
+  isDocumentFile,
+  isImageFile,
+  validateUploadDescriptor,
+} from "./lib/upload-policy";
 
 export interface Env {
   DB: D1Database;
@@ -1546,10 +1554,6 @@ async function ensureInitialUser(env: Env): Promise<void> {
   ).run();
 }
 
-const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
-const MAX_DOCUMENT_UPLOAD_BYTES = 15 * 1024 * 1024;
-const MAX_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
-const MAX_UPLOAD_REQUEST_BYTES = MAX_AUDIO_UPLOAD_BYTES + 1024 * 1024;
 const DEFAULT_EXTERNAL_TIMEOUT_MS = 30_000;
 const AI_EXTERNAL_TIMEOUT_MS = 90_000;
 const PARSER_EXTERNAL_TIMEOUT_MS = 60_000;
@@ -6196,32 +6200,23 @@ function normalizeIsoDate(value: unknown): string {
 }
 
 function isImage(fileName: string): boolean {
-  return [".png", ".jpg", ".jpeg", ".webp"].some((extension) => fileName.endsWith(extension));
+  return isImageFile(fileName);
 }
 
 function isAudio(fileName: string): boolean {
-  return [".mp3", ".m4a", ".wav", ".ogg", ".opus", ".webm"].some((extension) => fileName.endsWith(extension));
+  return isAudioFile(fileName);
 }
 
 function isDocument(fileName: string): boolean {
-  return [".pdf", ".docx", ".xlsx"].some((extension) => fileName.endsWith(extension));
+  return isDocumentFile(fileName);
 }
 
 function validateUploadedFile(file: File, fileName: string): void {
-  if (!isImage(fileName) && !isAudio(fileName) && !isDocument(fileName)) {
-    throw new UserInputError(
-      "Формат файла не поддерживается. Используйте PDF, DOCX, XLSX, PNG, JPG, WEBP, MP3, M4A, WAV, OGG, OPUS или WEBM.",
-    );
-  }
-  if (file.size <= 0) throw new UserInputError("Файл пустой.");
-
-  const maxBytes = isImage(fileName)
-    ? MAX_IMAGE_UPLOAD_BYTES
-    : isDocument(fileName)
-      ? MAX_DOCUMENT_UPLOAD_BYTES
-      : MAX_AUDIO_UPLOAD_BYTES;
-  if (file.size > maxBytes) {
-    throw new UserInputError(`Файл слишком большой. Максимальный размер для этого формата: ${maxBytes / 1024 / 1024} МБ.`, 413);
+  try {
+    validateUploadDescriptor(fileName, file.size);
+  } catch (error) {
+    if (error instanceof UploadPolicyError) throw new UserInputError(error.message, error.status);
+    throw error;
   }
 }
 
