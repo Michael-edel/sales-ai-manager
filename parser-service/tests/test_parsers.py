@@ -82,3 +82,18 @@ def test_verify_token_rejects_wrong_value(monkeypatch: pytest.MonkeyPatch) -> No
         verify_token("wrong-token")
 
     assert exc.value.status_code == 401
+
+
+def test_verify_token_rejects_missing_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARSER_SERVICE_TOKEN", raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        verify_token(None)
+
+    assert exc.value.status_code == 503
+
+
+def test_verify_token_accepts_matching_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PARSER_SERVICE_TOKEN", "expected-token")
+
+    verify_token("expected-token")

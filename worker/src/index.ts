@@ -126,7 +126,10 @@ type EmailMessageInput = {
 };
 
 class UserInputError extends Error {
-  status = 400;
+  constructor(message: string, readonly status = 400) {
+    super(message);
+    this.name = "UserInputError";
+  }
 }
 
 type EmailFolder = "inbox" | "in_work" | "suppliers" | "buyers" | "done" | "trash";
@@ -1487,9 +1490,23 @@ export default {
 
       return json({ detail: "Endpoint не найден." }, 404);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Неизвестная ошибка";
-      const status = error instanceof UserInputError ? error.status : 500;
-      return json({ detail: message }, status);
+      const errorId = crypto.randomUUID();
+      const internalMessage = error instanceof Error ? error.message : String(error);
+      console.error(JSON.stringify({
+        event: "api.request_failed",
+        error_id: errorId,
+        method: request.method,
+        path: url.pathname,
+        message: internalMessage,
+        stack: error instanceof Error ? error.stack : undefined,
+      }));
+      if (error instanceof UserInputError) {
+        return json({ detail: error.message }, error.status);
+      }
+      return json({
+        detail: "Операция не выполнена. Повторите позже или сообщите администратору код ошибки.",
+        error_id: errorId,
+      }, 500);
     }
   },
 } satisfies ExportedHandler<Env>;
@@ -1593,8 +1610,8 @@ async function createUser(request: Request, env: Env) {
   const role = normalizeRole(payload.role);
   const emailAddress = normalizeEdelEmailAddress(payload.email_address);
   const passwordValue = typeof payload.password === "string" ? payload.password : "";
-  if (!username) throw new Error("Имя пользователя пустое.");
-  if (passwordValue.length < 8) throw new Error("Пароль должен быть не короче 8 символов.");
+  if (!username) throw new UserInputError("Имя пользователя пустое.");
+  if (passwordValue.length < 8) throw new UserInputError("Пароль должен быть не короче 8 символов.");
   await ensureUserEmailAvailable(env, emailAddress);
 
   const password = await hashPassword(passwordValue);
@@ -1615,7 +1632,7 @@ async function createUser(request: Request, env: Env) {
 async function resetUserPassword(request: Request, env: Env, userId: number) {
   const payload = (await request.json()) as { password?: string };
   const passwordValue = typeof payload.password === "string" ? payload.password : "";
-  if (passwordValue.length < 8) throw new Error("Пароль должен быть не короче 8 символов.");
+  if (passwordValue.length < 8) throw new UserInputError("Пароль должен быть не короче 8 символов.");
 
   const password = await hashPassword(passwordValue);
   const result = await env.DB.prepare(`
@@ -1727,7 +1744,7 @@ async function updateAiRules(request: Request, env: Env) {
     }>;
   };
   const rules = Array.isArray(payload.rules) ? payload.rules : [];
-  if (!rules.length) throw new Error("Нет правил для сохранения.");
+  if (!rules.length) throw new UserInputError("Нет правил для сохранения.");
 
   await ensureDefaultAiRules(env);
   const existingRules = await listAiRules(env) as Array<Record<string, any>>;
@@ -1740,7 +1757,7 @@ async function updateAiRules(request: Request, env: Env) {
     if (!existing) continue;
 
     const ruleText = normalizeOptionalText(incoming.rule_text);
-    if (!ruleText) throw new Error(`Правило "${existing.title}" не может быть пустым.`);
+    if (!ruleText) throw new UserInputError(`Правило "${existing.title}" не может быть пустым.`);
 
     const isRequired = Number(existing.is_required) === 1;
     const isEnabled = isRequired ? 1 : incoming.is_enabled === false ? 0 : 1;
@@ -1796,7 +1813,7 @@ async function updateWhatsAppTemplates(request: Request, env: Env) {
     }>;
   };
   const templates = Array.isArray(payload.templates) ? payload.templates : [];
-  if (!templates.length) throw new Error("Нет шаблонов для сохранения.");
+  if (!templates.length) throw new UserInputError("Нет шаблонов для сохранения.");
 
   await ensureDefaultWhatsAppTemplates(env);
   const existingTemplates = await listWhatsAppTemplates(env) as Array<Record<string, any>>;
@@ -1814,9 +1831,9 @@ async function updateWhatsAppTemplates(request: Request, env: Env) {
     const bodyText = normalizeOptionalText(incoming.body_text);
     const isEnabled = incoming.is_enabled === false ? 0 : 1;
 
-    if (!displayName) throw new Error("Название шаблона не может быть пустым.");
-    if (!templateName) throw new Error(`Укажите точное имя Meta template для "${displayName}".`);
-    if (!bodyText) throw new Error(`Текст-подсказка шаблона "${displayName}" не может быть пустым.`);
+    if (!displayName) throw new UserInputError("Название шаблона не может быть пустым.");
+    if (!templateName) throw new UserInputError(`Укажите точное имя Meta template для "${displayName}".`);
+    if (!bodyText) throw new UserInputError(`Текст-подсказка шаблона "${displayName}" не может быть пустым.`);
 
     statements.push(env.DB.prepare(`
       UPDATE whatsapp_templates
@@ -1845,9 +1862,9 @@ async function createWhatsAppTemplate(request: Request, env: Env) {
   const category = normalizeWhatsAppTemplateCategory(payload.category);
   const bodyText = normalizeOptionalText(payload.body_text);
 
-  if (!displayName) throw new Error("Название шаблона не может быть пустым.");
-  if (!templateName) throw new Error("Укажите точное имя утвержденного Meta template.");
-  if (!bodyText) throw new Error("Текст-подсказка шаблона не может быть пустым.");
+  if (!displayName) throw new UserInputError("Название шаблона не может быть пустым.");
+  if (!templateName) throw new UserInputError("Укажите точное имя утвержденного Meta template.");
+  if (!bodyText) throw new UserInputError("Текст-подсказка шаблона не может быть пустым.");
 
   await ensureDefaultWhatsAppTemplates(env);
   const sortRow = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order FROM whatsapp_templates").first() as Record<string, unknown> | null;
@@ -1859,7 +1876,7 @@ async function createWhatsAppTemplate(request: Request, env: Env) {
       ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
     `).bind(templateKey, displayName, templateName, languageCode, category, bodyText, sortOrder).run();
   } catch {
-    throw new Error("Шаблон с таким ключом или именем уже есть в программе.");
+    throw new UserInputError("Шаблон с таким ключом или именем уже есть в программе.", 409);
   }
 
   return listWhatsAppTemplates(env);
@@ -1868,7 +1885,7 @@ async function createWhatsAppTemplate(request: Request, env: Env) {
 async function processText(request: Request, env: Env) {
   const payload = (await request.json()) as Metadata & { original_text?: string };
   const body = (payload.original_text || "").trim();
-  if (!body) throw new Error("Текст заявки пустой.");
+  if (!body) throw new UserInputError("Текст заявки пустой.");
 
   let originalText = buildContextPrefix(payload) + body;
   originalText = await appendOneCAnalysisContext(env, payload, originalText);
@@ -1885,7 +1902,7 @@ async function processText(request: Request, env: Env) {
 async function processUpload(request: Request, env: Env) {
   const formData = await request.formData();
   const file = formData.get("file");
-  if (!isUploadedFile(file)) throw new Error("Файл не передан.");
+  if (!isUploadedFile(file)) throw new UserInputError("Файл не передан.");
 
   const metadata: Metadata = {
     client_company: stringValue(formData.get("client_company")),
@@ -3187,9 +3204,9 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   const body = normalizeOptionalText(payload.body);
   const requestId = Number(payload.request_id || 0);
 
-  if (!to || !to.includes("@")) throw new Error("Укажите email получателя.");
-  if (!subject) throw new Error("Тема письма пустая.");
-  if (!body) throw new Error("Текст письма пустой.");
+  if (!to || !to.includes("@")) throw new UserInputError("Укажите email получателя.");
+  if (!subject) throw new UserInputError("Тема письма пустая.");
+  if (!body) throw new UserInputError("Текст письма пустой.");
 
   const baseUrl = (env.EMAIL_BRIDGE_URL || "").trim().replace(/\/+$/, "");
   if (!baseUrl) {
@@ -3260,8 +3277,8 @@ async function sendWhatsAppTemplateMessage(request: Request, env: Env, currentUs
   const templateKey = normalizeOptionalText(payload.template_key);
   const bodyParameters = normalizeWhatsAppBodyParameters(payload.body_parameters);
 
-  if (!toPhone) throw new Error("Укажите номер WhatsApp в международном формате, например 77001234567.");
-  if (!templateKey) throw new Error("Выберите утвержденный Meta шаблон.");
+  if (!toPhone) throw new UserInputError("Укажите номер WhatsApp в международном формате, например 77001234567.");
+  if (!templateKey) throw new UserInputError("Выберите утвержденный Meta шаблон.");
 
   const phoneNumberId = normalizeOptionalText(env.WHATSAPP_PHONE_NUMBER_ID);
   const accessToken = normalizeOptionalText(env.WHATSAPP_ACCESS_TOKEN);
@@ -3275,7 +3292,7 @@ async function sendWhatsAppTemplateMessage(request: Request, env: Env, currentUs
     FROM whatsapp_templates
     WHERE template_key = ? AND is_enabled = 1
   `).bind(templateKey).first() as Record<string, any> | null;
-  if (!template) throw new Error("Шаблон не найден или отключен.");
+  if (!template) throw new UserInputError("Шаблон не найден или отключен.", 404);
 
   const templateName = normalizeWhatsAppTemplateName(template.template_name);
   const languageCode = normalizeWhatsAppLanguageCode(template.language_code);
@@ -3542,7 +3559,7 @@ async function analyzeImageGemini(
 async function analyzePdfGemini(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
   requireGemini(env);
   if (filePayload.base64.length > 28_000_000) {
-    throw new Error("PDF слишком большой для прямой обработки через Gemini. Настройте parser-service или загрузите файл меньше 20 МБ.");
+    throw new UserInputError("PDF слишком большой для прямой обработки через Gemini. Настройте parser-service или загрузите файл меньше 20 МБ.", 413);
   }
   const systemPrompt = await buildSystemPrompt(env);
 
@@ -3808,7 +3825,7 @@ async function createEmailSenderFilter(request: Request, env: Env) {
     sender_label?: unknown;
   };
   const senderEmail = normalizeEmailFilterAddress(payload.sender_email);
-  if (!senderEmail) throw new Error("Не удалось определить адрес отправителя.");
+  if (!senderEmail) throw new UserInputError("Не удалось определить адрес отправителя.");
   const senderLabel = normalizeOptionalText(payload.sender_label) || senderEmail;
 
   await env.DB.prepare(`
@@ -5353,7 +5370,7 @@ async function createRequestTask(request: Request, env: Env, requestId: number) 
     actor?: string;
   };
   const title = normalizeOptionalText(payload.title);
-  if (!title) throw new Error("Название задачи пустое.");
+  if (!title) throw new UserInputError("Название задачи пустое.");
 
   const status = normalizeTaskStatus(payload.status || "open");
   const ownerName = normalizeOptionalText(payload.owner_name);
@@ -5390,7 +5407,7 @@ async function updateRequestTask(request: Request, env: Env, requestId: number, 
     actor?: string;
   };
   const title = normalizeOptionalText(payload.title ?? existing.title);
-  if (!title) throw new Error("Название задачи пустое.");
+  if (!title) throw new UserInputError("Название задачи пустое.");
 
   const status = normalizeTaskStatus(payload.status || existing.status || "open");
   const ownerName = normalizeOptionalText(payload.owner_name ?? existing.owner_name);

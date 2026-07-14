@@ -1,4 +1,5 @@
 import os
+import secrets
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -80,7 +81,12 @@ def send_email(
 
 def verify_token(value: str | None) -> None:
     expected = os.getenv("EMAIL_BRIDGE_TOKEN", "").strip()
-    if expected and value != expected:
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email bridge token не настроен.",
+        )
+    if value is None or not secrets.compare_digest(value, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный email bridge token.")
 
 

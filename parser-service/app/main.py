@@ -1,5 +1,6 @@
 import base64
 import os
+import secrets
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,12 @@ async def parse_file(
 
 def verify_token(value: str | None) -> None:
     expected = os.getenv("PARSER_SERVICE_TOKEN", "").strip()
-    if expected and value != expected:
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Parser service token не настроен.",
+        )
+    if value is None or not secrets.compare_digest(value, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный parser token.")
 
 
