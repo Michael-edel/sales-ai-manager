@@ -1193,13 +1193,12 @@ export default {
     if (!url.pathname.startsWith("/api")) return env.ASSETS.fetch(request);
 
     try {
-      await ensureInitialUser(env);
-
       if (request.method === "GET" && url.pathname === "/api/auth/me") {
         const user = await authenticateRequest(request, env);
         return json({ user });
       }
       if (request.method === "POST" && url.pathname === "/api/auth/login") {
+        await ensureInitialUser(env);
         return login(request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -1557,6 +1556,7 @@ const PARSER_EXTERNAL_TIMEOUT_MS = 60_000;
 const MAX_EMAIL_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_EMAIL_ATTACHMENTS = 20;
+const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 async function fetchWithTimeout(
   input: RequestInfo | URL,
@@ -1666,7 +1666,7 @@ async function authenticateRequest(request: Request, env: Env): Promise<CurrentU
 
   const tokenHash = await sha256Base64(token);
   const row = await env.DB.prepare(`
-    SELECT u.id, u.username, u.display_name, u.role, u.email_address
+    SELECT u.id, u.username, u.display_name, u.role, u.email_address, s.last_seen_at
     FROM auth_sessions s
     INNER JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ?
@@ -1675,11 +1675,21 @@ async function authenticateRequest(request: Request, env: Env): Promise<CurrentU
   `).bind(tokenHash).first() as Record<string, any> | null;
   if (!row) return null;
 
-  await env.DB.prepare(`
-    UPDATE auth_sessions SET last_seen_at = datetime('now') WHERE token_hash = ?
-  `).bind(tokenHash).run();
+  const lastSeenAt = sqlDateTimeToTimestamp(row.last_seen_at);
+  if (!lastSeenAt || Date.now() - lastSeenAt >= SESSION_TOUCH_INTERVAL_MS) {
+    await env.DB.prepare(`
+      UPDATE auth_sessions SET last_seen_at = datetime('now') WHERE token_hash = ?
+    `).bind(tokenHash).run();
+  }
 
   return userToCurrentUser(row);
+}
+
+function sqlDateTimeToTimestamp(value: unknown): number {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return 0;
+  const timestamp = Date.parse(`${normalized.replace(" ", "T")}Z`);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 async function listUsers(env: Env) {
@@ -4396,7 +4406,7 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
     || normalizeOptionalText(mailboxUser?.username)
     || null;
 
-  await env.DB.prepare(`
+  const insertResult = await env.DB.prepare(`
     INSERT OR IGNORE INTO email_messages (
       mailbox_name,
       mailbox_email,
@@ -4431,7 +4441,10 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
   ).run();
 
   const saved = await getEmailMessageByUid(env, item.mailbox_email, item.message_uid);
-  return { inserted: Boolean(saved?.id), id: saved?.id ? Number(saved.id) : null };
+  return {
+    inserted: Number(insertResult.meta.changes || 0) > 0,
+    id: saved?.id ? Number(saved.id) : null,
+  };
 }
 
 async function processEmailMessage(env: Env, emailId: number) {
@@ -4863,15 +4876,17 @@ async function deleteRequest(env: Env, id: number) {
   const existing = await getRequest(env, id) as Record<string, any> | null;
   if (!existing) return null;
 
-  await env.DB.prepare(`
-    UPDATE email_messages
-    SET processed_request_id = NULL
-    WHERE processed_request_id = ?
-  `).bind(id).run();
-  await env.DB.prepare("DELETE FROM request_tasks WHERE request_id = ?").bind(id).run();
-  await env.DB.prepare("DELETE FROM request_events WHERE request_id = ?").bind(id).run();
-  await env.DB.prepare("DELETE FROM request_onec_products WHERE request_id = ?").bind(id).run();
-  await env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(id).run();
+  await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE email_messages
+      SET processed_request_id = NULL
+      WHERE processed_request_id = ?
+    `).bind(id),
+    env.DB.prepare("DELETE FROM request_tasks WHERE request_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM request_events WHERE request_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM request_onec_products WHERE request_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(id),
+  ]);
 
   return { ok: true, request_id: id };
 }
@@ -5852,17 +5867,18 @@ async function createDefaultTasks(
     tasks.push("Подготовить приложение к годовому договору");
   }
 
-  for (const title of tasks) {
-    await env.DB.prepare(`
+  const statements = tasks.map((title) => env.DB.prepare(`
       INSERT INTO request_tasks (request_id, title, owner_name)
       VALUES (?, ?, ?)
-    `).bind(requestId, title, ownerName || null).run();
-  }
-
-  await createRequestEvent(env, requestId, "request.tasks_created", ownerName || "system", {
+    `).bind(requestId, title, ownerName || null));
+  statements.push(env.DB.prepare(`
+    INSERT INTO request_events (request_id, event_type, actor, payload_json)
+    VALUES (?, 'request.tasks_created', ?, ?)
+  `).bind(requestId, ownerName || "system", JSON.stringify({
     count: tasks.length,
     requires_contract_appendix: requiresContractAppendix,
-  });
+  })));
+  await env.DB.batch(statements);
 }
 
 async function getCrmSummary(env: Env) {
