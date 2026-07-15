@@ -248,6 +248,10 @@ pip install -r requirements.txt
 .\start-onec-mcp-bridge.ps1
 ```
 
+Именованный Cloudflare Tunnel для внешнего bridge запускается переносимым
+скриптом `onec-mcp-bridge\start-onec-mcp-tunnel.ps1`; рабочий каталог `worker`
+определяется относительно checkout, без жёсткой привязки к диску.
+
 В `.env` укажите путь к скачанному `mcp-1c`:
 
 ```env

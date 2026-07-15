@@ -68,6 +68,10 @@ python -m unittest discover -s tests -v
 DTD/ENTITY и файлы более 16 МиБ отклоняются. Индекс BSL строится один раз на
 запуск; после обновления выгрузки перезапустите bridge.
 
+Для внешнего HTTPS-маршрута запустите именованный Cloudflare Tunnel из той же
+копии репозитория: `./start-onec-mcp-tunnel.ps1`. Скрипт сам находит соседний
+каталог `worker`, поэтому автозапуск не зависит от абсолютного пути checkout.
+
 ## Настройка
 
 1. Скачайте `mcp-1c` с GitHub: https://github.com/feenlace/mcp-1c
