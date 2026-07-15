@@ -21,6 +21,36 @@ class SourceReaderTests(unittest.TestCase):
             self.assertEqual(payload["source"], "Процедура Проверка()\nКонецПроцедуры")
             self.assertEqual(payload["relativePath"], "Documents/ЗаказКлиента/Ext/ObjectModule.bsl")
 
+    def test_reads_only_requested_method_with_original_line_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            module = root / "Documents" / "ЗаказКлиента" / "Ext" / "ObjectModule.bsl"
+            module.parent.mkdir(parents=True)
+            module.write_bytes((
+                "Префикс = 1;\r\n" * 4
+                + "Функция РассчитатьСебестоимость() Экспорт\r\n"
+                + "\tВозврат 42;\r\n"
+                + "КонецФункции;\r\n"
+                + "Хвост = 2;\r\n"
+            ).encode("utf-8"))
+
+            result = SourceReader(str(root)).read_method({
+                "module": "Документ.ЗаказКлиента.МодульОбъекта",
+                "method": "РассчитатьСебестоимость",
+            })
+            payload = json.loads(result["content"][0]["text"])
+
+            self.assertEqual(payload["sourceScope"], "method")
+            self.assertEqual(payload["kind"], "function")
+            self.assertEqual(payload["sourceLineStart"], 5)
+            self.assertEqual(payload["sourceLineEnd"], 7)
+            self.assertEqual(payload["source"].splitlines()[4:], [
+                "Функция РассчитатьСебестоимость() Экспорт",
+                "\tВозврат 42;",
+                "КонецФункции;",
+            ])
+            self.assertNotIn("Хвост", payload["source"])
+
     def test_reads_extension_form_module(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

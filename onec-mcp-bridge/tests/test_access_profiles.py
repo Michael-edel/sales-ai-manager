@@ -37,6 +37,19 @@ class FakeSourceReader:
     def read(self, arguments: dict) -> dict:
         return {"sourceComplete": True, "arguments": arguments}
 
+    def read_method(self, arguments: dict) -> dict:
+        return {"sourceComplete": True, "sourceScope": "method", "arguments": arguments}
+
+
+class FakeMetadataReader:
+    available = True
+
+    def status(self) -> dict:
+        return {"available": True}
+
+    def read(self, arguments: dict) -> dict:
+        return {"metadataComplete": True, "arguments": arguments}
+
 
 class AccessProfileTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -56,14 +69,17 @@ class AccessProfileTests(unittest.TestCase):
         )
         self.client_patch = patch.object(main, "client", self.fake_client)
         self.reader_patch = patch.object(main, "source_reader", FakeSourceReader())
+        self.metadata_patch = patch.object(main, "metadata_reader", FakeMetadataReader())
         self.env.start()
         self.client_patch.start()
         self.reader_patch.start()
+        self.metadata_patch.start()
         main.rate_limiter.reset()
         self.client = TestClient(main.app)
 
     def tearDown(self) -> None:
         self.client.close()
+        self.metadata_patch.stop()
         self.reader_patch.stop()
         self.client_patch.stop()
         self.env.stop()
@@ -82,6 +98,8 @@ class AccessProfileTests(unittest.TestCase):
         names = self.tool_names("inspector-token")
         self.assertIn("search_code", names)
         self.assertIn("read_source", names)
+        self.assertIn("read_method_source", names)
+        self.assertIn("get_edt_metadata_summary", names)
         self.assertNotIn("execute_query", names)
         self.assertNotIn("get_event_log", names)
 
@@ -90,6 +108,8 @@ class AccessProfileTests(unittest.TestCase):
         self.assertIn("execute_query", names)
         self.assertNotIn("search_code", names)
         self.assertNotIn("read_source", names)
+        self.assertNotIn("read_method_source", names)
+        self.assertNotIn("get_edt_metadata_summary", names)
         self.assertNotIn("get_event_log", names)
 
     def test_diagnostics_profile_is_separate(self) -> None:

@@ -18,7 +18,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .metadata_reader import GET_EDT_METADATA_SUMMARY_TOOL, MetadataReader
 from .source_reader import (
+    READ_METHOD_SOURCE_TOOL,
     READ_SOURCE_TOOL,
     SourceNotConfiguredError,
     SourceNotFoundError,
@@ -57,6 +59,8 @@ PROFILE_DEFAULT_TOOLS = {
         "bsl_syntax_help",
         "validate_query",
         "read_source",
+        "read_method_source",
+        "get_edt_metadata_summary",
     },
     "diagnostics": {
         "get_configuration_info",
@@ -312,9 +316,10 @@ class McpClient:
         return result if isinstance(result, dict) else {"result": result}
 
 
-app = FastAPI(title="Sales AI Manager 1C MCP Bridge", version="0.2.0")
+app = FastAPI(title="Sales AI Manager 1C MCP Bridge", version="0.8.0")
 client = McpClient()
 source_reader = SourceReader(env_text("ONEC_MCP_DUMP_PATH"))
+metadata_reader = MetadataReader(env_text("ONEC_MCP_DUMP_PATH"))
 
 
 @app.middleware("http")
@@ -406,6 +411,7 @@ def health(request: Request, access: AccessContext = Depends(require_access)) ->
             "allowed_tools": sorted(allowed_tools(access.profile)),
             "tools_count": len(tools),
             "source_reader": source_reader.status(),
+            "metadata_reader": metadata_reader.status(),
             **client.health(),
         }
     except McpRuntimeError as exc:
@@ -422,6 +428,14 @@ def list_tools(request: Request, access: AccessContext = Depends(require_access)
             tool.get("name") == "read_source" for tool in tools
         ):
             tools.append(READ_SOURCE_TOOL)
+        if source_reader.available and "read_method_source" in allowed and not any(
+            tool.get("name") == "read_method_source" for tool in tools
+        ):
+            tools.append(READ_METHOD_SOURCE_TOOL)
+        if metadata_reader.available and "get_edt_metadata_summary" in allowed and not any(
+            tool.get("name") == "get_edt_metadata_summary" for tool in tools
+        ):
+            tools.append(GET_EDT_METADATA_SUMMARY_TOOL)
         return {"tools": tools, "allowed_tools": sorted(allowed), "profile": access.profile}
     except McpRuntimeError as exc:
         logger.exception("bridge_tools_failed request_id=%s profile=%s", request_id(request), access.profile)
@@ -442,13 +456,24 @@ async def call_tool(
 
     started = time.perf_counter()
     try:
-        if payload.name == "read_source":
+        if payload.name in {"read_source", "read_method_source"}:
             if not source_reader.available:
                 raise HTTPException(
                     status_code=503,
                     detail=public_error("SOURCE_UNAVAILABLE", request),
                 )
-            result = source_reader.read(payload.arguments)
+            result = (
+                source_reader.read_method(payload.arguments)
+                if payload.name == "read_method_source"
+                else source_reader.read(payload.arguments)
+            )
+        elif payload.name == "get_edt_metadata_summary":
+            if not metadata_reader.available:
+                raise HTTPException(
+                    status_code=503,
+                    detail=public_error("SOURCE_UNAVAILABLE", request),
+                )
+            result = metadata_reader.read(payload.arguments)
         else:
             result = client.call_tool(payload.name, payload.arguments)
         result_bytes = len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))

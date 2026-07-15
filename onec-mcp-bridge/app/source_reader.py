@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Any
 
@@ -111,6 +112,32 @@ READ_SOURCE_TOOL: dict[str, Any] = {
     },
 }
 
+READ_METHOD_SOURCE_TOOL: dict[str, Any] = {
+    "name": "read_method_source",
+    "title": "Чтение процедуры или функции 1С",
+    "description": (
+        "Читает одну точно указанную процедуру или функцию из BSL-модуля "
+        "read-only выгрузки, сохраняя исходные номера строк."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "module": {
+                "type": "string",
+                "description": "Полное имя модуля, например Документ.ЗаказКлиента.МодульОбъекта",
+            },
+            "method": {
+                "type": "string",
+                "description": "Точное имя процедуры или функции без скобок",
+            },
+        },
+        "required": ["module", "method"],
+        "additionalProperties": False,
+    },
+}
+
+_METHOD_NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
+
 
 class SourceReader:
     """Resolve module IDs to files while keeping every read inside dump root."""
@@ -120,6 +147,7 @@ class SourceReader:
         self._root: Path | None = None
         self._index: dict[str, Path] = {}
         self._ambiguous: set[str] = set()
+        self._indexed = False
         self._lock = RLock()
         if self._configured_path:
             candidate = Path(self._configured_path).expanduser()
@@ -139,11 +167,14 @@ class SourceReader:
             "configured": self.configured,
             "available": self.available,
             "modules": len(self._index),
+            "indexed": self._indexed,
         }
 
     def _build_index_locked(self) -> None:
         if self._root is None:
             raise SourceNotConfiguredError("read_source не настроен: укажите ONEC_MCP_DUMP_PATH.")
+        if self._indexed:
+            return
 
         index: dict[str, Path] = {}
         ambiguous: set[str] = set()
@@ -165,6 +196,7 @@ class SourceReader:
                 index[module_name] = resolved
         self._index = index
         self._ambiguous = ambiguous
+        self._indexed = True
 
     def read(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module = arguments.get("module")
@@ -211,5 +243,55 @@ class SourceReader:
                 }
             ],
             "sourceComplete": True,
+            "isError": False,
+        }
+
+    def read_method(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        method = arguments.get("method")
+        if not isinstance(method, str) or not _METHOD_NAME.fullmatch(method.strip()):
+            raise SourceReaderError("Для read_method_source укажите корректное имя method.")
+        method = method.strip()
+
+        full_result = self.read(arguments)
+        payload = json.loads(full_result["content"][0]["text"])
+        source = payload["source"]
+        declaration = re.compile(
+            rf"^[ \t]*(?P<kind>Процедура|Функция)[ \t]+{re.escape(method)}[ \t]*\(",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        matches = list(declaration.finditer(source))
+        if not matches:
+            raise SourceNotFoundError("Процедура или функция не найдена в указанном модуле.")
+        if len(matches) > 1:
+            raise SourceReaderError("В модуле найдено несколько методов с указанным именем.")
+
+        match = matches[0]
+        kind = match.group("kind")
+        terminator_name = "КонецПроцедуры" if kind.casefold() == "процедура" else "КонецФункции"
+        terminator = re.compile(
+            rf"^[ \t]*{terminator_name}[ \t]*;?[ \t]*\r?$",
+            re.IGNORECASE | re.MULTILINE,
+        ).search(source, match.start())
+        if terminator is None:
+            raise SourceReaderError("Не найден конец указанной процедуры или функции.")
+
+        line_start = source.count("\n", 0, match.start()) + 1
+        line_end = source.count("\n", 0, terminator.start()) + 1
+        scoped_source = "\n" * (line_start - 1) + source[match.start():terminator.end()]
+        scoped_payload = {
+            **payload,
+            "method": method,
+            "kind": "procedure" if kind.casefold() == "процедура" else "function",
+            "source": scoped_source,
+            "sourceComplete": True,
+            "sourceScope": "method",
+            "sourceLineStart": line_start,
+            "sourceLineEnd": line_end,
+            "moduleTotalLines": len(source.splitlines()),
+        }
+        return {
+            "content": [{"type": "text", "text": json.dumps(scoped_payload, ensure_ascii=False)}],
+            "sourceComplete": True,
+            "sourceScope": "method",
             "isError": False,
         }

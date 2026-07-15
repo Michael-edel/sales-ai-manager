@@ -25,7 +25,8 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 - `business` (`ONEC_MCP_BRIDGE_TOKEN`) используется Worker и разрешает метаданные,
   валидацию и серверные read-only запросы через `execute_query`;
 - `development` (`ONEC_MCP_INSPECTOR_TOKEN`) используется 1C AI Inspector и
-  разрешает только метаданные, поиск, справку BSL, валидацию и `read_source`;
+  разрешает только метаданные, поиск, справку BSL, валидацию, `read_source`,
+  `read_method_source` и `get_edt_metadata_summary`;
 - `diagnostics` (`ONEC_MCP_DIAGNOSTICS_TOKEN`) опционален и отдельно разрешает
   `get_event_log`. Не используйте диагностический токен в приложениях.
 
@@ -33,12 +34,19 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 авторизации при совпадающих токенах, поэтому один секрет нельзя использовать для
 нескольких контуров.
 
-При заданном `ONEC_MCP_DUMP_PATH` bridge также публикует собственный read-only
-инструмент `read_source`. Он читает полный BSL-файл из выгрузки
-`DumpConfigToFiles`, возвращает `sourceComplete: true` и не принимает произвольные
-пути. Файлы за пределами dump-каталога, включая symlink на внешний файл,
-отбрасываются. После обновления выгрузки перезапустите bridge, чтобы пересобрать
-индекс модулей.
+При заданном `ONEC_MCP_DUMP_PATH` bridge публикует три собственных read-only
+инструмента:
+
+- `read_source` читает полный BSL-модуль;
+- `read_method_source` возвращает только точную процедуру или функцию с
+  исходными номерами строк, что уменьшает трафик и контекст модели;
+- `get_edt_metadata_summary` преобразует XML объекта EDT/DumpConfigToFiles в
+  компактный JSON с реквизитами, табличными частями, формами и командами.
+
+Инструменты принимают имена модулей и объектов, а не произвольные пути. Файлы за
+пределами dump-каталога, включая symlink на внешний файл, отбрасываются. XML с
+DTD/ENTITY и файлы более 16 МиБ отклоняются. Индекс BSL строится один раз на
+запуск; после обновления выгрузки перезапустите bridge.
 
 ## Настройка
 
@@ -73,6 +81,12 @@ ONEC_MCP_DUMP_PATH=C:\1C\DumpConfigToFiles
 Сама выгрузка создается штатной операцией `DumpConfigToFiles`; конфигурация 1С
 не изменяется. Если переменная не задана, доступны только инструменты
 `mcp-1c`, а Inspector корректно показывает частичное покрытие источника.
+
+Проверка bridge:
+
+```powershell
+python -m pytest -q
+```
 
 5. Установите зависимости и запустите bridge:
 
