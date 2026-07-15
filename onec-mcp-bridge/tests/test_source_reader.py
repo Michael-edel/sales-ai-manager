@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +95,54 @@ class SourceReaderTests(unittest.TestCase):
         self.assertFalse(reader.available)
         with self.assertRaises(SourceNotConfiguredError):
             reader.read({"module": "Документ.ЗаказКлиента.МодульОбъекта"})
+
+    def test_v09_source_navigation_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "Documents" / "ЗаказКлиента" / "Ext" / "ObjectModule.bsl"
+            second = root / "CommonModules" / "Продажи" / "Ext" / "Module.bsl"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first_source = (
+                "Функция РассчитатьСебестоимость() Экспорт\n"
+                "    Возврат Продажи.РассчитатьСебестоимость();\n"
+                "КонецФункции\n"
+            )
+            first.write_text(first_source, encoding="utf-8")
+            second.write_text(
+                "Функция РассчитатьСебестоимость()\nВозврат 1;\nКонецФункции\n",
+                encoding="utf-8",
+            )
+            reader = SourceReader(str(root))
+
+            methods = json.loads(reader.list_methods({
+                "module": "Документ.ЗаказКлиента.МодульОбъекта"
+            })["content"][0]["text"])
+            self.assertEqual(methods["methods"][0]["name"], "РассчитатьСебестоимость")
+            self.assertTrue(methods["methods"][0]["export"])
+
+            resolved = json.loads(reader.resolve_symbol({
+                "symbol": "РассчитатьСебестоимость"
+            })["content"][0]["text"])
+            self.assertEqual(resolved["count"], 2)
+
+            references = json.loads(reader.find_references({
+                "symbol": "РассчитатьСебестоимость",
+                "maxResults": 10,
+            })["content"][0]["text"])
+            self.assertEqual(references["count"], 3)
+
+            checksum = json.loads(reader.checksum({
+                "module": "Документ.ЗаказКлиента.МодульОбъекта"
+            })["content"][0]["text"])
+            self.assertEqual(checksum["sha256"], hashlib.sha256(first_source.encode()).hexdigest())
+
+            estimate = json.loads(reader.estimate_payload({
+                "tool": "read_method_source",
+                "module": "Документ.ЗаказКлиента.МодульОбъекта",
+                "method": "РассчитатьСебестоимость",
+            })["content"][0]["text"])
+            self.assertGreater(estimate["responseBytes"], estimate["sourceBytes"])
 
 
 if __name__ == "__main__":

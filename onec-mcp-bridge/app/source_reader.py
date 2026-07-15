@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import re
 from threading import RLock
@@ -132,6 +133,77 @@ READ_METHOD_SOURCE_TOOL: dict[str, Any] = {
             },
         },
         "required": ["module", "method"],
+        "additionalProperties": False,
+    },
+}
+
+LIST_MODULE_METHODS_TOOL = {
+    "name": "list_module_methods",
+    "title": "Список методов модуля 1С",
+    "description": "Возвращает процедуры и функции одного BSL-модуля без исходного текста.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"module": {"type": "string"}},
+        "required": ["module"],
+        "additionalProperties": False,
+    },
+}
+
+RESOLVE_SYMBOL_TOOL = {
+    "name": "resolve_symbol",
+    "title": "Разрешение символа BSL",
+    "description": "Находит точные объявления процедуры или функции в read-only выгрузке.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "module": {"type": "string"},
+        },
+        "required": ["symbol"],
+        "additionalProperties": False,
+    },
+}
+
+FIND_REFERENCES_TOOL = {
+    "name": "find_references",
+    "title": "Поиск ссылок на символ BSL",
+    "description": "Ищет ограниченный список точных употреблений символа в BSL-модулях.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "module": {"type": "string"},
+            "maxResults": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "required": ["symbol"],
+        "additionalProperties": False,
+    },
+}
+
+GET_SOURCE_CHECKSUM_TOOL = {
+    "name": "get_source_checksum",
+    "title": "Checksum исходного модуля",
+    "description": "Возвращает SHA-256 и размер BSL-модуля без передачи исходного текста.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"module": {"type": "string"}},
+        "required": ["module"],
+        "additionalProperties": False,
+    },
+}
+
+ESTIMATE_TOOL_PAYLOAD_TOOL = {
+    "name": "estimate_tool_payload",
+    "title": "Оценка payload исходного кода",
+    "description": "Оценивает размер ответа read_source или read_method_source до передачи клиенту.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": ["read_source", "read_method_source"]},
+            "module": {"type": "string"},
+            "method": {"type": "string"},
+        },
+        "required": ["tool", "module"],
         "additionalProperties": False,
     },
 }
@@ -295,3 +367,121 @@ class SourceReader:
             "sourceScope": "method",
             "isError": False,
         }
+
+    def list_methods(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = json.loads(self.read(arguments)["content"][0]["text"])
+        source = payload["source"]
+        declaration = re.compile(
+            r"^[ \t]*(?P<kind>Процедура|Функция)[ \t]+(?P<name>[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)[^\r\n]*",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        methods = []
+        for match in declaration.finditer(source):
+            methods.append({
+                "name": match.group("name"),
+                "kind": "procedure" if match.group("kind").casefold() == "процедура" else "function",
+                "line": source.count("\n", 0, match.start()) + 1,
+                "export": bool(re.search(r"\bЭкспорт\b", match.group(0), re.IGNORECASE)),
+            })
+        result = {"module": payload["module"], "methods": methods, "count": len(methods)}
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}
+
+    def resolve_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol = self._validated_symbol(arguments)
+        module = arguments.get("module")
+        candidates = self._module_candidates(module)
+        declaration = re.compile(
+            rf"^[ \t]*(?P<kind>Процедура|Функция)[ \t]+{re.escape(symbol)}[ \t]*\(",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        matches = []
+        for module_name, path in candidates:
+            source = self._read_indexed_path(path)
+            for match in declaration.finditer(source):
+                matches.append({
+                    "module": module_name,
+                    "symbol": symbol,
+                    "kind": "procedure" if match.group("kind").casefold() == "процедура" else "function",
+                    "line": source.count("\n", 0, match.start()) + 1,
+                })
+                if len(matches) >= 50:
+                    break
+            if len(matches) >= 50:
+                break
+        result = {"symbol": symbol, "matches": matches, "count": len(matches), "truncated": len(matches) >= 50}
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}
+
+    def find_references(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol = self._validated_symbol(arguments)
+        max_results = arguments.get("maxResults", 50)
+        if not isinstance(max_results, int) or isinstance(max_results, bool) or not 1 <= max_results <= 100:
+            raise SourceReaderError("maxResults должен быть целым числом от 1 до 100.")
+        pattern = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9_]){re.escape(symbol)}(?![A-Za-zА-Яа-яЁё0-9_])", re.IGNORECASE)
+        matches = []
+        truncated = False
+        for module_name, path in self._module_candidates(arguments.get("module")):
+            source = self._read_indexed_path(path)
+            for line_number, line in enumerate(source.splitlines(), 1):
+                if pattern.search(line):
+                    if len(matches) >= max_results:
+                        truncated = True
+                        break
+                    matches.append({"module": module_name, "line": line_number, "snippet": line.strip()[:300]})
+            if truncated:
+                break
+        result = {"symbol": symbol, "references": matches, "count": len(matches), "truncated": truncated}
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}
+
+    def checksum(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = json.loads(self.read(arguments)["content"][0]["text"])
+        encoded = payload["source"].encode("utf-8")
+        result = {
+            "module": payload["module"],
+            "sourceBytes": len(encoded),
+            "sourceLines": len(payload["source"].splitlines()),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}
+
+    def estimate_payload(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool = arguments.get("tool")
+        if tool not in {"read_source", "read_method_source"}:
+            raise SourceReaderError("estimate_tool_payload поддерживает только read_source и read_method_source.")
+        result = self.read_method(arguments) if tool == "read_method_source" else self.read(arguments)
+        payload = json.loads(result["content"][0]["text"])
+        estimate = {
+            "tool": tool,
+            "module": payload["module"],
+            "method": payload.get("method"),
+            "sourceBytes": len(payload["source"].encode("utf-8")),
+            "responseBytes": len(json.dumps(result, ensure_ascii=False).encode("utf-8")),
+        }
+        return {"content": [{"type": "text", "text": json.dumps(estimate, ensure_ascii=False)}], "isError": False}
+
+    def _validated_symbol(self, arguments: dict[str, Any]) -> str:
+        symbol = arguments.get("symbol")
+        if not isinstance(symbol, str) or not _METHOD_NAME.fullmatch(symbol.strip()):
+            raise SourceReaderError("Укажите корректное имя symbol.")
+        return symbol.strip()
+
+    def _module_candidates(self, module: Any) -> list[tuple[str, Path]]:
+        with self._lock:
+            if not self.available:
+                raise SourceNotConfiguredError("Исходники не настроены: укажите ONEC_MCP_DUMP_PATH.")
+            self._build_index_locked()
+            if module is None:
+                return sorted(self._index.items())
+            if not isinstance(module, str) or not module.strip():
+                raise SourceReaderError("module должен быть непустой строкой.")
+            path = self._index.get(module.strip())
+            if path is None:
+                raise SourceNotFoundError("Исходный модуль не найден в read-only выгрузке.")
+            return [(module.strip(), path)]
+
+    def _read_indexed_path(self, path: Path) -> str:
+        if self._root is None:
+            raise SourceNotConfiguredError("Исходники не настроены.")
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file() or not _path_within_root(self._root, resolved):
+            raise SourceNotFoundError("Исходный модуль недоступен в пределах dump-каталога.")
+        return resolved.read_text(encoding="utf-8-sig")

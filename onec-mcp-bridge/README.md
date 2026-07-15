@@ -1,5 +1,10 @@
 # 1C MCP Bridge
 
+Текущая версия bridge: `0.9.0`. Она добавляет пять локальных read-only tools по
+выгрузке BSL: `list_module_methods`, `resolve_symbol`, `find_references`,
+`get_source_checksum` и `estimate_tool_payload`. Инструменты не выполняют код,
+не обращаются к данным базы и ограничивают число возвращаемых ссылок.
+
 Локальный HTTP-мост между Cloudflare Worker приложения `sales-ai-manager` и MCP-сервером `mcp-1c`.
 
 Cloudflare Worker не может запускать локальный `mcp-1c.exe` рядом с базой 1С. Поэтому схема такая:
@@ -26,7 +31,7 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
   валидацию и серверные read-only запросы через `execute_query`;
 - `development` (`ONEC_MCP_INSPECTOR_TOKEN`) используется 1C AI Inspector и
   разрешает только метаданные, поиск, справку BSL, валидацию, `read_source`,
-  `read_method_source` и `get_edt_metadata_summary`;
+  `read_method_source`, `get_edt_metadata_summary` и инструменты навигации v0.9;
 - `diagnostics` (`ONEC_MCP_DIAGNOSTICS_TOKEN`) опционален и отдельно разрешает
   `get_event_log`. Не используйте диагностический токен в приложениях.
 
@@ -34,14 +39,28 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 авторизации при совпадающих токенах, поэтому один секрет нельзя использовать для
 нескольких контуров.
 
-При заданном `ONEC_MCP_DUMP_PATH` bridge публикует три собственных read-only
-инструмента:
+При заданном `ONEC_MCP_DUMP_PATH` bridge публикует восемь собственных read-only
+инструментов:
 
 - `read_source` читает полный BSL-модуль;
 - `read_method_source` возвращает только точную процедуру или функцию с
   исходными номерами строк, что уменьшает трафик и контекст модели;
 - `get_edt_metadata_summary` преобразует XML объекта EDT/DumpConfigToFiles в
   компактный JSON с реквизитами, табличными частями, формами и командами.
+- `list_module_methods` возвращает сигнатуры процедур и функций модуля;
+- `resolve_symbol` находит точные объявления символа;
+- `find_references` возвращает не более 100 точных употреблений символа;
+- `get_source_checksum` возвращает SHA-256 без передачи исходного текста;
+- `estimate_tool_payload` оценивает размер `read_source` или
+  `read_method_source` до передачи результата клиенту.
+
+Тесты bridge запускаются в отдельном окружении:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+$env:PYTHONPATH = (Resolve-Path .).Path
+python -m unittest discover -s tests -v
+```
 
 Инструменты принимают имена модулей и объектов, а не произвольные пути. Файлы за
 пределами dump-каталога, включая symlink на внешний файл, отбрасываются. XML с

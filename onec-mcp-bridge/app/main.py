@@ -20,8 +20,13 @@ from pydantic import BaseModel, Field
 
 from .metadata_reader import GET_EDT_METADATA_SUMMARY_TOOL, MetadataReader
 from .source_reader import (
+    ESTIMATE_TOOL_PAYLOAD_TOOL,
+    FIND_REFERENCES_TOOL,
+    GET_SOURCE_CHECKSUM_TOOL,
+    LIST_MODULE_METHODS_TOOL,
     READ_METHOD_SOURCE_TOOL,
     READ_SOURCE_TOOL,
+    RESOLVE_SYMBOL_TOOL,
     SourceNotConfiguredError,
     SourceNotFoundError,
     SourceReader,
@@ -61,6 +66,11 @@ PROFILE_DEFAULT_TOOLS = {
         "read_source",
         "read_method_source",
         "get_edt_metadata_summary",
+        "list_module_methods",
+        "resolve_symbol",
+        "find_references",
+        "get_source_checksum",
+        "estimate_tool_payload",
     },
     "diagnostics": {
         "get_configuration_info",
@@ -224,7 +234,7 @@ class McpClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "sales-ai-manager-onec-bridge", "version": "0.1.0"},
+                "clientInfo": {"name": "sales-ai-manager-onec-bridge", "version": "0.9.0"},
             },
         )
         self._send_notification_locked("notifications/initialized", {})
@@ -316,7 +326,7 @@ class McpClient:
         return result if isinstance(result, dict) else {"result": result}
 
 
-app = FastAPI(title="Sales AI Manager 1C MCP Bridge", version="0.8.0")
+app = FastAPI(title="Sales AI Manager 1C MCP Bridge", version="0.9.0")
 client = McpClient()
 source_reader = SourceReader(env_text("ONEC_MCP_DUMP_PATH"))
 metadata_reader = MetadataReader(env_text("ONEC_MCP_DUMP_PATH"))
@@ -436,6 +446,18 @@ def list_tools(request: Request, access: AccessContext = Depends(require_access)
             tool.get("name") == "get_edt_metadata_summary" for tool in tools
         ):
             tools.append(GET_EDT_METADATA_SUMMARY_TOOL)
+        local_tools = (
+            LIST_MODULE_METHODS_TOOL,
+            RESOLVE_SYMBOL_TOOL,
+            FIND_REFERENCES_TOOL,
+            GET_SOURCE_CHECKSUM_TOOL,
+            ESTIMATE_TOOL_PAYLOAD_TOOL,
+        )
+        for tool in local_tools:
+            if source_reader.available and tool["name"] in allowed and not any(
+                item.get("name") == tool["name"] for item in tools
+            ):
+                tools.append(tool)
         return {"tools": tools, "allowed_tools": sorted(allowed), "profile": access.profile}
     except McpRuntimeError as exc:
         logger.exception("bridge_tools_failed request_id=%s profile=%s", request_id(request), access.profile)
@@ -456,17 +478,30 @@ async def call_tool(
 
     started = time.perf_counter()
     try:
-        if payload.name in {"read_source", "read_method_source"}:
+        if payload.name in {
+            "read_source",
+            "read_method_source",
+            "list_module_methods",
+            "resolve_symbol",
+            "find_references",
+            "get_source_checksum",
+            "estimate_tool_payload",
+        }:
             if not source_reader.available:
                 raise HTTPException(
                     status_code=503,
                     detail=public_error("SOURCE_UNAVAILABLE", request),
                 )
-            result = (
-                source_reader.read_method(payload.arguments)
-                if payload.name == "read_method_source"
-                else source_reader.read(payload.arguments)
-            )
+            handlers = {
+                "read_source": source_reader.read,
+                "read_method_source": source_reader.read_method,
+                "list_module_methods": source_reader.list_methods,
+                "resolve_symbol": source_reader.resolve_symbol,
+                "find_references": source_reader.find_references,
+                "get_source_checksum": source_reader.checksum,
+                "estimate_tool_payload": source_reader.estimate_payload,
+            }
+            result = handlers[payload.name](payload.arguments)
         elif payload.name == "get_edt_metadata_summary":
             if not metadata_reader.available:
                 raise HTTPException(

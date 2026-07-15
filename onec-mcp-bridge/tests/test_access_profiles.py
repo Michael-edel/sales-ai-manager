@@ -8,6 +8,16 @@ from app import main
 
 
 ALL_TOOLS = sorted(set().union(*main.PROFILE_DEFAULT_TOOLS.values()))
+LOCAL_TOOLS = {
+    "read_source",
+    "read_method_source",
+    "get_edt_metadata_summary",
+    "list_module_methods",
+    "resolve_symbol",
+    "find_references",
+    "get_source_checksum",
+    "estimate_tool_payload",
+}
 
 
 class FakeMcpClient:
@@ -16,7 +26,7 @@ class FakeMcpClient:
         self.failure: Exception | None = None
 
     def tools(self) -> list[dict]:
-        return [{"name": name, "description": name} for name in ALL_TOOLS if name != "read_source"]
+        return [{"name": name, "description": name} for name in ALL_TOOLS if name not in LOCAL_TOOLS]
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         if self.failure:
@@ -39,6 +49,21 @@ class FakeSourceReader:
 
     def read_method(self, arguments: dict) -> dict:
         return {"sourceComplete": True, "sourceScope": "method", "arguments": arguments}
+
+    def list_methods(self, arguments: dict) -> dict:
+        return {"methods": [], "arguments": arguments}
+
+    def resolve_symbol(self, arguments: dict) -> dict:
+        return {"matches": [], "arguments": arguments}
+
+    def find_references(self, arguments: dict) -> dict:
+        return {"references": [], "arguments": arguments}
+
+    def checksum(self, arguments: dict) -> dict:
+        return {"sha256": "0" * 64, "arguments": arguments}
+
+    def estimate_payload(self, arguments: dict) -> dict:
+        return {"responseBytes": 1, "arguments": arguments}
 
 
 class FakeMetadataReader:
@@ -100,8 +125,24 @@ class AccessProfileTests(unittest.TestCase):
         self.assertIn("read_source", names)
         self.assertIn("read_method_source", names)
         self.assertIn("get_edt_metadata_summary", names)
+        self.assertTrue({
+            "list_module_methods",
+            "resolve_symbol",
+            "find_references",
+            "get_source_checksum",
+            "estimate_tool_payload",
+        }.issubset(names))
         self.assertNotIn("execute_query", names)
         self.assertNotIn("get_event_log", names)
+
+    def test_development_navigation_tool_stays_local(self) -> None:
+        response = self.client.post(
+            "/tools/call",
+            headers=self.headers("inspector-token"),
+            json={"name": "list_module_methods", "arguments": {"module": "ОбщийМодуль.Тест.Модуль"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.fake_client.calls, [])
 
     def test_business_profile_keeps_queries_without_source_or_logs(self) -> None:
         names = self.tool_names("business-token")
