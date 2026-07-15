@@ -239,7 +239,7 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 Минимальный запуск bridge на Windows:
 
 ```powershell
-cd C:\Users\User\Documents\Codex\2026-06-12\files-mentioned-by-the-user-txt\sales-ai-manager\onec-mcp-bridge
+cd D:\CodexBuild\sales-ai-manager-mcp09\onec-mcp-bridge
 Copy-Item .env.example .env
 notepad .env
 python -m venv .venv

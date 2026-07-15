@@ -3,7 +3,8 @@
 Текущая версия bridge: `0.9.0`. Она добавляет пять локальных read-only tools по
 выгрузке BSL: `list_module_methods`, `resolve_symbol`, `find_references`,
 `get_source_checksum` и `estimate_tool_payload`. Инструменты не выполняют код,
-не обращаются к данным базы и ограничивают число возвращаемых ссылок.
+не обращаются к данным базы и ограничивают число возвращаемых ссылок. Шаблон
+`.env.example` публикует полный development allowlist из 15 инструментов.
 
 Локальный HTTP-мост между Cloudflare Worker приложения `sales-ai-manager` и MCP-сервером `mcp-1c`.
 
