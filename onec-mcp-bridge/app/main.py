@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .metadata_reader import GET_EDT_METADATA_SUMMARY_TOOL, MetadataReader
+from .register_reader import READ_REGISTER_RECORDS_TOOL, read_register_records
 from .source_reader import (
     ESTIMATE_TOOL_PAYLOAD_TOOL,
     FIND_REFERENCES_TOOL,
@@ -71,6 +72,7 @@ PROFILE_DEFAULT_TOOLS = {
         "find_references",
         "get_source_checksum",
         "estimate_tool_payload",
+        "read_register_records",
     },
     "diagnostics": {
         "get_configuration_info",
@@ -452,9 +454,11 @@ def list_tools(request: Request, access: AccessContext = Depends(require_access)
             FIND_REFERENCES_TOOL,
             GET_SOURCE_CHECKSUM_TOOL,
             ESTIMATE_TOOL_PAYLOAD_TOOL,
+            READ_REGISTER_RECORDS_TOOL,
         )
         for tool in local_tools:
-            if source_reader.available and tool["name"] in allowed and not any(
+            local_available = tool["name"] == "read_register_records" or source_reader.available
+            if local_available and tool["name"] in allowed and not any(
                 item.get("name") == tool["name"] for item in tools
             ):
                 tools.append(tool)
@@ -509,6 +513,8 @@ async def call_tool(
                     detail=public_error("SOURCE_UNAVAILABLE", request),
                 )
             result = metadata_reader.read(payload.arguments)
+        elif payload.name == "read_register_records":
+            result = read_register_records(payload.arguments, client.call_tool)
         else:
             result = client.call_tool(payload.name, payload.arguments)
         result_bytes = len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))

@@ -1,10 +1,12 @@
 # 1C MCP Bridge
 
-Текущая версия bridge: `0.9.0`. Она добавляет пять локальных read-only tools по
+Текущая версия bridge: `0.9.1`. Она добавляет пять локальных read-only tools по
 выгрузке BSL: `list_module_methods`, `resolve_symbol`, `find_references`,
 `get_source_checksum` и `estimate_tool_payload`. Инструменты не выполняют код,
 не обращаются к данным базы и ограничивают число возвращаемых ссылок. Шаблон
-`.env.example` публикует полный development allowlist из 15 инструментов.
+`.env.example` публикует development allowlist из 16 инструментов. Новый
+`read_register_records` строит только ограниченную выборку одного регистра и
+не принимает произвольный текст запроса 1С.
 
 Локальный HTTP-мост между Cloudflare Worker приложения `sales-ai-manager` и MCP-сервером `mcp-1c`.
 
@@ -54,6 +56,9 @@ ai.michael.kz -> Cloudflare Worker -> HTTPS/VPN/Tunnel -> onec-mcp-bridge -> mcp
 - `get_source_checksum` возвращает SHA-256 без передачи исходного текста;
 - `estimate_tool_payload` оценивает размер `read_source` или
   `read_method_source` до передачи результата клиенту.
+- `read_register_records` возвращает не более 500 live-записей указанного
+  регистра для Data Audit Agent; bridge проверяет имя, сам строит read-only
+  `ВЫБРАТЬ ПЕРВЫЕ ...` и не публикует Inspector инструмент `execute_query`.
 
 Тесты bridge запускаются в отдельном окружении:
 

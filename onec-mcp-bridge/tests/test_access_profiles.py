@@ -17,6 +17,7 @@ LOCAL_TOOLS = {
     "find_references",
     "get_source_checksum",
     "estimate_tool_payload",
+    "read_register_records",
 }
 
 
@@ -125,6 +126,7 @@ class AccessProfileTests(unittest.TestCase):
         self.assertIn("read_source", names)
         self.assertIn("read_method_source", names)
         self.assertIn("get_edt_metadata_summary", names)
+        self.assertIn("read_register_records", names)
         self.assertTrue({
             "list_module_methods",
             "resolve_symbol",
@@ -142,6 +144,43 @@ class AccessProfileTests(unittest.TestCase):
             json={"name": "list_module_methods", "arguments": {"module": "ОбщийМодуль.Тест.Модуль"}},
         )
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.fake_client.calls, [])
+
+    def test_development_register_reader_builds_bounded_query(self) -> None:
+        response = self.client.post(
+            "/tools/call",
+            headers=self.headers("inspector-token"),
+            json={
+                "name": "read_register_records",
+                "arguments": {
+                    "registerType": "AccumulationRegister",
+                    "name": "НДСЗаписиКнигиПродаж",
+                    "limit": 200,
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        name, arguments = self.fake_client.calls[-1]
+        self.assertEqual(name, "execute_query")
+        self.assertIn("ВЫБРАТЬ ПЕРВЫЕ 200", arguments["query"])
+        self.assertIn("РегистрНакопления.НДСЗаписиКнигиПродаж", arguments["query"])
+        self.assertEqual(arguments["limit"], 200)
+
+    def test_development_register_reader_rejects_injection(self) -> None:
+        response = self.client.post(
+            "/tools/call",
+            headers=self.headers("inspector-token"),
+            json={
+                "name": "read_register_records",
+                "arguments": {
+                    "registerType": "AccumulationRegister",
+                    "name": "НДСЗаписиКнигиПродаж; УДАЛИТЬ",
+                    "limit": 200,
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"]["code"], "INVALID_ARGUMENTS")
         self.assertEqual(self.fake_client.calls, [])
 
     def test_business_profile_keeps_queries_without_source_or_logs(self) -> None:
