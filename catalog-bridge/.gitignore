@@ -1,0 +1,2 @@
+# Exports and backup input contain private catalog/pricing data.
+*.json
