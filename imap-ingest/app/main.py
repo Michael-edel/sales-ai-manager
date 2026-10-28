@@ -11,6 +11,7 @@ import sqlite3
 import ssl
 import sys
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
@@ -143,7 +144,7 @@ def getenv_int(name: str, default: int) -> int:
 
 def ensure_state_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS ingested_messages (
@@ -167,11 +168,15 @@ def run_once(config: Config) -> dict[str, int]:
         uids = search_uids(client, config.imap_search)
         summary["found"] = len(uids)
 
-        for uid in uids[-config.max_messages_per_poll:]:
+        attempted = 0
+        for uid in reversed(uids):
+            if attempted >= config.max_messages_per_poll:
+                break
             if was_ingested(config.state_db, config.imap_username, uidvalidity, uid):
                 summary["skipped"] += 1
                 continue
 
+            attempted += 1
             try:
                 raw_message = fetch_raw_message(client, uid)
                 payload = build_ingest_payload(config, uidvalidity, uid, raw_message)
@@ -409,7 +414,7 @@ def post_to_worker(config: Config, payload: dict[str, object]) -> dict[str, obje
 
 
 def was_ingested(path: Path, mailbox_email: str, uidvalidity: str, uid: str) -> bool:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         row = conn.execute(
             """
             SELECT 1 FROM ingested_messages
@@ -421,7 +426,7 @@ def was_ingested(path: Path, mailbox_email: str, uidvalidity: str, uid: str) -> 
 
 
 def mark_ingested(path: Path, mailbox_email: str, uidvalidity: str, uid: str, message_uid: object) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO ingested_messages (

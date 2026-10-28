@@ -3,6 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2026-06-15"
 account_id = "3e2a044cfaf01abb436adfe910297e5c"
 workers_dev = true
+# Preserve service URLs managed in the Cloudflare dashboard during CI deployments.
+keep_vars = true
 
 [[routes]]
 pattern = "ai.michael.kz"

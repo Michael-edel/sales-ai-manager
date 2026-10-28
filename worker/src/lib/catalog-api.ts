@@ -117,13 +117,19 @@ async function importBatch(request: Request, env: CatalogEnv, id: string, index:
     type: offer.sourceType, payload: JSON.stringify(offer),
   }));
   // A replayed/conflicting batch fails atomically before changing any catalog data.
-  try { await env.DB.batch([
-    env.DB.prepare("INSERT INTO catalog_import_batches (import_id,batch_index,checksum,offer_count) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading')")
-      .bind(id, index, checksum, offers.length, id),
-    env.DB.prepare("INSERT INTO catalog_offers (snapshot_id,offer_id,product_id,article_key,onec_code_key,search_text,source_type,payload_json) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.productId'),json_extract(value,'$.article'),json_extract(value,'$.code'),json_extract(value,'$.search'),json_extract(value,'$.type'),json_extract(value,'$.payload') FROM json_each(?) WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading')")
-      .bind(id, JSON.stringify(rows), id),
-    env.DB.prepare("UPDATE catalog_imports SET received_count=(SELECT COUNT(*) FROM catalog_offers WHERE snapshot_id=?) WHERE id=? AND status='uploading'").bind(id, id),
-  ]); } catch (error) {
+  try {
+    // Recheck capacity inside the transaction: other batches may have committed since getImport.
+    const results = await env.DB.batch([
+      env.DB.prepare("INSERT INTO catalog_import_batches (import_id,batch_index,checksum,offer_count) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
+        .bind(id, index, checksum, offers.length, id, offers.length),
+      env.DB.prepare("INSERT INTO catalog_offers (snapshot_id,offer_id,product_id,article_key,onec_code_key,search_text,source_type,payload_json) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.productId'),json_extract(value,'$.article'),json_extract(value,'$.code'),json_extract(value,'$.search'),json_extract(value,'$.type'),json_extract(value,'$.payload') FROM json_each(?) WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
+        .bind(id, JSON.stringify(rows), id, offers.length),
+      env.DB.prepare("UPDATE catalog_imports SET received_count=received_count+? WHERE id=? AND status='uploading' AND received_count+?<=expected_count")
+        .bind(offers.length, id, offers.length),
+    ]);
+    if (results[0].meta.changes !== 1)
+      throw new CatalogInputError("Импорт уже завершён или получено больше позиций, чем заявлено.", 409);
+  } catch (error) {
     const replay = await env.DB.prepare("SELECT checksum FROM catalog_import_batches WHERE import_id=? AND batch_index=?").bind(id, index).first<{ checksum: string }>();
     if (replay?.checksum === checksum) return { receivedCount: (await getImport(env, id)).received_count };
     if (replay) throw new CatalogInputError("Пакет с этим номером уже содержит другие данные.", 409);
@@ -141,13 +147,14 @@ async function commitImport(env: CatalogEnv, id: string, user: CatalogUser) {
   if (active && active.id !== id && Date.parse(active.exported_at) >= Date.parse(record.exported_at))
     throw new CatalogInputError("В кабинете уже используется такой же или более свежий экспорт.", 409);
   await env.DB.batch([
-    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?)")
-      .bind(id, id, record.exported_at),
+    // Count once at activation, instead of scanning the growing catalog after every batch.
+    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND expected_count=(SELECT COUNT(*) FROM catalog_offers WHERE snapshot_id=?) AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?)")
+      .bind(id, id, id, record.exported_at),
     env.DB.prepare("INSERT INTO catalog_state (id,active_snapshot_id) SELECT 1,id FROM catalog_imports WHERE id=? AND status='complete' AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?) ON CONFLICT(id) DO UPDATE SET active_snapshot_id=excluded.active_snapshot_id")
       .bind(id, id, record.exported_at),
   ]);
   const current = await activeSnapshot(env);
-  if (current?.id !== id) throw new CatalogInputError("Во время импорта активирован более свежий каталог.", 409);
+  if (current?.id !== id) throw new CatalogInputError("Каталог не активирован: проверьте полноту данных или более свежий импорт.", 409);
   return { activeSnapshot: publicSnapshot(current) };
 }
 async function offersByIds(env: CatalogEnv, snapshotId: string, ids: string[]): Promise<CatalogOffer[]> {

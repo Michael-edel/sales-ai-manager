@@ -1,5 +1,6 @@
 import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
+import { isD1DailyQuotaError } from "./lib/d1-errors";
 import {
   AI_EXTERNAL_TIMEOUT_MS,
   DEFAULT_EXTERNAL_TIMEOUT_MS,
@@ -1540,6 +1541,15 @@ export default {
       }));
       if (error instanceof UserInputError) {
         return json({ detail: error.message }, error.status);
+      }
+      if (isD1DailyQuotaError(error)) {
+        const now = new Date();
+        const resetAt = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+        return jsonWithHeaders({
+          detail: "Достигнут суточный лимит базы данных Cloudflare. Повторите после сброса лимита в 00:00 UTC или обратитесь к администратору для изменения тарифа.",
+          error_code: "D1_DAILY_LIMIT",
+          error_id: errorId,
+        }, 503, { "Retry-After": String(Math.max(1, Math.ceil((resetAt - now.getTime()) / 1000))) });
       }
       return json({
         detail: "Операция не выполнена. Повторите позже или сообщите администратору код ошибки.",
@@ -3337,25 +3347,41 @@ async function checkEmailBridge(env: Env) {
         reachable: false,
         status: "error",
         service_origin: serviceOrigin,
-        detail: data?.detail || raw || response.statusText,
+        detail: `Email bridge вернул HTTP ${response.status}.`,
       };
     }
 
+    if (data?.service !== "email-bridge" || data?.status !== "ok") {
+      return {
+        configured: true,
+        reachable: false,
+        status: "invalid_response",
+        service_origin: serviceOrigin,
+        detail: "Email bridge вернул неподтверждённый ответ проверки.",
+      };
+    }
+
+    const smtpConfigured = typeof data.smtp_configured === "boolean" ? data.smtp_configured : null;
     return {
       configured: true,
       reachable: true,
-      status: data?.status || "ok",
-      service: data?.service || "email-bridge",
+      smtp_configured: smtpConfigured,
+      status: smtpConfigured === true ? "ok" : smtpConfigured === false ? "smtp_not_configured" : "smtp_unknown",
+      service: "email-bridge",
       service_origin: serviceOrigin,
+      detail: smtpConfigured === true
+        ? "Настройки SMTP найдены. Вход на почтовый сервер и отправка не проверялись."
+        : smtpConfigured === false
+          ? "Email bridge доступен, но учётные записи SMTP не настроены."
+          : "Email bridge доступен, но не сообщил о настройках SMTP.",
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Email bridge недоступен.";
+  } catch {
     return {
       configured: true,
       reachable: false,
       status: "unreachable",
       service_origin: serviceOrigin,
-      detail: message,
+      detail: "Email bridge недоступен или не ответил за 5 секунд.",
     };
   } finally {
     clearTimeout(timeoutId);

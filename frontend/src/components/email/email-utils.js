@@ -10,6 +10,15 @@ export const EMAIL_FOLDERS = [
 
 export const EMAIL_FOLDER_LABELS = Object.fromEntries(EMAIL_FOLDERS);
 
+export function emailSmtpHealthPresentation(status) {
+  if (!status) return { className: "warn", text: "SMTP: проверка…" };
+  if (status.status === "not_configured") return { className: "warn", text: "SMTP: подключение не настроено" };
+  if (!status.reachable) return { className: "error", text: "SMTP: сервис недоступен" };
+  if (status.smtp_configured === false) return { className: "warn", text: "SMTP: почтовые аккаунты не настроены" };
+  if (status.smtp_configured !== true) return { className: "warn", text: "SMTP: настройки не подтверждены" };
+  return { className: "ok", text: "SMTP настроен · отправка не проверена" };
+}
+
 export const EMAIL_STATUS_LABELS = {
   received: "Получено",
   in_work: "В работе",

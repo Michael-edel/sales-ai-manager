@@ -58,7 +58,7 @@ import {
 import EmailFolderNavigation from "./components/email/EmailFolderNavigation";
 import EmailMessageList from "./components/email/EmailMessageList";
 import CatalogSelectionPanel from "./components/catalog/CatalogSelectionPanel";
-import { EMAIL_FOLDER_LABELS, EMAIL_STATUS_LABELS } from "./components/email/email-utils";
+import { EMAIL_FOLDER_LABELS, EMAIL_STATUS_LABELS, emailSmtpHealthPresentation } from "./components/email/email-utils";
 import "./styles.css";
 
 function splitSections(result) {
@@ -1831,16 +1831,7 @@ export default function App() {
     : onecMcpStatus?.configured
       ? "ошибка"
       : "не настроен";
-  const smtpHealthClass = smtpStatus?.reachable
-    ? "ok"
-    : smtpStatus?.configured
-      ? "error"
-      : "warn";
-  const smtpHealthText = smtpStatus?.reachable
-    ? "SMTP подключен"
-    : smtpStatus?.configured
-      ? "SMTP ошибка"
-      : "SMTP не настроен";
+  const smtpHealth = emailSmtpHealthPresentation(smtpStatus);
 
   function updateMetadata(field, value) {
     setMetadata((current) => ({ ...current, [field]: value }));
@@ -2455,7 +2446,7 @@ export default function App() {
                   <ChevronUp size={18} />
                   Свернуть письмо
                 </button>
-                <span className={`email-status email-status-${smtpHealthClass}`}>{smtpHealthText}</span>
+                <span className={`email-status email-status-${smtpHealth.className}`} title={smtpStatus?.detail}>{smtpHealth.text}</span>
                 {emailStatus && <span className="email-status">{emailStatus}</span>}
               </div>
 

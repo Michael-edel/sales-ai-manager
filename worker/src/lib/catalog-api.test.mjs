@@ -4,15 +4,16 @@ import { readFileSync } from "node:fs";
 import { handleCatalogRoutes } from "./catalog-api";
 
 // Real SQLite executes the shipped migration/queries; the adapter only exposes D1's call shape.
-let sqlite, env;
+let sqlite, env, queries;
 const admin = { id: 1, username: "fixture-admin", role: "admin" };
 const manager = { id: 2, username: "fixture-manager", role: "manager" };
 function statement(sql, bindings = []) {
+  queries.push(sql);
   const execute = () => {
     const prepared = sqlite.prepare(sql);
     if (prepared.columns().length) return { results: prepared.all(...bindings), success: true, meta: {} };
     const meta = prepared.run(...bindings);
-    return { results: [], success: true, meta };
+    return { results: [], success: true, meta: { changes: Number(meta.changes) } };
   };
   return {
     bind: (...values) => statement(sql, values),
@@ -23,6 +24,7 @@ function statement(sql, bindings = []) {
   };
 }
 beforeEach(() => {
+  queries = [];
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text'); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
   sqlite.exec(readFileSync(new URL("../../migrations/0020_catalog_quotations.sql", import.meta.url), "utf8"));
@@ -75,6 +77,18 @@ const draft = () => ({ lines: [{
   }],
 }], notes: "" });
 
+function raceNextTwoBatches() {
+  const batch = env.DB.batch;
+  let arrived = 0, release;
+  const ready = new Promise(resolve => { release = resolve; });
+  env.DB.batch = async entries => {
+    arrived += 1;
+    if (arrived === 2) release();
+    await ready;
+    return batch(entries);
+  };
+}
+
 describe("catalog integration API", () => {
   it("restricts purchase data and imports by role and rejects cross-site mutations", async () => {
     expect((await call("/catalog/status", "GET", undefined, { ...manager, role: "viewer" })).status).toBe(403);
@@ -98,6 +112,62 @@ describe("catalog integration API", () => {
     const response = await call("/catalog/imports/" + id + "/batches/0", "PUT", { offers: [{ ...offer(), quantity: -1 }] });
     expect(response.status).toBe(400);
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_offers").get().n).toBe(0);
+  });
+  it("counts each concurrent replay once even when both requests read before either commits", async () => {
+    const id = await begin(), item = offer();
+    raceNextTwoBatches();
+    const results = await Promise.all([0, 1].map(() => call(`/catalog/imports/${id}/batches/0`, "PUT", { offers: [item] })));
+    expect(results.map(result => result.status)).toEqual([200, 200]);
+    expect(results.map(result => result.data.receivedCount)).toEqual([1, 1]);
+    expect(sqlite.prepare("SELECT received_count FROM catalog_imports WHERE id=?").get(id).received_count).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_offers").get().n).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_import_batches").get().n).toBe(1);
+  });
+  it("preserves the winning payload when simultaneous replays conflict", async () => {
+    const id = await begin(), item = offer();
+    raceNextTwoBatches();
+    const results = await Promise.all([item, { ...item, name: "Другой товар" }].map(value => call(`/catalog/imports/${id}/batches/0`, "PUT", { offers: [value] })));
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+    expect(sqlite.prepare("SELECT received_count FROM catalog_imports WHERE id=?").get(id).received_count).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_offers").get().n).toBe(1);
+  });
+  it("increments independently concurrent batches without losing an update", async () => {
+    const id = await begin(2);
+    raceNextTwoBatches();
+    const results = await Promise.all([0, 1].map(index => call(`/catalog/imports/${id}/batches/${index}`, "PUT", { offers: [offer(`item:${index}`)] })));
+    expect(results.every(result => result.status === 200)).toBe(true);
+    expect(sqlite.prepare("SELECT received_count FROM catalog_imports WHERE id=?").get(id).received_count).toBe(2);
+    expect((await call(`/catalog/imports/${id}/commit`, "POST", {})).status).toBe(200);
+  });
+  it("rechecks capacity inside concurrent transactions and rejects overflow without writing rows", async () => {
+    const id = await begin();
+    raceNextTwoBatches();
+    const results = await Promise.all([0, 1].map(index => call(`/catalog/imports/${id}/batches/${index}`, "PUT", { offers: [offer(`item:${index}`)] })));
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+    expect(sqlite.prepare("SELECT received_count FROM catalog_imports WHERE id=?").get(id).received_count).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_offers").get().n).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_import_batches").get().n).toBe(1);
+  });
+  it("rolls back the batch receipt and rows when the counter update fails", async () => {
+    const id = await begin();
+    const batch = env.DB.batch;
+    env.DB.batch = entries => batch([entries[0], entries[1], { execute: () => { throw new Error("fixture counter failure"); } }]);
+    await expect(call(`/catalog/imports/${id}/batches/0`, "PUT", { offers: [offer()] })).rejects.toThrow("fixture counter failure");
+    expect(sqlite.prepare("SELECT received_count FROM catalog_imports WHERE id=?").get(id).received_count).toBe(0);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_offers").get().n).toBe(0);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM catalog_import_batches").get().n).toBe(0);
+  });
+  it("scans the catalog once on activation and still rejects an inconsistent final row count", async () => {
+    const id = await begin(3);
+    for (let index = 0; index < 3; index += 1)
+      expect((await call(`/catalog/imports/${id}/batches/${index}`, "PUT", { offers: [offer(`item:${index}`)] })).status).toBe(200);
+    expect(queries.filter(query => query.includes("COUNT(*) FROM catalog_offers"))).toHaveLength(0);
+    sqlite.prepare("DELETE FROM catalog_offers WHERE offer_id=?").run("item:2");
+    expect((await call(`/catalog/imports/${id}/commit`, "POST", {})).status).toBe(409);
+    // prepare and bind each pass through the adapter; there is only one executed count statement.
+    expect(new Set(queries.filter(query => query.includes("COUNT(*) FROM catalog_offers"))).size).toBe(1);
+    expect((await call("/catalog/status")).data.activeSnapshot).toBeNull();
+    expect(sqlite.prepare("SELECT status FROM catalog_imports WHERE id=?").get(id).status).toBe("uploading");
   });
   it("searches only the active version and preserves own-stock classification", async () => {
     const id = await load();
