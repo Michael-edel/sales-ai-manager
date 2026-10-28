@@ -1,4 +1,5 @@
 import PostalMime from "postal-mime";
+import { handleCatalogRoutes } from "./lib/catalog-api";
 import {
   AI_EXTERNAL_TIMEOUT_MS,
   DEFAULT_EXTERNAL_TIMEOUT_MS,
@@ -1221,6 +1222,8 @@ export default {
 
       const currentUser = await authenticateRequest(request, env);
       if (!currentUser) return json({ detail: "Нужно войти в программу." }, 401);
+      const catalogResponse = await handleCatalogRoutes(request, env, currentUser);
+      if (catalogResponse) return catalogResponse;
 
       if (request.method === "GET" && url.pathname === "/api/health") {
         return json({ status: "ok", runtime: "cloudflare-workers" });

@@ -76,6 +76,9 @@ jobs:
         working-directory: worker
         run: npm test
 
+      - name: Test catalog export
+        run: node --test catalog-bridge/export.test.mjs
+
       - name: Audit production Node dependencies
         run: |
           npm audit --omit=dev --prefix frontend

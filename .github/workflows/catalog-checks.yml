@@ -1,0 +1,32 @@
+name: Catalog integration checks
+on:
+  pull_request:
+    paths:
+      - 'worker/**'
+      - 'frontend/**'
+      - 'catalog-bridge/**'
+      - '.github/workflows/catalog-checks.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: node --test catalog-bridge/export.test.mjs
+      - run: npm ci
+        working-directory: worker
+      - run: npm run typecheck
+        working-directory: worker
+      - run: npm test
+        working-directory: worker
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npm audit --omit=dev --prefix frontend && npm audit --omit=dev --prefix worker

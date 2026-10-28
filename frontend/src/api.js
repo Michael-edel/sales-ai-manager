@@ -372,3 +372,39 @@ export function deleteEmailMessage(emailId) {
 export function processEmailMessage(emailId) {
   return request(`/email/messages/${emailId}/process`, { method: "POST" });
 }
+
+export function getCatalogStatus(options = {}) {
+  return request("/catalog/status", options);
+}
+
+export function createCatalogImport(payload, options = {}) {
+  return request("/catalog/imports", { ...options, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+
+export function uploadCatalogBatch(importId, index, offers, options = {}) {
+  return request(`/catalog/imports/${encodeURIComponent(importId)}/batches/${index}`, { ...options, method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offers }) });
+}
+
+export function commitCatalogImport(importId, options = {}) {
+  return request(`/catalog/imports/${encodeURIComponent(importId)}/commit`, { ...options, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+}
+
+export function getRequestQuotation(requestId, options = {}) {
+  return request(`/requests/${requestId}/quotation`, options);
+}
+
+export function prepareRequestQuotation(requestId, options = {}) {
+  return request(`/requests/${requestId}/quotation/prepare`, { ...options, method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+}
+
+export function findQuotationCandidates(requestId, line, catalogSnapshotId, options = {}) {
+  return request(`/requests/${requestId}/quotation/candidates`, { ...options, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line, catalogSnapshotId }) });
+}
+
+export function evaluateRequestQuotation(requestId, draft, catalogSnapshotId, options = {}) {
+  return request(`/requests/${requestId}/quotation/evaluate`, { ...options, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft, catalogSnapshotId }) });
+}
+
+export function saveRequestQuotation(requestId, draft, catalogSnapshotId, expectedRevision, options = {}) {
+  return request(`/requests/${requestId}/quotation`, { ...options, method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft, catalogSnapshotId, expectedRevision }) });
+}

@@ -56,6 +56,7 @@ import {
 } from "./api";
 import EmailFolderNavigation from "./components/email/EmailFolderNavigation";
 import EmailMessageList from "./components/email/EmailMessageList";
+import CatalogSelectionPanel from "./components/catalog/CatalogSelectionPanel";
 import { EMAIL_FOLDER_LABELS, EMAIL_STATUS_LABELS } from "./components/email/email-utils";
 import "./styles.css";
 
@@ -2819,6 +2820,7 @@ export default function App() {
 
           {selected && (
             <>
+            {canManageRequests ? <CatalogSelectionPanel key={selected.id} selectedRequest={selected} user={authUser} /> : null}
             <div className="whatsapp-send-panel">
               <div className="section-title">
                 <h3>WhatsApp Meta</h3>
