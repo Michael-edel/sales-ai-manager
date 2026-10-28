@@ -25,9 +25,18 @@ function timestamp(value) {
 }
 function number(value) { return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 ? value : null; }
 function baseUnit(product) {
-  const value = own(product.detailsOverrides, 'baseUnit') ? product.detailsOverrides.baseUnit : product.details?.baseUnit;
-  const result = text(value, 100);
-  return /^(?:не указано?|неизвестно|нет|—|-)$/iu.test(result) ? '' : result;
+  const clean = value => { const result = text(value, 100); return /^(?:не указано?|неизвестно|нет|—|-)$/iu.test(result) ? '' : result; };
+  // An explicit manual edit, including clearing the field, always wins.
+  if (own(product.detailsOverrides, 'baseUnit')) return clean(product.detailsOverrides.baseUnit);
+  const primary = clean(product.details?.baseUnit);
+  if (primary) return primary;
+  // Some supplier pages provide the base unit only as a named characteristic.
+  // Read that explicit field; never infer a unit from the name or packaging count.
+  const attributes = own(product.detailsOverrides, 'attributes') ? product.detailsOverrides.attributes : product.details?.attributes;
+  const values = (Array.isArray(attributes) ? attributes : [])
+    .filter(attribute => /^базовая единица:?$/iu.test(text(attribute?.name, 500)))
+    .map(attribute => clean(attribute.value)).filter(Boolean);
+  return values.length && new Set(values.map(canonicalUnit)).size === 1 ? values[0] : '';
 }
 function canonicalUnit(value) {
   const unit = value.toLocaleLowerCase('ru').replace(/\.$/u, '');

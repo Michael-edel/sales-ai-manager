@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Save, Search, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
 import {
   checkEmail,
   createEmailSenderFilter,
@@ -35,6 +35,7 @@ import {
   logout,
   processEmailMessage,
   processText,
+  saveTextDraft,
   reanalyzeRequestWithOneC,
   refreshRequestOneCContext,
   resetUserPassword,
@@ -82,6 +83,7 @@ function normalizePhoneCandidate(value) {
 }
 
 function requestTitle(item) {
+  if (item.source_type === "text_draft") return "Текстовая заявка для подбора";
   if (item.source_type === "text") return "Текстовая заявка";
   if (item.source_type === "image") return `Изображение: ${item.uploaded_file_name}`;
   if (item.source_type === "audio") return `Голос: ${item.uploaded_file_name}`;
@@ -445,6 +447,10 @@ export default function App() {
   const [requests, setRequests] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [savingTextDraft, setSavingTextDraft] = useState(false);
+  const [draftSaveStatus, setDraftSaveStatus] = useState("");
+  const draftSubmission = useRef(null);
+  const draftSaveInFlight = useRef(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [emails, setEmails] = useState([]);
@@ -1193,8 +1199,9 @@ export default function App() {
   }, [selected]);
 
   async function handleProcess() {
-    if (!canManageRequests) return;
+    if (!canManageRequests || loading || draftSaveInFlight.current) return;
     setError("");
+    setDraftSaveStatus("");
     setCopied(false);
     setLoading(true);
 
@@ -1208,6 +1215,33 @@ export default function App() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSaveTextDraft() {
+    if (!canManageRequests || loading || draftSaveInFlight.current || file || !text.trim()) return;
+    const originalText = text.trim();
+    const fingerprint = JSON.stringify({ originalText, metadata });
+    if (draftSubmission.current?.fingerprint !== fingerprint) {
+      draftSubmission.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    draftSaveInFlight.current = true;
+    setSavingTextDraft(true); setLoading(true); setError(""); setDraftSaveStatus("");
+    try {
+      const item = await saveTextDraft(originalText, metadata, draftSubmission.current.key);
+      // The create response is authoritative even if refreshing the history later fails.
+      setSelected(item);
+      setRequests((current) => [item, ...current.filter((existing) => existing.id !== item.id)]);
+      setText(""); draftSubmission.current = null;
+      setDraftSaveStatus("Заявка сохранена для подбора. ИИ-анализ не запускался; можно выбирать товары из каталога.");
+      try { await refreshHistory(item); } catch {
+        setDraftSaveStatus("Заявка сохранена и открыта для подбора. Историю не удалось обновить; ИИ-анализ не запускался.");
+      }
+    } catch (err) {
+      // Keep both the entered text and submission key for a safe retry after a lost response.
+      setError(err.message || "Не удалось сохранить заявку. Текст сохранён в форме — повторите попытку.");
+    } finally {
+      draftSaveInFlight.current = false; setSavingTextDraft(false); setLoading(false);
     }
   }
 
@@ -1775,6 +1809,7 @@ export default function App() {
   }
 
   const canProcess = canManageRequests && Boolean(text.trim() || file) && !loading;
+  const canSaveTextDraft = canManageRequests && Boolean(text.trim()) && !file && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
   const parserHealthClass = parserStatus?.reachable
     ? "ok"
@@ -2024,7 +2059,7 @@ export default function App() {
                 value={metadata.client_company}
                 onChange={(event) => updateMetadata("client_company", event.target.value)}
                 placeholder="Например: ТОО KBI Energy"
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               />
             </label>
             <label>
@@ -2033,7 +2068,7 @@ export default function App() {
                 value={metadata.client_contact_name}
                 onChange={(event) => updateMetadata("client_contact_name", event.target.value)}
                 placeholder="Имя из WhatsApp/Telegram"
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               />
             </label>
             <label>
@@ -2042,7 +2077,7 @@ export default function App() {
                 value={metadata.michael_manager}
                 onChange={(event) => updateMetadata("michael_manager", event.target.value)}
                 placeholder="Имя ответственного менеджера"
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               />
             </label>
             <label>
@@ -2050,7 +2085,7 @@ export default function App() {
               <select
                 value={metadata.communication_channel}
                 onChange={(event) => updateMetadata("communication_channel", event.target.value)}
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               >
                 <option value="WhatsApp">WhatsApp</option>
                 <option value="Telegram">Telegram</option>
@@ -2064,7 +2099,7 @@ export default function App() {
               <select
                 value={metadata.priority}
                 onChange={(event) => updateMetadata("priority", event.target.value)}
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               >
                 {PRIORITY_OPTIONS.map(([value, label]) => (
                   <option key={value} value={value}>{label}</option>
@@ -2077,7 +2112,7 @@ export default function App() {
                 value={metadata.next_action}
                 onChange={(event) => updateMetadata("next_action", event.target.value)}
                 placeholder="Например: уточнить цену, выставить счет, отправить приложение"
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               />
             </label>
           </div>
@@ -2109,7 +2144,7 @@ export default function App() {
                 onChange={(event) => {
                   setFile(event.target.files?.[0] || null);
                 }}
-                disabled={!canManageRequests}
+                disabled={loading || !canManageRequests}
               />
             </label>
 
@@ -2126,11 +2161,17 @@ export default function App() {
               </button>
             )}
 
+            <button className="secondary-button" onClick={handleSaveTextDraft} disabled={!canSaveTextDraft}>
+              {savingTextDraft ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+              Сохранить заявку для подбора
+            </button>
             <button className="primary-button" onClick={handleProcess} disabled={!canProcess}>
-              {loading ? <Loader2 className="spin" size={18} /> : null}
-              Обработать
+              {loading && !savingTextDraft ? <Loader2 className="spin" size={18} /> : null}
+              Обработать с ИИ
             </button>
           </div>
+          <p className="role-note">Сохранение для подбора работает с текстом без ИИ-анализа. Для загруженного файла используйте обработку с ИИ.</p>
+          {draftSaveStatus ? <div className="role-note" role="status">{draftSaveStatus}</div> : null}
 
           <div className={`service-status service-status-${parserHealthClass}`}>
             <Server size={18} />
@@ -2820,6 +2861,7 @@ export default function App() {
 
           {selected && (
             <>
+            {!String(selected.ai_result || "").trim() ? <div className="role-note">Заявка ожидает ИИ-анализа. Исходный текст сохранён; подбор товаров доступен без анализа.</div> : null}
             {canManageRequests ? <CatalogSelectionPanel key={selected.id} selectedRequest={selected} user={authUser} /> : null}
             <div className="whatsapp-send-panel">
               <div className="section-title">

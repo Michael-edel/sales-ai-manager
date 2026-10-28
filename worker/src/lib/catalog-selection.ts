@@ -235,11 +235,31 @@ export function rankOffers(line: RequestLine, offers: CatalogOffer[], context: S
   });
 }
 
+/** Legacy text requests were stored with generated context. Raw text drafts must
+ * never use this extraction, even if the user pasted the same headings verbatim.
+ */
+function requestProductBody(originalText: string): string {
+  let body = originalText.replace(/\r\n/g, "\n");
+  body = body.replace(/^Контекст заявки:\n(?:(?:Компания клиента|Контакт\/менеджер клиента|Менеджер Michael|Канал связи|Приоритет|Следующее действие):[^\n]*\n)+\n/, "");
+  const suffixStart = body.lastIndexOf("\n\nАвтоматическая проверка 1С:\n");
+  if (suffixStart < 0) return body;
+  const suffix = body.slice(suffixStart + 2);
+  const advice = "Используйте эти данные как справочные данные из 1С. Если данных нет, не придумывайте цену, остаток, договор или товар.";
+  const unavailablePrefix = `Автоматическая проверка 1С:\n${advice}\n`;
+  const unavailable = suffix.startsWith(unavailablePrefix)
+    && /^Статус 1С: не проверено \([^\n]*\)\.$/u.test(suffix.slice(unavailablePrefix.length));
+  const failed = /^Автоматическая проверка 1С:\n1С не проверена: [^\n]*\.\nНе придумывайте цену, остаток, договор или товар, если их нет в заявке или документах\.$/u.test(suffix);
+  // Successful queries contain arbitrary text and no end marker. Keep them, and
+  // any unrecognized tail, as editable rows rather than silently losing products.
+  return unavailable || failed ? body.slice(0, suffixStart) : body;
+}
+
 /** Extract only explicit quantities. Unsupported prose remains an editable unresolved row. */
-export function parseRequestLines(originalText: string): RequestLine[] {
+export function parseRequestLines(originalText: string, options: { legacyContext?: boolean } = {}): RequestLine[] {
   if (typeof originalText !== "string" || originalText.length > 200_000) throw new Error("Текст заявки слишком большой.");
   const result: RequestLine[] = [];
-  for (const original of originalText.split(/\r?\n/)) {
+  const productBody = options.legacyContext === true ? requestProductBody(originalText) : originalText;
+  for (const original of productBody.split(/\r?\n/)) {
     const value = original.trim().replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "");
     if (!value || /^(?:наименование|товар|позиция)\s*[;\t|].*(?:количество|кол-во)/i.test(value)) continue;
     let query = value, quantity: number | null = null, unit = "";

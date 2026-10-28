@@ -24,7 +24,7 @@ function statement(sql, bindings = []) {
 }
 beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
-  sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests VALUES(1,'Автомат Sirius C16 — 5 шт');");
+  sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text'); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
   sqlite.exec(readFileSync(new URL("../../migrations/0020_catalog_quotations.sql", import.meta.url), "utf8"));
   env = { DB: {
     prepare: sql => statement(sql),
@@ -165,6 +165,28 @@ describe("catalog integration API", () => {
     expect(response.data.draft.lines.length).toBeGreaterThan(0);
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM request_quotations").get().n).toBe(0);
     expect((await call("/requests/999/quotation")).status).toBe(404);
+  });
+  it("prepares only product rows from a stored text request with metadata and 1C context", async () => {
+    const original = "Контекст заявки:\nКомпания клиента: ТЕСТ подбора\nМенеджер Michael: Тестовый менеджер\nКанал связи: text\n\nСветильник LED Beta 72w Sirius — 10 шт\nАвтомат Sirius 1P C16 — 10 шт\nЩМП-65.50.22 IP54 — 10 шт\n\nАвтоматическая проверка 1С:\nИспользуйте эти данные как справочные данные из 1С. Если данных нет, не придумывайте цену, остаток, договор или товар.\nСтатус 1С: не проверено (bridge 1С не настроен).";
+    sqlite.prepare("UPDATE requests SET original_text=? WHERE id=1").run(original);
+    const response = await call("/requests/1/quotation/prepare", "POST", {});
+    expect(response.status).toBe(200);
+    expect(response.data.draft.lines.map(row => [row.query, row.quantity, row.unit])).toEqual([
+      ["Светильник LED Beta 72w Sirius", 10, "шт"], ["Автомат Sirius 1P C16", 10, "шт"], ["ЩМП-65.50.22 IP54", 10, "шт"],
+    ]);
+    expect(sqlite.prepare("SELECT original_text FROM requests WHERE id=1").get().original_text).toBe(original);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM request_quotations").get().n).toBe(0);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM request_events").get().n).toBe(0);
+  });
+  it.each(["text_draft", "unknown"])("preserves a raw %s body including copied context and the user's trailing product", async sourceType => {
+    const original = "Контекст заявки:\nКомпания клиента: Указана на чертеже\n\nКабель;10;м\n\nАвтоматическая проверка 1С:\nИспользуйте эти данные как справочные данные из 1С. Если данных нет, не придумывайте цену, остаток, договор или товар.\nСтатус 1С: не проверено (bridge 1С не настроен).\n\nДополнительно нужно:\nАвтомат Sirius C16 — 10 шт";
+    sqlite.prepare("UPDATE requests SET original_text=?,source_type=? WHERE id=1").run(original, sourceType);
+    const response = await call("/requests/1/quotation/prepare", "POST", {});
+    expect(response.status).toBe(200);
+    expect(response.data.draft.lines[0].query).toBe("Контекст заявки:");
+    expect(response.data.draft.lines.at(-1)).toMatchObject({ query: "Автомат Sirius C16", quantity: 10, unit: "шт" });
+    expect(response.data.draft.lines.some(row => row.query === "Автоматическая проверка 1С:")).toBe(true);
+    expect(sqlite.prepare("SELECT original_text FROM requests WHERE id=1").get().original_text).toBe(original);
   });
   it("rejects a catalog switch that races with saving, without writing an event", async () => {
     const id = await load();

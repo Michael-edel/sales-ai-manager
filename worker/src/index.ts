@@ -53,6 +53,13 @@ type Metadata = {
   next_action?: string;
 };
 
+type DraftSubmissionClaim = {
+  userId: number;
+  key: string;
+  hash: string;
+  claimToken: string;
+};
+
 type CrmLink = {
   clientId: number | null;
   contactId: number | null;
@@ -1365,6 +1372,10 @@ export default {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await processText(request, env));
       }
+      if (request.method === "POST" && url.pathname === "/api/requests/text-draft") {
+        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await saveTextDraft(request, env, currentUser));
+      }
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await processUpload(request, env));
@@ -1999,6 +2010,63 @@ async function processText(request: Request, env: Env) {
     uploaded_file_name: null,
     ai_result: aiResult,
   });
+}
+
+async function saveTextDraft(request: Request, env: Env, user: CurrentUser) {
+  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+    throw new UserInputError("Сохранение разрешено только из этого приложения.", 403);
+  }
+  if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+    throw new UserInputError("Передайте заявку в формате JSON.", 415);
+  }
+  const key = request.headers.get("Idempotency-Key") || "";
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new UserInputError("Не указан корректный ключ сохранения заявки.");
+  if (Number(request.headers.get("Content-Length")) > 256 * 1024) throw new UserInputError("Текст заявки слишком большой.", 413);
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > 256 * 1024) throw new UserInputError("Текст заявки слишком большой.", 413);
+  let payload: Record<string, unknown>;
+  try { payload = JSON.parse(raw); } catch { throw new UserInputError("Не удалось прочитать текст заявки."); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new UserInputError("Передайте поля текстовой заявки.");
+  const allowed = ["original_text", "client_company", "client_contact_name", "michael_manager", "communication_channel", "priority", "next_action"];
+  if (Object.keys(payload).some(field => !allowed.includes(field))) throw new UserInputError("В заявке есть неподдерживаемые поля.");
+  const field = (name: string, limit: number) => {
+    const value = payload[name];
+    if (value !== undefined && value !== null && typeof value !== "string") throw new UserInputError("Поля заявки должны содержать текст.");
+    const text = String(value ?? "").trim();
+    if (text.length > limit) throw new UserInputError("Одно из полей заявки превышает допустимую длину.");
+    return text;
+  };
+  const originalText = field("original_text", 100_000);
+  if (!originalText) throw new UserInputError("Текст заявки пустой.");
+  const item = {
+    source_type: "text_draft", original_text: originalText, ai_result: "", uploaded_file_name: null, status: "new",
+    client_company: field("client_company", 300), client_contact_name: field("client_contact_name", 300),
+    michael_manager: field("michael_manager", 300), communication_channel: field("communication_channel", 80),
+    priority: field("priority", 30) || "normal", next_action: field("next_action", 2000),
+  };
+  if (!["low", "normal", "high", "urgent"].includes(item.priority)) throw new UserInputError("Выберите допустимый приоритет заявки.");
+  const hash = await sha256Base64(JSON.stringify(item));
+  const claimToken = crypto.randomUUID();
+  const now = Date.now();
+  // Only one request owns the lease. A stalled attempt can be retried after a minute;
+  // every write below also checks this token, so the old attempt cannot create a duplicate.
+  await env.DB.prepare(`
+    INSERT INTO request_draft_submissions (user_id, idempotency_key, payload_hash, claim_token, claimed_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, idempotency_key) DO UPDATE SET claim_token=excluded.claim_token, claimed_at=excluded.claimed_at
+    WHERE request_draft_submissions.payload_hash=excluded.payload_hash
+      AND request_draft_submissions.request_id IS NULL AND request_draft_submissions.claimed_at < ?
+  `).bind(user.id, key, hash, claimToken, now, now - 60_000).run();
+  const submission = await env.DB.prepare("SELECT * FROM request_draft_submissions WHERE user_id=? AND idempotency_key=?")
+    .bind(user.id, key).first<{ payload_hash: string; claim_token: string; request_id: number | null }>();
+  if (!submission || submission.payload_hash !== hash) throw new UserInputError("Ключ сохранения уже использован для другого текста. Обновите форму перед новой заявкой.", 409);
+  if (submission.request_id) {
+    const saved = await getRequest(env, submission.request_id);
+    if (!saved) throw new UserInputError("Ранее сохранённая заявка удалена. Создайте новую заявку.", 409);
+    return saved;
+  }
+  if (submission.claim_token !== claimToken) throw new UserInputError("Эта заявка уже сохраняется. Повторите попытку через минуту.", 409);
+  return insertRequest(env, item, { userId: user.id, key, hash, claimToken });
 }
 
 async function processUpload(request: Request, env: Env) {
@@ -4731,21 +4799,22 @@ async function getRequest(env: Env, id: number) {
   `).bind(id).first();
 }
 
-async function insertRequest(env: Env, item: Record<string, any>) {
+async function insertRequest(env: Env, item: Record<string, any>, submission?: DraftSubmissionClaim) {
   const crm = await ensureCrmLink(env, item);
   const status = normalizeStatus(item.status);
   const priority = normalizePriority(item.priority);
   const nextAction = normalizeOptionalText(item.next_action);
   const appendixStatus = crm.requiresContractAppendix ? "required" : "not_required";
 
-  const result = await env.DB.prepare(`
+  const insert = env.DB.prepare(`
     INSERT INTO requests (
       source_type, client_company, client_contact_name, michael_manager,
       communication_channel, original_text, uploaded_file_name, ai_result,
       status, priority, client_type, requires_contract_appendix,
       next_action, client_id, contact_id, michael_manager_id,
       invoice_status, contract_appendix_status, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
+      ${submission ? `WHERE EXISTS (SELECT 1 FROM request_draft_submissions WHERE user_id=? AND idempotency_key=? AND payload_hash=? AND claim_token=? AND request_id IS NULL)` : ""}
   `)
     .bind(
       item.source_type,
@@ -4766,8 +4835,33 @@ async function insertRequest(env: Env, item: Record<string, any>) {
       crm.michaelManagerId,
       "not_required",
       appendixStatus,
-    )
-    .run();
+      ...(submission ? [submission.userId, submission.key, submission.hash, submission.claimToken] : []),
+    );
+  if (submission) {
+    const claimValues = [submission.userId, submission.key, submission.hash, submission.claimToken];
+    const claimSql = "SELECT request_id FROM request_draft_submissions WHERE user_id=? AND idempotency_key=? AND payload_hash=? AND claim_token=? AND request_id IS NOT NULL";
+    const ownerName = normalizeOptionalText(item.michael_manager);
+    const tasks = ["Проверить позиции и единицы заявки", "Подобрать товары, цены и сроки"];
+    const statements = [
+      insert,
+      env.DB.prepare(`UPDATE request_draft_submissions SET request_id=last_insert_rowid()
+        WHERE changes()>0 AND user_id=? AND idempotency_key=? AND payload_hash=? AND claim_token=? AND request_id IS NULL`).bind(...claimValues),
+      env.DB.prepare(`INSERT INTO request_events (request_id, event_type, actor, payload_json)
+        SELECT request_id, 'request.created', ?, ? FROM (${claimSql})`).bind(
+          `user:${submission.userId}`, JSON.stringify({ source_type: item.source_type, status, priority, analysis_status: "pending", creation_mode: "catalog_selection", client_company: item.client_company || null }), ...claimValues),
+      ...tasks.map(title => env.DB.prepare(`INSERT INTO request_tasks (request_id, title, owner_name)
+        SELECT request_id, ?, ? FROM (${claimSql})`).bind(title, ownerName || null, ...claimValues)),
+      env.DB.prepare(`INSERT INTO request_events (request_id, event_type, actor, payload_json)
+        SELECT request_id, 'request.tasks_created', ?, ? FROM (${claimSql})`).bind(
+          `user:${submission.userId}`, JSON.stringify({ count: tasks.length, creation_mode: "catalog_selection" }), ...claimValues),
+    ];
+    await env.DB.batch(statements);
+    const saved = await env.DB.prepare("SELECT request_id FROM request_draft_submissions WHERE user_id=? AND idempotency_key=? AND payload_hash=?")
+      .bind(submission.userId, submission.key, submission.hash).first<{ request_id: number | null }>();
+    if (!saved?.request_id) throw new UserInputError("Сохранение ещё выполняется. Повторите попытку через минуту.", 409);
+    return getRequest(env, saved.request_id);
+  }
+  const result = await insert.run();
   const requestId = Number(result.meta.last_row_id);
   await createRequestEvent(env, requestId, "request.created", item.michael_manager || "system", {
     source_type: item.source_type,
