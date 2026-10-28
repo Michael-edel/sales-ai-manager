@@ -28,6 +28,7 @@ beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text'); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
   sqlite.exec(readFileSync(new URL("../../migrations/0020_catalog_quotations.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../migrations/0022_catalog_pages.sql", import.meta.url), "utf8"));
   env = { DB: {
     prepare: sql => statement(sql),
     batch: async entries => {
@@ -62,6 +63,9 @@ async function begin(count = 1, exportedAt = now()) {
     schemaVersion: 1, sourceSystem: "michael-cabinet", environment: "live", exportedAt, offerCount: count,
   });
   expect(response.status).toBe(201);
+  // These are the historical row-storage regression scenarios. New imports use
+  // pages by default and are covered by catalog-pages.test.mjs.
+  sqlite.prepare("UPDATE catalog_imports SET storage_version=1 WHERE id=?").run(response.data.id);
   return response.data.id;
 }
 async function load(offers = [offer()], exportedAt = now()) {

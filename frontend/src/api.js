@@ -7,6 +7,8 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.detail || "Ошибка запроса к серверу");
     error.status = response.status;
+    error.code = data?.error_code;
+    if (data?.error_code === "D1_DAILY_LIMIT") error.safeMessage = "Облачная база достигла дневного лимита. Повторите после сброса лимита в 05:00 по Экибастузу. Незавершённую загрузку каталога можно продолжить тем же файлом.";
     throw error;
   }
 
@@ -387,6 +389,10 @@ export function processEmailMessage(emailId) {
 
 export function getCatalogStatus(options = {}) {
   return request("/catalog/status", options);
+}
+
+export function getCatalogImport(importId, options = {}) {
+  return request(`/catalog/imports/${encodeURIComponent(importId)}`, options);
 }
 
 export function createCatalogImport(payload, options = {}) {

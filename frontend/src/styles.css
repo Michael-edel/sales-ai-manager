@@ -366,6 +366,8 @@ textarea {
 
 .workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 18px;
   grid-template-rows: auto minmax(0, 1fr);
   padding: 24px;
@@ -377,6 +379,7 @@ textarea {
   border: 1px solid #d9dfd7;
   border-radius: 8px;
   padding: 20px;
+  min-width: 0;
 }
 
 .section-title-with-action {
@@ -1707,6 +1710,11 @@ pre {
   to {
     transform: rotate(360deg);
   }
+}
+
+@media (min-width: 901px) and (max-width: 1400px) {
+  .user-create-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .user-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {

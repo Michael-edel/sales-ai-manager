@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Calculator, Check, FileText, Loader2, Package, Plus, RefreshCw, Save, Search, Trash2, Truck, Upload } from "lucide-react";
-import { commitCatalogImport, createCatalogImport, evaluateRequestQuotation, findQuotationCandidates, getCatalogStatus, getRequestQuotation, prepareRequestQuotation, saveRequestQuotation, uploadCatalogBatch } from "../../api";
+import { commitCatalogImport, createCatalogImport, evaluateRequestQuotation, findQuotationCandidates, getCatalogImport, getCatalogStatus, getRequestQuotation, prepareRequestQuotation, saveRequestQuotation, uploadCatalogBatch } from "../../api";
+import { importCatalogFile, readImportCheckpoint } from "../../lib/catalog-import.mjs";
 import "./catalog-selection.css";
 
 const EMPTY_DRAFT = { lines: [], notes: "" };
@@ -94,6 +95,7 @@ export default function CatalogSelectionPanel({ selectedRequest, user }) {
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [importProgress, setImportProgress] = useState(null);
+  const [pendingImport, setPendingImport] = useState(() => readImportCheckpoint(localStorage, user?.id));
   const lifetime = useRef(null);
   const searchVersions = useRef({});
   const draftVersion = useRef(0);
@@ -172,7 +174,7 @@ export default function CatalogSelectionPanel({ selectedRequest, user }) {
     try {
       const result = await findQuotationCandidates(requestId, line, snapshotId, { signal });
       if (signal.aborted || version !== searchVersions.current[line.id]) return;
-      setCandidates((current) => ({ ...current, [line.id]: { loading: false, items: result.candidates || [] } }));
+      setCandidates((current) => ({ ...current, [line.id]: { loading: false, items: result.candidates || [], truncated: Boolean(result.searchTruncated) } }));
       setOffers((current) => ({ ...current, ...Object.fromEntries((result.candidates || []).map((candidate) => [candidate.offer.id, candidate.offer])) }));
     } catch (err) {
       if (signal.aborted || version !== searchVersions.current[line.id]) return;
@@ -223,24 +225,16 @@ export default function CatalogSelectionPanel({ selectedRequest, user }) {
     const signal = lifetime.current?.signal; if (!signal || !file) return;
     setBusy("import"); setError(""); setNotice(""); setImportProgress({ loaded: 0, total: 0 });
     try {
-      if (file.size > 100 * 1024 * 1024 || !file.size) throw Object.assign(new Error(), { safeMessage: "Выберите непустой JSON-каталог размером до 100 МБ." });
-      const snapshot = JSON.parse(await file.text());
-      if (snapshot?.schemaVersion !== 1 || snapshot.sourceSystem !== "michael-cabinet" || !Array.isArray(snapshot.offers) || !snapshot.offers.length || snapshot.offers.length > 100000) throw Object.assign(new Error(), { safeMessage: "Это не экспорт каталога из «Кабинета Michael» или превышен лимит 100 000 предложений." });
+      const committed = await importCatalogFile(file, { signal, storage: localStorage, userId: user.id,
+        api: { create: createCatalogImport, get: getCatalogImport, upload: uploadCatalogBatch, commit: commitCatalogImport },
+        onProgress: (value) => { if (!signal.aborted) setImportProgress(value); } });
       if (signal.aborted) return;
-      setImportProgress({ loaded: 0, total: snapshot.offers.length });
-      const created = await createCatalogImport({ schemaVersion: snapshot.schemaVersion, sourceSystem: snapshot.sourceSystem, exportedAt: snapshot.exportedAt, environment: snapshot.environment, offerCount: snapshot.offers.length }, { signal });
-      for (let offset = 0; offset < snapshot.offers.length; offset += 100) {
-        if (signal.aborted) return;
-        const result = await uploadCatalogBatch(created.id, offset / 100, snapshot.offers.slice(offset, offset + 100), { signal });
-        if (!signal.aborted) setImportProgress({ loaded: result.receivedCount ?? Math.min(offset + 100, snapshot.offers.length), total: snapshot.offers.length });
-      }
-      await commitCatalogImport(created.id, { signal });
-      const status = await getCatalogStatus({ signal }); if (signal.aborted) return;
-      setCatalog(status);
-      if (!snapshotId) setSnapshotId(status.activeSnapshot?.id || null);
-      setNotice(`Каталог загружен: ${snapshot.offers.length.toLocaleString("ru-RU")} предложений. Для существующего подбора выберите актуальный каталог и пересчитайте цены.`);
+      setCatalog({ activeSnapshot: committed.activeSnapshot });
+      if (!snapshotId) setSnapshotId(committed.activeSnapshot.id);
+      setPendingImport(null);
+      setNotice(`Каталог загружен: ${committed.activeSnapshot.offerCount.toLocaleString("ru-RU")} предложений. Для существующего подбора выберите актуальный каталог и пересчитайте цены.`);
     } catch (err) { if (!signal.aborted) reportFailure(err instanceof SyntaxError ? Object.assign(new Error(), { safeMessage: "Не удалось прочитать JSON. Выберите файл экспорта каталога." }) : err); }
-    finally { if (!signal.aborted) { setBusy(""); setImportProgress(null); if (fileInput.current) fileInput.current.value = ""; } }
+    finally { if (!signal.aborted) { setBusy(""); setImportProgress(null); setPendingImport(readImportCheckpoint(localStorage, user.id)); if (fileInput.current) fileInput.current.value = ""; } }
   }
 
   if (!canManage || !requestId) return null;
@@ -253,7 +247,7 @@ export default function CatalogSelectionPanel({ selectedRequest, user }) {
     {activeSnapshot && activeSnapshot.environment !== "live" ? <div className="catalog-alert">{activeSnapshot.environment === "test" ? "Тестовый каталог: данные учебной 1С не подтверждают наличие и цены рабочего склада." : "Рабочая среда источника не подтверждена. Проверьте данные перед предложением клиенту."}</div> : null}
     {outdated ? <div className="catalog-alert">Сохранённый подбор использует предыдущий снимок. Выберите актуальный каталог, пересчитайте и проверьте изменившиеся цены и остатки.</div> : null}
     {evaluationOutdated ? <div className="catalog-alert">Сохранённый расчёт устарел — пересчитайте цены и сроки.</div> : null}
-    {user.role === "admin" ? <details className="catalog-import"><summary><Upload size={16} />Загрузить каталог из кабинета</summary><p>В «Кабинете Michael» экспортируйте каталог для AI-менеджера и выберите JSON-файл. Предыдущий каталог будет заменён только после полной загрузки. Не закрывайте заявку до завершения.</p><label className="catalog-file-label"><span>JSON-каталог, до 100 МБ</span><input ref={fileInput} type="file" accept=".json,application/json" onChange={(event) => void importCatalog(event.target.files?.[0])} disabled={disabled} /></label>{importProgress ? <div role="status" className="catalog-import-progress"><progress value={importProgress.loaded} max={importProgress.total || 1} /><span>Загружено {displayNumber(importProgress.loaded)} из {displayNumber(importProgress.total)} предложений</span></div> : null}</details> : null}
+    {user.role === "admin" ? <details className="catalog-import"><summary><Upload size={16} />Загрузить каталог из кабинета</summary><p>В «Кабинете Michael» экспортируйте каталог для AI-менеджера и выберите JSON-файл. Предыдущий каталог будет заменён только после полной загрузки. Если загрузка прервётся, выберите тот же файл для продолжения.</p>{pendingImport ? <p className="catalog-alert">Есть незавершённая загрузка «{pendingImport.fileName}». Выберите этот же файл, чтобы продолжить с сохранённого места.</p> : null}<label className="catalog-file-label"><span>JSON-каталог, до 100 МБ</span><input ref={fileInput} type="file" accept=".json,application/json" onChange={(event) => void importCatalog(event.target.files?.[0])} disabled={disabled} /></label>{importProgress ? <div role="status" className="catalog-import-progress"><progress value={importProgress.loaded} max={importProgress.total || 1} /><span>Загружено {displayNumber(importProgress.loaded)} из {displayNumber(importProgress.total)} предложений</span></div> : null}</details> : null}
     <details className="catalog-original"><summary>Исходный текст заявки</summary><pre>{selectedRequest.original_text || "Исходный текст отсутствует."}</pre></details>
 
     {error ? <div className="error-box" role="alert">{error}{conflict || !loaded ? <button type="button" className="secondary-button" onClick={() => { if (lifetime.current) void load(lifetime.current.signal); }} disabled={Boolean(busy)}>{loaded ? "Отменить изменения и загрузить сохранённое" : "Повторить загрузку"}</button> : null}</div> : null}
@@ -274,7 +268,7 @@ export default function CatalogSelectionPanel({ selectedRequest, user }) {
         <details className="catalog-line-options"><summary>Артикул, бренд и целевая маржа</summary><div className="catalog-options-grid"><label><span>Точный артикул</span><input value={line.article || ""} onChange={(event) => updateLine(line.id, { article: event.target.value })} maxLength={200} disabled={disabled} /></label><label><span>Бренд</span><input value={line.brand || ""} onChange={(event) => updateLine(line.id, { brand: event.target.value })} maxLength={160} disabled={disabled} /></label><NumberField label="Целевая маржа, % от продажи без НДС" value={line.targetMarginPercent} min={0} max={99.99} onChange={(targetMarginPercent) => updateLine(line.id, { targetMarginPercent })} disabled={disabled} /></div><p className="catalog-subtle">Маржа применяется для расчёта, когда нет ручной и розничной цены. Для расчёта нужны закупка, доставка и условия НДС продажи.</p></details>
         <div className="catalog-line-search"><button type="button" className="secondary-button" onClick={() => void search(line)} disabled={disabled || searchResult?.loading || !line.query.trim() || !activeSnapshot || outdated}>{searchResult?.loading ? <Loader2 className="spin" size={17} /> : <Search size={17} />}Найти на складе и у поставщиков</button><span className="catalog-subtle">В подборе {displayNumber(allocated)} из {displayNumber(line.quantity)} {line.unit}</span></div>
         {searchResult?.error ? <div className="catalog-alert" role="alert">{searchResult.error}</div> : null}
-        {searchResult && !searchResult.loading && !searchResult.error ? <div className="catalog-search-results"><p className="catalog-subtle">{searchResult.items.length ? `Найдено предложений: ${searchResult.items.length}. Совпадение модели и единиц подтверждает менеджер.` : "Подходящих предложений не найдено. Уточните артикул, бренд или наименование."}</p><div className="catalog-candidates">{searchResult.items.map((candidate) => <CandidateCard key={candidate.offer.id} candidate={candidate} added={line.allocations.some((allocation) => allocation.offerId === candidate.offer.id)} disabled={disabled} onAdd={(offer) => addOffer(line, offer)} />)}</div></div> : null}
+        {searchResult && !searchResult.loading && !searchResult.error ? <div className="catalog-search-results"><p className="catalog-subtle">{searchResult.items.length ? `Найдено предложений: ${searchResult.items.length}. Совпадение модели и единиц подтверждает менеджер.` : "Подходящих предложений не найдено. Уточните артикул, бренд или наименование."}</p>{searchResult.truncated ? <p className="catalog-alert">Показана часть совпадений. Уточните модель или укажите точный артикул, чтобы сузить поиск.</p> : null}<div className="catalog-candidates">{searchResult.items.map((candidate) => <CandidateCard key={candidate.offer.id} candidate={candidate} added={line.allocations.some((allocation) => allocation.offerId === candidate.offer.id)} disabled={disabled} onAdd={(offer) => addOffer(line, offer)} />)}</div></div> : null}
         {line.allocations.length ? <div className="catalog-allocations"><h4>Выбранные предложения</h4>{line.allocations.map((allocation, index) => <AllocationCard key={allocation.offerId} allocation={allocation} offer={offers[allocation.offerId] || evaluatedLine?.allocations?.find((item) => item.offerId === allocation.offerId)?.offer} result={evaluatedLine?.allocations?.find((item) => item.offerId === allocation.offerId)} disabled={disabled} onChange={(patch) => updateAllocation(line.id, index, patch)} onRemove={() => updateLine(line.id, { allocations: line.allocations.filter((_, i) => i !== index) })} />)}</div> : null}
         <Warnings items={evaluatedLine?.warnings} />
       </article>;

@@ -10,6 +10,7 @@ type ImportRow = {
   id: string; source_system: string; exported_at: string;
   environment: "test" | "live" | "unknown";
   expected_count: number; received_count: number; status: string; created_by: number;
+  storage_version: 1 | 2; source_hash: string | null;
 };
 type SavedQuote = {
   revision: number; catalog_snapshot_id: string; draft_json: string;
@@ -20,6 +21,12 @@ class CatalogInputError extends Error {
 }
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_BATCH = 100;
+const MAX_PAGE_BYTES = 1800000;
+const MAX_SEARCH_PAGES = 24;
+const MAX_SEARCH_BYTES = 2 * 1024 * 1024;
+const MAX_LOOKUP_PAGES = 512;
+const MAX_LOOKUP_BYTES = 8 * 1024 * 1024;
+const encoder = new TextEncoder();
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
@@ -64,7 +71,7 @@ async function activeSnapshot(env: CatalogEnv): Promise<ImportRow | null> {
   return env.DB.prepare("SELECT i.* FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE s.id=1 AND i.status='complete'").first<ImportRow>();
 }
 function publicSnapshot(row: ImportRow | null) {
-  return row ? { id: row.id, exportedAt: row.exported_at, environment: row.environment, offerCount: row.received_count } : null;
+  return row ? { id: row.id, exportedAt: row.exported_at, environment: row.environment, offerCount: row.received_count, storageVersion: row.storage_version } : null;
 }
 async function requireActive(env: CatalogEnv, snapshotId: unknown): Promise<ImportRow> {
   const active = await activeSnapshot(env);
@@ -78,6 +85,16 @@ async function getImport(env: CatalogEnv, id: string): Promise<ImportRow> {
   if (!row) throw new CatalogInputError("Импорт не найден.", 404);
   return row;
 }
+async function importManifest(env: CatalogEnv, id: string, user: CatalogUser) {
+  const record = await getImport(env, id);
+  if (record.created_by !== user.id) throw new CatalogInputError("Импорт открыт другим администратором.", 403);
+  const batches = await env.DB.prepare("SELECT batch_index,offer_count,checksum FROM catalog_import_batches WHERE import_id=? ORDER BY batch_index")
+    .bind(id).all<{ batch_index: number; offer_count: number; checksum: string }>();
+  return { id, storageVersion: record.storage_version, contentHash: record.source_hash,
+    status: record.status, receivedCount: record.received_count, expectedCount: record.expected_count,
+    exportedAt: record.exported_at, environment: record.environment,
+    batches: batches.results.map(batch => ({ index: batch.batch_index, offerCount: batch.offer_count, checksum: batch.checksum })) };
+}
 async function createImport(request: Request, env: CatalogEnv, user: CatalogUser) {
   const value = await body(request);
   if (value.schemaVersion !== 1 || value.sourceSystem !== "michael-cabinet"
@@ -86,10 +103,12 @@ async function createImport(request: Request, env: CatalogEnv, user: CatalogUser
   const count = integer(value.offerCount, 1, 100000, "число предложений");
   if (typeof value.exportedAt !== "string" || !Number.isFinite(Date.parse(value.exportedAt))
     || Date.parse(value.exportedAt) > Date.now() + 300000) throw new CatalogInputError("Некорректная дата экспорта.");
+  if (value.contentHash != null && (typeof value.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(value.contentHash)))
+    throw new CatalogInputError("Некорректная контрольная сумма файла каталога.");
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO catalog_imports (id,source_system,exported_at,environment,expected_count,created_by) VALUES (?,?,?,?,?,?)")
-    .bind(id, "michael-cabinet", new Date(value.exportedAt).toISOString(), value.environment, count, user.id).run();
-  return { id };
+  await env.DB.prepare("INSERT INTO catalog_imports (id,source_system,exported_at,environment,expected_count,created_by,storage_version,source_hash) VALUES (?,?,?,?,?,?,2,?)")
+    .bind(id, "michael-cabinet", new Date(value.exportedAt).toISOString(), value.environment, count, user.id, value.contentHash ?? null).run();
+  return { id, storageVersion: 2 };
 }
 async function importBatch(request: Request, env: CatalogEnv, id: string, index: number, user: CatalogUser) {
   const record = await getImport(env, id);
@@ -116,14 +135,24 @@ async function importBatch(request: Request, env: CatalogEnv, id: string, index:
     search: normalizeCatalogText([offer.name, offer.article, offer.onecCode, offer.brand].join(" ")),
     type: offer.sourceType, payload: JSON.stringify(offer),
   }));
+  const page = record.storage_version === 2 ? {
+    search: rows.map(row => row.search).join("\n"),
+    exact: JSON.stringify([...new Set(rows.flatMap(row => [row.article, row.code]).filter(Boolean))]),
+    ids: JSON.stringify(offers.map(offer => offer.id)),
+    products: JSON.stringify([...new Set(offers.map(offer => offer.productId))]),
+  } : null;
+  if (page && encoder.encode(serialized + page.search + page.exact + page.ids + page.products).length > MAX_PAGE_BYTES)
+    throw new CatalogInputError("Слишком большой пакет каталога. Уменьшите число предложений в пакете.", 413);
   // A replayed/conflicting batch fails atomically before changing any catalog data.
   try {
     // Recheck capacity inside the transaction: other batches may have committed since getImport.
     const results = await env.DB.batch([
       env.DB.prepare("INSERT INTO catalog_import_batches (import_id,batch_index,checksum,offer_count) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
         .bind(id, index, checksum, offers.length, id, offers.length),
-      env.DB.prepare("INSERT INTO catalog_offers (snapshot_id,offer_id,product_id,article_key,onec_code_key,search_text,source_type,payload_json) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.productId'),json_extract(value,'$.article'),json_extract(value,'$.code'),json_extract(value,'$.search'),json_extract(value,'$.type'),json_extract(value,'$.payload') FROM json_each(?) WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
-        .bind(id, JSON.stringify(rows), id, offers.length),
+      page ? env.DB.prepare("INSERT INTO catalog_pages (snapshot_id,batch_index,offer_count,payload_json,search_text,exact_keys,offer_keys,product_keys) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
+        .bind(id, index, offers.length, serialized, page.search, page.exact, page.ids, page.products, id, offers.length)
+        : env.DB.prepare("INSERT INTO catalog_offers (snapshot_id,offer_id,product_id,article_key,onec_code_key,search_text,source_type,payload_json) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.productId'),json_extract(value,'$.article'),json_extract(value,'$.code'),json_extract(value,'$.search'),json_extract(value,'$.type'),json_extract(value,'$.payload') FROM json_each(?) WHERE EXISTS (SELECT 1 FROM catalog_imports WHERE id=? AND status='uploading' AND received_count+?<=expected_count)")
+          .bind(id, JSON.stringify(rows), id, offers.length),
       env.DB.prepare("UPDATE catalog_imports SET received_count=received_count+? WHERE id=? AND status='uploading' AND received_count+?<=expected_count")
         .bind(offers.length, id, offers.length),
     ]);
@@ -146,44 +175,105 @@ async function commitImport(env: CatalogEnv, id: string, user: CatalogUser) {
   const active = await activeSnapshot(env);
   if (active && active.id !== id && Date.parse(active.exported_at) >= Date.parse(record.exported_at))
     throw new CatalogInputError("В кабинете уже используется такой же или более свежий экспорт.", 409);
+  const completeness = record.storage_version === 2
+    ? "expected_count=(SELECT COALESCE(SUM(offer_count),0) FROM catalog_pages WHERE snapshot_id=?) AND expected_count=(SELECT COUNT(DISTINCT j.value) FROM catalog_pages p,json_each(p.offer_keys) j WHERE p.snapshot_id=?)"
+    : "expected_count=(SELECT COUNT(*) FROM catalog_offers WHERE snapshot_id=?)";
   await env.DB.batch([
     // Count once at activation, instead of scanning the growing catalog after every batch.
-    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND expected_count=(SELECT COUNT(*) FROM catalog_offers WHERE snapshot_id=?) AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?)")
-      .bind(id, id, id, record.exported_at),
+    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND " + completeness + " AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?)")
+      .bind(id, id, ...(record.storage_version === 2 ? [id] : []), id, record.exported_at),
     env.DB.prepare("INSERT INTO catalog_state (id,active_snapshot_id) SELECT 1,id FROM catalog_imports WHERE id=? AND status='complete' AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?) ON CONFLICT(id) DO UPDATE SET active_snapshot_id=excluded.active_snapshot_id")
       .bind(id, id, record.exported_at),
   ]);
   const current = await activeSnapshot(env);
-  if (current?.id !== id) throw new CatalogInputError("Каталог не активирован: проверьте полноту данных или более свежий импорт.", 409);
+  if (current?.id !== id) throw new CatalogInputError("Каталог не активирован: проверьте полноту, повторяющиеся ID предложений или более свежий импорт.", 409);
   return { activeSnapshot: publicSnapshot(current) };
 }
-async function offersByIds(env: CatalogEnv, snapshotId: string, ids: string[]): Promise<CatalogOffer[]> {
+type PagePredicate = { sql: string; bindings: string[] };
+type PageMetadata = { batch_index: number; payload_bytes: number };
+/** Filter page metadata first; never pull an unbounded catalog into a Worker. */
+async function pageOffers(env: CatalogEnv, snapshotId: string, predicates: PagePredicate[], maxPages: number, maxBytes: number) {
+  const pages = new Map<number, PageMetadata>();
+  let truncated = false;
+  for (const predicate of predicates) {
+    const metadata = await env.DB.prepare("SELECT batch_index,length(CAST(payload_json AS BLOB)) AS payload_bytes FROM catalog_pages WHERE snapshot_id=? AND (" + predicate.sql + ") ORDER BY batch_index LIMIT ?")
+      .bind(snapshotId, ...predicate.bindings, maxPages + 1).all<PageMetadata>();
+    if (metadata.results.length > maxPages) truncated = true;
+    for (const row of metadata.results.slice(0, maxPages)) pages.set(row.batch_index, row);
+  }
+  const selected: number[] = [];
+  let size = 0;
+  for (const row of [...pages.values()].sort((a, b) => a.batch_index - b.batch_index)) {
+    if (selected.length >= maxPages || size + row.payload_bytes > maxBytes) { truncated = true; continue; }
+    size += row.payload_bytes; selected.push(row.batch_index);
+  }
+  const offers: CatalogOffer[] = [];
+  for (let offset = 0; offset < selected.length; offset += 80) {
+    const chunk = selected.slice(offset, offset + 80);
+    const rows = await env.DB.prepare("SELECT payload_json FROM catalog_pages WHERE snapshot_id=? AND batch_index IN (" + chunk.map(() => "?").join(",") + ") ORDER BY batch_index")
+      .bind(snapshotId, ...chunk).all<{ payload_json: string }>();
+    for (const row of rows.results) offers.push(...JSON.parse(row.payload_json) as CatalogOffer[]);
+  }
+  return { offers, truncated };
+}
+function keyPredicates(column: "offer_keys" | "product_keys" | "exact_keys", keys: string[]): PagePredicate[] {
+  const unique = [...new Set(keys)], predicates: PagePredicate[] = [];
+  for (let offset = 0; offset < unique.length; offset += 40) {
+    const chunk = unique.slice(offset, offset + 40);
+    // Quoted JSON strings delimit keys; JS below still verifies the actual field.
+    predicates.push({ sql: chunk.map(() => "instr(" + column + ",?)>0").join(" OR "), bindings: chunk.map(key => JSON.stringify(key)) });
+  }
+  return predicates;
+}
+async function offersByIds(env: CatalogEnv, snapshot: ImportRow, ids: string[]): Promise<CatalogOffer[]> {
+  if (snapshot.storage_version === 2) {
+    const wanted = new Set(ids);
+    const read = await pageOffers(env, snapshot.id, keyPredicates("offer_keys", ids), MAX_LOOKUP_PAGES, MAX_LOOKUP_BYTES);
+    if (read.truncated) throw new CatalogInputError("Подбор затрагивает слишком большой объём каталога. Разделите заявку.", 413);
+    return read.offers.filter(offer => wanted.has(offer.id));
+  }
   const result: CatalogOffer[] = [];
   const unique = [...new Set(ids)];
   for (let offset = 0; offset < unique.length; offset += 80) {
     const chunk = unique.slice(offset, offset + 80);
     const rows = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND offer_id IN (" + chunk.map(() => "?").join(",") + ")")
-      .bind(snapshotId, ...chunk).all<{ payload_json: string }>();
+      .bind(snapshot.id, ...chunk).all<{ payload_json: string }>();
     result.push(...rows.results.map(row => JSON.parse(row.payload_json) as CatalogOffer));
   }
   return result;
+}
+async function offersByProducts(env: CatalogEnv, snapshot: ImportRow, products: string[], forSearch = false) {
+  if (snapshot.storage_version === 2) {
+    const wanted = new Set(products);
+    const read = await pageOffers(env, snapshot.id, keyPredicates("product_keys", products),
+      forSearch ? MAX_SEARCH_PAGES : MAX_LOOKUP_PAGES, forSearch ? MAX_SEARCH_BYTES : MAX_LOOKUP_BYTES);
+    if (read.truncated && !forSearch) throw new CatalogInputError("Подбор затрагивает слишком большой объём связанных товаров. Разделите заявку.", 413);
+    return { offers: read.offers.filter(offer => wanted.has(offer.productId)), truncated: read.truncated };
+  }
+  const offers: CatalogOffer[] = [];
+  let truncated = false;
+  for (let offset = 0; offset < products.length; offset += 80) {
+    const group = products.slice(offset, offset + 80);
+    const linked = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND product_id IN (" + group.map(() => "?").join(",") + ") LIMIT 1001")
+      .bind(snapshot.id, ...group).all<{ payload_json: string }>();
+    if (linked.results.length > 1000) truncated = true;
+    offers.push(...linked.results.slice(0, 1000).map(row => JSON.parse(row.payload_json) as CatalogOffer));
+  }
+  if (truncated && !forSearch) throw new CatalogInputError("В подборе слишком много связанных предложений. Разделите заявку.", 413);
+  return { offers, truncated };
 }
 async function evaluate(env: CatalogEnv, value: Record<string, unknown>) {
   const active = await requireActive(env, value.catalogSnapshotId);
   const draft = input(() => validateQuoteDraft(value.draft));
   const ids = draft.lines.flatMap(line => line.allocations.map(item => item.offerId));
   if (ids.length > 1000) throw new CatalogInputError("В одном подборе допускается до 1000 распределений.");
-  const offers = await offersByIds(env, active.id, ids);
+  const offers = await offersByIds(env, active, ids);
   const products = [...new Set(offers.map(offer => offer.productId))];
   const known = new Set(offers.map(offer => offer.id));
   // Include identity anchors for allocations found through confirmed cross-source links.
-  for (let offset = 0; offset < products.length; offset += 80) {
-    const group = products.slice(offset, offset + 80);
-    const linked = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND product_id IN (" + group.map(() => "?").join(",") + ") LIMIT 1000").bind(active.id, ...group).all<{ payload_json: string }>();
-    for (const row of linked.results) {
-      const offer = JSON.parse(row.payload_json) as CatalogOffer;
-      if (!known.has(offer.id)) { offers.push(offer); known.add(offer.id); }
-    }
+  const linked = await offersByProducts(env, active, products);
+  for (const offer of linked.offers) {
+    if (!known.has(offer.id)) { offers.push(offer); known.add(offer.id); }
   }
   return { draft, evaluation: input(() => evaluateQuote(draft, offers, { now: new Date(), environment: active.environment })), catalogSnapshotId: active.id };
 }
@@ -198,35 +288,55 @@ async function candidates(request: Request, env: CatalogEnv) {
   const query = normalizeCatalogText(line.query);
   const article = normalizeCatalogText(line.article || line.query);
   const terms = [...new Set(query.split(/\s+/).filter(t => t.length > 1))].slice(0, 8).map(term => {
+    if (active.storage_version === 2) return term;
     // D1 LIKE patterns have a 50-byte limit, including wildcard characters.
     while (new TextEncoder().encode(term).length > 40) term = term.slice(0, -1);
     return term;
   });
   if (!query || (terms.length === 0 && !article)) throw new CatalogInputError("Введите артикул или название товара.");
-  const conditions: string[] = [];
-  const bindings: (string | number)[] = [active.id];
-  if (article) { conditions.push("article_key=? OR onec_code_key=?"); bindings.push(article, article); }
-  if (terms.length) {
-    conditions.push("(" + terms.map(() => "search_text LIKE ? ESCAPE '\\'").join(" AND ") + ")");
-    bindings.push(...terms.map(t => "%" + t.replace(/[\\%_]/g, c => "\\" + c) + "%"));
+  let offers: CatalogOffer[], searchTruncated = false;
+  if (active.storage_version === 2) {
+    const exact = await pageOffers(env, active.id, keyPredicates("exact_keys", article ? [article] : []), MAX_SEARCH_PAGES, MAX_SEARCH_BYTES);
+    offers = exact.offers.filter(offer => normalizeCatalogText(offer.article) === article || normalizeCatalogText(offer.onecCode) === article);
+    searchTruncated ||= exact.truncated;
+    if (terms.length) {
+      const text = await pageOffers(env, active.id, [{ sql: terms.map(() => "instr(search_text,?)>0").join(" AND "), bindings: terms }], MAX_SEARCH_PAGES, MAX_SEARCH_BYTES);
+      const known = new Set(offers.map(offer => offer.id));
+      for (const offer of text.offers) {
+        // A page can match different terms in different offers. Never return such
+        // a cross-match without checking all terms against this particular offer.
+        const search = normalizeCatalogText([offer.name, offer.article, offer.onecCode, offer.brand].join(" "));
+        if (!known.has(offer.id) && terms.every(term => search.includes(term))) { offers.push(offer); known.add(offer.id); }
+      }
+      searchTruncated ||= text.truncated;
+    }
+  } else {
+    const conditions: string[] = [];
+    const bindings: (string | number)[] = [active.id];
+    if (article) { conditions.push("article_key=? OR onec_code_key=?"); bindings.push(article, article); }
+    if (terms.length) {
+      conditions.push("(" + terms.map(() => "search_text LIKE ? ESCAPE '\\'").join(" AND ") + ")");
+      bindings.push(...terms.map(t => "%" + t.replace(/[\\%_]/g, c => "\\" + c) + "%"));
+    }
+    const rows = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND (" + conditions.join(" OR ") + ") ORDER BY CASE WHEN article_key=? OR onec_code_key=? THEN 0 WHEN source_type='warehouse' THEN 1 ELSE 2 END LIMIT 201")
+      .bind(...bindings, article, article).all<{ payload_json: string }>();
+    searchTruncated = rows.results.length > 200;
+    offers = rows.results.slice(0, 200).map(row => JSON.parse(row.payload_json) as CatalogOffer);
   }
-  const rows = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND (" + conditions.join(" OR ") + ") ORDER BY CASE WHEN article_key=? OR onec_code_key=? THEN 0 WHEN source_type='warehouse' THEN 1 ELSE 2 END LIMIT 200")
-    .bind(...bindings, article, article).all<{ payload_json: string }>();
-  const offers = rows.results.map(row => JSON.parse(row.payload_json) as CatalogOffer);
   const context = { now: new Date(), environment: active.environment };
   const direct = input(() => rankOffers(line, offers, context));
   const productIds = [...new Set(direct.filter(item => item.matchKind !== "similar").map(item => item.offer.productId))].slice(0, 30);
   if (productIds.length) {
     // The exporter assigns shared IDs only to confirmed source links, never fuzzy matches.
-    const linked = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND product_id IN (" + productIds.map(() => "?").join(",") + ") LIMIT 300")
-      .bind(active.id, ...productIds).all<{ payload_json: string }>();
+    const linked = await offersByProducts(env, active, productIds, true);
+    searchTruncated ||= linked.truncated;
     const known = new Set(offers.map(offer => offer.id));
-    for (const row of linked.results) {
-      const offer = JSON.parse(row.payload_json) as CatalogOffer;
+    for (const offer of linked.offers) {
       if (!known.has(offer.id)) { offers.push(offer); known.add(offer.id); }
     }
   }
-  return { candidates: input(() => rankOffers(line, offers, context)).slice(0, 30), catalogSnapshotId: active.id };
+  const ranked = input(() => rankOffers(line, offers, context));
+  return { candidates: ranked.slice(0, 30), catalogSnapshotId: active.id, searchTruncated: searchTruncated || ranked.length > 30 };
 }
 async function readQuote(env: CatalogEnv, requestId: number) {
   const saved = await env.DB.prepare("SELECT * FROM request_quotations WHERE request_id=?").bind(requestId).first<SavedQuote>();
@@ -281,6 +391,8 @@ export async function handleCatalogRoutes(request: Request, env: CatalogEnv, use
     if (path.startsWith("/api/catalog/imports")) {
       if (user.role !== "admin") throw new CatalogInputError("Импорт каталога доступен администратору.", 403);
       if (path === "/api/catalog/imports" && request.method === "POST") return json(await createImport(request, env, user), 201);
+      const manifest = path.match(/^\/api\/catalog\/imports\/([^/]+)$/);
+      if (manifest && request.method === "GET") return json(await importManifest(env, manifest[1], user));
       const batch = path.match(/^\/api\/catalog\/imports\/([^/]+)\/batches\/(\d+)$/);
       if (batch && request.method === "PUT") return json(await importBatch(request, env, batch[1], Number(batch[2]), user));
       const commit = path.match(/^\/api\/catalog\/imports\/([^/]+)\/commit$/);
