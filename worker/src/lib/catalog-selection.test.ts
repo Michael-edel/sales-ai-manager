@@ -45,6 +45,51 @@ describe("validated catalog and quote contract", () => {
 });
 
 describe("request extraction and conservative matching", () => {
+  const productBody = "Светильник LED Beta 72w 1200mm 6500К Sirius — 10 шт\nАвтомат ВА 47-29 1P 16А (С) Sirius — 10 шт\nЩМП-65.50.22 IP54 — 10 шт";
+  const metadataPrefix = "Контекст заявки:\nКомпания клиента: ТЕСТ подбора\nКонтакт/менеджер клиента: Тестовый контакт\nМенеджер Michael: Тестовый менеджер\nКанал связи: text\nПриоритет: normal\nСледующее действие: Проверить подбор\n\n";
+  const advice = "Используйте эти данные как справочные данные из 1С. Если данных нет, не придумывайте цену, остаток, договор или товар.";
+  const legacy = { legacyContext: true };
+  const unavailable = `Автоматическая проверка 1С:\n${advice}\nСтатус 1С: не проверено (bridge 1С не настроен).`;
+  it("extracts all three product lines from the stored metadata-prefixed text contract", () => {
+    const expected = parseRequestLines(productBody);
+    expect(expected).toHaveLength(3);
+    expect(parseRequestLines(metadataPrefix + productBody, legacy)).toEqual(expected);
+    expect(parseRequestLines((metadataPrefix + productBody).replace(/\n/g, "\r\n"), legacy)).toEqual(expected);
+  });
+  it.each([
+    unavailable,
+    "Автоматическая проверка 1С:\n1С не проверена: bridge 1С недоступен.\nНе придумывайте цену, остаток, договор или товар, если их нет в заявке или документах.",
+  ])("removes only a fully recognized terminal legacy 1C error block: %s", suffix => {
+    expect(parseRequestLines(metadataPrefix + productBody + "\n\n" + suffix, legacy)).toEqual(parseRequestLines(productBody));
+    expect(parseRequestLines(productBody + "\n\n" + suffix, legacy)).toEqual(parseRequestLines(productBody));
+  });
+  it("preserves verbatim generated headings and a user product tail in raw drafts by default", () => {
+    const raw = `${metadataPrefix}Кабель;10;м\n\n${unavailable}\n\nДополнительно нужно:\nАвтомат Sirius C16 — 10 шт`;
+    const rows = parseRequestLines(raw);
+    expect(rows[0].query).toBe("Контекст заявки:");
+    expect(rows.some(row => row.query === "Автоматическая проверка 1С:")).toBe(true);
+    expect(rows.at(-1)).toMatchObject({ query: "Автомат Sirius C16", quantity: 10, unit: "шт" });
+    expect(parseRequestLines(`${productBody}\n\n${unavailable}`).at(-1)?.query).toBe("Статус 1С: не проверено (bridge 1С не настроен).");
+  });
+  it("keeps unknown tails and arbitrary successful 1C output even for legacy text", () => {
+    const success = `Автоматическая проверка 1С:\n\n${advice}\n\nСтатус 1С: bridge доступен, инструментов: 2.\n\nТовар, поиск "Sirius":\nАвтомат Sirius C32 — 7 шт`;
+    const failure = "Автоматическая проверка 1С:\n1С не проверена: bridge 1С недоступен.\nНе придумывайте цену, остаток, договор или товар, если их нет в заявке или документах.";
+    for (const suffix of [unavailable, failure, success]) {
+      const text = `${metadataPrefix}${productBody}\n\n${suffix}\n\nДополнительно нужно:\nКабель;25;м`;
+      const rows = parseRequestLines(text, legacy);
+      expect(rows.some(row => row.query === "Автоматическая проверка 1С:")).toBe(true);
+      expect(rows.at(-1)).toMatchObject({ query: "Кабель", quantity: 25, unit: "м" });
+    }
+    expect(parseRequestLines(`${productBody}\n\n${success}`, legacy).at(-1)).toMatchObject({ query: "Автомат Sirius C32", quantity: 7 });
+  });
+  it("preserves ordinary user prose and similar headings instead of removing matching words globally", () => {
+    const text = "Контекст заявки:\nОсобое требование: проверить комплектацию\n\nКабель ВВГ;25;м\nКомпания клиента: указана на чертеже\n\nАвтоматическая проверка 1С:\nНужно согласовать замену\nАвтомат Sirius C16 — 10 шт";
+    expect(parseRequestLines(text).map(row => row.query)).toEqual([
+      "Контекст заявки:", "Особое требование: проверить комплектацию", "Кабель ВВГ", "Компания клиента: указана на чертеже",
+      "Автоматическая проверка 1С:", "Нужно согласовать замену", "Автомат Sirius C16",
+    ]);
+    expect(parseRequestLines("Кабель;2;м\n\nКонтекст заявки:\nКомпания клиента: Михаил\n\nАвтомат;3;шт")).toHaveLength(4);
+  });
   it("parses explicit table quantities and trailing quantities while preserving cable dimensions", () => {
     const rows = parseRequestLines("Наименование;Количество;Ед\nКабель ВВГ 3x2,5;25;м\nАвтомат Sirius 1P C16 — 10 шт.\nПроверить возможность поставки щита");
     expect(rows.map(row => [row.query, row.quantity, row.unit])).toEqual([["Кабель ВВГ 3x2,5", 25, "м"], ["Автомат Sirius 1P C16", 10, "шт"], ["Проверить возможность поставки щита", null, ""]]);

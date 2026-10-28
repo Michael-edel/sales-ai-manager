@@ -311,6 +311,18 @@ export function processText(originalText, metadata = {}) {
   });
 }
 
+export async function saveTextDraft(originalText, metadata, idempotencyKey) {
+  const item = await request("/requests/text-draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ original_text: originalText, ...metadata }),
+  });
+  if (!item || typeof item !== "object" || Array.isArray(item) || !Number.isSafeInteger(item.id) || item.id <= 0 || item.source_type !== "text_draft") {
+    throw new Error("Сервер не подтвердил сохранение заявки. Текст остался в форме — повторите сохранение.");
+  }
+  return item;
+}
+
 export function uploadFile(file, managerNote = "", metadata = {}) {
   const formData = new FormData();
   formData.append("file", file);

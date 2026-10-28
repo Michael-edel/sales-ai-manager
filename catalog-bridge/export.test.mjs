@@ -83,6 +83,25 @@ test('only known delivery rules exported; unknown cutoffs and source prices rema
   assert.equal(elco.prices.purchase,null); assert.equal(elco.prices.retail,null); assert.equal(elco.stockConfirmed,false); assert.equal(elco.quantity,null);
 });
 
+test('explicit supplier base-unit attributes are exported without inferring package units or product links', () => {
+  const fromSite = supplier({details:{baseUnit:'',attributes:[{name:'Базовая единица',value:'шт'},{name:'Вложение',value:'12'}]}});
+  const before = JSON.stringify(fromSite), result = run([fromSite]).offers[0];
+  assert.equal(result.unit,'шт'); assert.equal(result.productId,fromSite.id);
+  assert.equal(JSON.stringify(fromSite),before);
+  assert.equal(run([supplier({details:{attributes:[{name:'  БАЗОВАЯ   ЕДИНИЦА: ',value:'шт.'},{name:'Базовая единица',value:'штук'}]}})]).offers[0].unit,'шт.');
+  assert.equal(run([supplier({details:{attributes:[{name:'Базовая единица',value:'шт'},{name:'Базовая единица',value:'м'}]}})]).offers[0].unit,'');
+  assert.equal(run([supplier({name:'Выключатель 12 шт',details:{attributes:[{name:'Вложение',value:'12'},{name:'Количество в упаковке',value:'12 шт'},{name:'Базовая единица',value:'Не указано'}]}})]).offers[0].unit,'');
+});
+
+test('manual base-unit and attribute overrides take precedence over supplier attribute fallback', () => {
+  const product = supplier({details:{baseUnit:'',attributes:[{name:'Базовая единица',value:'шт'}]},detailsOverrides:{baseUnit:'м'}});
+  assert.equal(run([product]).offers[0].unit,'м');
+  product.detailsOverrides.baseUnit=''; assert.equal(run([product]).offers[0].unit,'');
+  product.detailsOverrides={attributes:[{name:'Базовая единица',value:'компл'}]}; assert.equal(run([product]).offers[0].unit,'компл');
+  product.detailsOverrides.attributes=[]; assert.equal(run([product]).offers[0].unit,'');
+  product.detailsOverrides={}; product.details.baseUnit='уп'; assert.equal(run([product]).offers[0].unit,'уп');
+});
+
 test('removed sources excluded; stale counts unconfirmed; source timestamp wins over manual edit timestamp', () => {
   const a=supplier({updatedAt:'2026-10-27T10:00:00Z'}),b=supplier({id:'stale',sourceId:'supplier:elco',stale:true});
   const result=run([a,b],{suppliers:[{id:a.sourceId,lastImport:'2026-10-20T08:00:00.000Z'}]});

@@ -283,13 +283,13 @@ export async function handleCatalogRoutes(request: Request, env: CatalogEnv, use
     const match = path.match(/^\/api\/requests\/(\d+)\/quotation(?:\/(prepare|candidates|evaluate))?$/);
     if (!match) throw new CatalogInputError("Метод подбора не найден.", 404);
     const requestId = Number(match[1]);
-    const existing = await env.DB.prepare("SELECT id,original_text FROM requests WHERE id=?").bind(requestId).first<{ id: number; original_text: string }>();
+    const existing = await env.DB.prepare("SELECT id,original_text,source_type FROM requests WHERE id=?").bind(requestId).first<{ id: number; original_text: string; source_type: string }>();
     if (!existing) throw new CatalogInputError("Заявка не найдена.", 404);
     const action = match[2];
     if (!action && request.method === "GET") return json(await readQuote(env, requestId));
     if (!action && request.method === "PUT") return json(await saveQuote(request, env, requestId, user));
     if (action === "prepare" && request.method === "POST")
-      return json({ draft: { lines: input(() => parseRequestLines(existing.original_text)), notes: "" }, catalogSnapshotId: (await activeSnapshot(env))?.id || null });
+      return json({ draft: { lines: input(() => parseRequestLines(existing.original_text, { legacyContext: existing.source_type === "text" })), notes: "" }, catalogSnapshotId: (await activeSnapshot(env))?.id || null });
     if (action === "candidates" && request.method === "POST") return json(await candidates(request, env));
     if (action === "evaluate" && request.method === "POST") return json(await evaluate(env, await body(request)));
     throw new CatalogInputError("Недопустимый метод.", 405);
