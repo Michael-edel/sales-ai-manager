@@ -92,7 +92,16 @@ try {
   const url = (output.match(/https:\/\/[a-z0-9.-]+\.workers\.dev/g) || [])
     .find(value => new URL(value).hostname.startsWith(name + '.'));
   if (!url) throw new Error('The temporary runtime-check address was not confirmed.');
-  const response = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(60000) });
+  console.log('Temporary runtime probe deployed: ' + name);
+  let response;
+  // A newly created workers.dev route can return 404 briefly after the upload
+  // succeeds. Retry only that routing state, never a failed crypto comparison.
+  for (const delay of [0, 2000, 4000, 8000, 16000, 16000]) {
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    response = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(60000) });
+    if (response.status !== 404) break;
+    await response.body?.cancel();
+  }
   const result = await response.json().catch(() => null);
   if (!response.ok || result?.ok !== true || result.checks !== 6)
     throw new Error(`Deployed password runtime check failed (HTTP ${response.status}; completed ${Number.isInteger(result?.completedChecks) ? result.completedChecks : 0}/6).`);
@@ -103,8 +112,18 @@ try {
 } finally {
   // Only remove our uniquely named, data-free probe; never the application or DO.
   try {
-    if (attempted && /^michael-auth-probe-[a-f0-9]{12}$/.test(name))
-      await run(['delete', name, '--config', config, '--force']);
+    if (attempted && /^michael-auth-probe-[a-f0-9]{12}$/.test(name)) {
+      // Wrangler delete also lists legacy Workers Sites KV namespaces. This
+      // data-free probe has none, so use the Workers Scripts API directly and
+      // retain the existing narrow token permissions.
+      const deleted = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}?force=true`, {
+        method: 'DELETE', headers: { Authorization: 'Bearer ' + process.env.CLOUDFLARE_API_TOKEN }, signal: AbortSignal.timeout(30000),
+      });
+      const result = await deleted.json().catch(() => null);
+      if (!deleted.ok || result?.success !== true)
+        throw new Error(`Temporary runtime probe deletion failed (HTTP ${deleted.status}).`);
+      console.log('Temporary runtime probe removed: ' + name);
+    }
   } catch (error) {
     // A cleanup failure must not hide the original deployment/crypto failure.
     if (!failure) throw error;
