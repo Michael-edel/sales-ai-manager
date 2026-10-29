@@ -1,15 +1,20 @@
 // Exercise the deployed private KDF on Cloudflare, not Node's more permissive
 // crypto implementation. No real accounts, application data or passwords used.
 import { randomBytes, randomUUID, scryptSync, pbkdf2Sync, createHash } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID)
+if (!process.env.CLOUDFLARE_API_TOKEN)
   throw new Error('Cloudflare deployment credentials are required for the runtime check.');
 
+// Use exactly the account that the main deployment config targets. Wrangler
+// gives that explicit config precedence over a possibly stale CI account env.
+const deploymentConfig = await readFile(new URL('../wrangler.toml', import.meta.url), 'utf8');
+const accountId = deploymentConfig.match(/^account_id\s*=\s*"([a-f0-9]{32})"\s*$/m)?.[1];
+if (!accountId) throw new Error('The deployed application account could not be confirmed.');
 const wrangler = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url));
 const name = 'michael-auth-probe-' + randomUUID().replaceAll('-', '').slice(0, 12);
 const folder = await mkdtemp(path.join(tmpdir(), 'michael-auth-probe-'));
@@ -28,7 +33,7 @@ const redact = text => [token, password, fixture.scrypt, ...Object.values(fixtur
 function run(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [wrangler, ...args], {
-      env: { ...process.env, CI: 'true', WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, CI: 'true', WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
@@ -73,11 +78,12 @@ export default { async fetch(request, env) {
 }};
 `;
 let attempted = false;
+let failure;
 try {
   await writeFile(path.join(folder, 'probe.mjs'), source);
   await writeFile(config, JSON.stringify({
     name, main: './probe.mjs', compatibility_date: '2026-06-15', workers_dev: true,
-    account_id: process.env.CLOUDFLARE_ACCOUNT_ID,
+    account_id: accountId,
     vars: { PROBE_TOKEN_HASH: createHash('sha256').update(token).digest('hex') },
     durable_objects: { bindings: [{ name: 'PASSWORD_KDF', class_name: 'PasswordKdf', script_name: 'sales-ai-manager' }] },
   }));
@@ -91,11 +97,18 @@ try {
   if (!response.ok || result?.ok !== true || result.checks !== 6)
     throw new Error(`Deployed password runtime check failed (HTTP ${response.status}; completed ${Number.isInteger(result?.completedChecks) ? result.completedChecks : 0}/6).`);
   console.log('Cloudflare password runtime: six native/legacy fixture checks passed.');
+} catch (error) {
+  failure = error;
+  throw error;
 } finally {
   // Only remove our uniquely named, data-free probe; never the application or DO.
   try {
     if (attempted && /^michael-auth-probe-[a-f0-9]{12}$/.test(name))
       await run(['delete', name, '--config', config, '--force']);
+  } catch (error) {
+    // A cleanup failure must not hide the original deployment/crypto failure.
+    if (!failure) throw error;
+    console.error('Temporary runtime-check cleanup failed: ' + redact(error.message));
   } finally {
     const absoluteFolder = path.resolve(folder);
     if (path.dirname(absoluteFolder) !== path.resolve(tmpdir()) || !path.basename(absoluteFolder).startsWith('michael-auth-probe-'))
