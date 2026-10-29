@@ -26,7 +26,7 @@ function statement(sql, bindings = []) {
 beforeEach(() => {
   queries = [];
   sqlite = new DatabaseSync(":memory:");
-  sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text'); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
+  sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
   sqlite.exec(readFileSync(new URL("../../migrations/0020_catalog_quotations.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../migrations/0022_catalog_pages.sql", import.meta.url), "utf8"));
   env = { DB: {
@@ -95,7 +95,7 @@ function raceNextTwoBatches() {
 
 describe("catalog integration API", () => {
   it("restricts purchase data and imports by role and rejects cross-site mutations", async () => {
-    expect((await call("/catalog/status", "GET", undefined, { ...manager, role: "viewer" })).status).toBe(403);
+    expect((await call("/catalog/status", "GET", undefined, { ...manager, role: "viewer" })).status).toBe(200);
     expect((await call("/catalog/imports", "POST", {}, manager)).status).toBe(403);
     expect((await call("/catalog/imports", "POST", {}, admin, "https://other.example")).status).toBe(403);
     expect((await call("/catalog/imports", "POST", {}, admin, "")).status).toBe(403);

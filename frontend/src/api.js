@@ -1,13 +1,33 @@
+import { requestIdForAccessError } from "./lib/request-access.mjs";
+import { createSessionRequestGuard } from "./lib/session-requests.mjs";
+export { isStaleSessionResponse } from "./lib/session-requests.mjs";
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+const requestAccessListeners = new Set();
+const apiSession = createSessionRequestGuard();
+export function invalidateApiSession() { apiSession.invalidate(); }
+
+export function onRequestAccessLost(listener) {
+  requestAccessListeners.add(listener);
+  return () => requestAccessListeners.delete(listener);
+}
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, { credentials: "include", ...options });
-  const data = await response.json().catch(() => null);
+  const assertSession = apiSession.capture();
+  let response, data;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { credentials: "include", ...options });
+    data = await response.json().catch(() => null);
+  } catch (error) { assertSession(); throw error; }
+  // No old-account success, error or access-lost event may reach the next UI.
+  assertSession();
 
   if (!response.ok) {
     const error = new Error(data?.detail || "Ошибка запроса к серверу");
     error.status = response.status;
     error.code = data?.error_code;
+    const requestId = requestIdForAccessError(path, response.status);
+    if (requestId) for (const listener of requestAccessListeners) listener(requestId);
     if (data?.error_code === "D1_DAILY_LIMIT") error.safeMessage = "Облачная база достигла дневного лимита. Повторите после сброса лимита в 05:00 по Экибастузу. Незавершённую загрузку каталога можно продолжить тем же файлом.";
     throw error;
   }
@@ -24,6 +44,22 @@ export function login(username, password) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
+  });
+}
+
+export function getEmailRegistrationStatus(options = {}) {
+  return request("/auth/registration/status", options);
+}
+
+export function requestEmailRegistration(payload) {
+  return request("/auth/registration", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+}
+
+export function verifyEmailRegistration(token, password) {
+  return request("/auth/registration/verify", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, password }),
   });
 }
 
@@ -67,8 +103,27 @@ export function updateUserEmail(userId, emailAddress) {
   });
 }
 
-export function listRequests() {
-  return request("/requests");
+export function listRequests(options = {}) {
+  return request("/requests", options);
+}
+
+export function getRequest(requestId, options = {}) {
+  return request(`/requests/${requestId}`, options);
+}
+
+export function listRequestAssignees(options = {}) {
+  return request("/requests/assignees", options);
+}
+
+export function assignRequest(requestId, assignedUserId) {
+  return request(`/requests/${requestId}/assignee`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assigned_user_id: assignedUserId }),
+  });
+}
+
+export function searchSharedCatalog(query, options = {}) {
+  return request(`/catalog/search?${new URLSearchParams({ q: query })}`, options);
 }
 
 export function getCrmSummary() {

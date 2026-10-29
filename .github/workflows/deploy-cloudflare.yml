@@ -80,7 +80,7 @@ jobs:
         run: node --test catalog-bridge/export.test.mjs
 
       - name: Test user account form validation
-        run: node --test frontend/src/lib/user-accounts.test.mjs
+        run: node --test frontend/src/lib/user-accounts.test.mjs frontend/src/lib/request-access.test.mjs frontend/src/lib/email-registration.test.mjs frontend/src/lib/session-requests.test.mjs
 
       - name: Audit production Node dependencies
         run: |

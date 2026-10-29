@@ -1,6 +1,8 @@
 import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
 import { isD1DailyQuotaError } from "./lib/d1-errors";
+import { requestScope, requireRequestAccess, hasRequestAccess, hasClientAccess, RequestAccessError, type RequestActor } from "./lib/request-access";
+import { handleEmailRegistration } from "./lib/email-registration";
 import {
   createPassword, dummyPasswordCheck, verifyStoredPassword, PasswordHashUnavailableError,
   LEGACY_SCHEME, LEGACY_ITERATIONS, PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH,
@@ -49,6 +51,10 @@ export interface Env {
   ACCESS_USERNAME: string;
   ACCESS_PASSWORD: string;
   PASSWORD_KDF?: DurableObjectNamespace;
+  /** Per-request immutable clone only; never written to the runtime's shared env. */
+  REQUEST_USER?: CurrentUser;
+  REGISTRATION_FROM_EMAIL?: string;
+  REGISTRATION_APP_ORIGIN?: string;
 }
 
 type Metadata = {
@@ -1233,9 +1239,22 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/email/ingest") {
         return await ingestEmailMessage(request, env);
       }
+      if (request.method === "POST" && ["/api/auth/registration", "/api/auth/registration/verify"].includes(url.pathname)) {
+        assertBrowserOrigin(request);
+        // A verified first manager must not suppress the configured administrator
+        // bootstrap on a new installation. Existing installations are unchanged.
+        await ensureInitialUser(env);
+      }
+      const registrationResponse = await handleEmailRegistration(request, env);
+      if (registrationResponse) return registrationResponse;
 
       const currentUser = await authenticateRequest(request, env);
       if (!currentUser) return json({ detail: "Нужно войти в программу." }, 401);
+      env = { ...env, REQUEST_USER: currentUser };
+      const scopedRequestPath = url.pathname.match(/^\/api\/requests\/(\d+)(?:\/|$)/);
+      if (scopedRequestPath && !await hasRequestAccess(env, currentUser, Number(scopedRequestPath[1]))) {
+        return json({ detail: "Заявка не найдена." }, 404);
+      }
       const catalogResponse = await handleCatalogRoutes(request, env, currentUser);
       if (catalogResponse) return catalogResponse;
 
@@ -1280,6 +1299,7 @@ export default {
       const oneCClientActionMatch = url.pathname.match(/^\/api\/1c\/clients\/(\d+)\/(profile|contracts|orders|invoices|debt|terms|addresses|interactions)$/);
       if (request.method === "GET" && oneCClientActionMatch) {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!await hasClientAccess(env, Number(oneCClientActionMatch[1]))) return json({ detail: "Клиент CRM не найден." }, 404);
         return json(await getOneCClientBusinessData(env, Number(oneCClientActionMatch[1]), oneCClientActionMatch[2]));
       }
       const requestOneCProductStockMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/1c-products\/stock-prices$/);
@@ -1373,12 +1393,21 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/requests") {
         return json(await listRequests(env));
       }
+      if (request.method === "GET" && url.pathname === "/api/requests/assignees") {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json((await env.DB.prepare("SELECT id,username,display_name,role,is_active FROM app_users WHERE is_active=1 AND role='manager' ORDER BY display_name,username").all()).results);
+      }
+      const assigneeMatch = url.pathname.match(/^\/api\/requests\/(\d+)\/assignee$/);
+      if (request.method === "PATCH" && assigneeMatch) {
+        if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        return json(await assignRequest(request, env, Number(assigneeMatch[1]), currentUser));
+      }
       if (request.method === "GET" && url.pathname === "/api/tasks/open") {
         return json(await listOpenTasks(env));
       }
       if (request.method === "POST" && url.pathname === "/api/requests/text") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        return json(await processText(request, env));
+        return json(await processText(request, env, currentUser));
       }
       if (request.method === "POST" && url.pathname === "/api/requests/text-draft") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
@@ -1386,7 +1415,7 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
         if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        return json(await processUpload(request, env));
+        return json(await processUpload(request, env, currentUser));
       }
       if (request.method === "GET" && url.pathname === "/api/crm/summary") {
         return json(await getCrmSummary(env));
@@ -1429,7 +1458,8 @@ export default {
         const emailItem = await getEmailMessage(env, Number(emailProcessMatch[1]));
         if (!emailItem) return json({ detail: "Письмо не найдено." }, 404);
         if (!canAccessEmailMessage(currentUser, emailItem)) return json({ detail: "Недостаточно прав." }, 403);
-        const item = await processEmailMessage(env, Number(emailProcessMatch[1]));
+        if (emailItem.processed_request_id) await requireRequestAccess(env, Number(emailItem.processed_request_id));
+        const item = await processEmailMessage(env, Number(emailProcessMatch[1]), currentUser);
         return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
       }
 
@@ -1444,6 +1474,7 @@ export default {
         const emailId = Number(emailMessageMatch[1]);
         if (request.method === "GET") {
           const item = await getEmailMessage(env, emailId);
+          if (item?.processed_request_id) await requireRequestAccess(env, Number(item.processed_request_id));
           if (item && !canAccessEmailMessage(currentUser, item)) return json({ detail: "Недостаточно прав." }, 403);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
         }
@@ -1451,6 +1482,7 @@ export default {
           if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
           const existing = await getEmailMessage(env, emailId);
           if (!existing) return json({ detail: "Письмо не найдено." }, 404);
+          if (existing.processed_request_id) await requireRequestAccess(env, Number(existing.processed_request_id));
           if (!canAccessEmailMessage(currentUser, existing)) return json({ detail: "Недостаточно прав." }, 403);
           const item = await updateEmailMessage(request, env, emailId);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
@@ -1459,6 +1491,7 @@ export default {
           if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
           const existing = await getEmailMessage(env, emailId);
           if (!existing) return json({ detail: "Письмо не найдено." }, 404);
+          if (existing.processed_request_id) await requireRequestAccess(env, Number(existing.processed_request_id));
           if (!canAccessEmailMessage(currentUser, existing)) return json({ detail: "Недостаточно прав." }, 403);
           const item = await moveEmailMessageToTrash(env, emailId);
           return item ? json(item) : json({ detail: "Письмо не найдено." }, 404);
@@ -1546,7 +1579,7 @@ export default {
         message: internalMessage,
         stack: error instanceof Error ? error.stack : undefined,
       }));
-      if (error instanceof UserInputError) {
+      if (error instanceof UserInputError || error instanceof RequestAccessError) {
         return json({ detail: error.message }, error.status);
       }
       if (error instanceof PasswordHashUnavailableError) {
@@ -1604,10 +1637,11 @@ const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 async function login(request: Request, env: Env): Promise<Response> {
   const payload = await readBoundedJson(request, 4096);
-  const username = normalizeUsername(typeof payload.username === "string" ? payload.username : "");
+  const username = typeof payload.username === "string" ? payload.username.trim().toLowerCase() : "";
   const password = typeof payload.password === "string" ? payload.password : "";
   if (!username || !password) return json({ detail: "Введите имя пользователя и пароль." }, 400);
-  if (username.length > 64 || password.length > PASSWORD_MAX_LENGTH) {
+  const emailLogin = /^[a-z0-9][a-z0-9._%+-]{0,63}@edel\.kz$/.test(username) ? username : "";
+  if (username.length > 254 || (!emailLogin && !/^[a-z0-9._-]{1,64}$/.test(username)) || password.length > PASSWORD_MAX_LENGTH) {
     return json({ detail: "Неверное имя пользователя или пароль." }, 401);
   }
 
@@ -1631,8 +1665,8 @@ async function login(request: Request, env: Env): Promise<Response> {
 
   await ensureInitialUser(env);
   const user = await env.DB.prepare(`
-    SELECT * FROM app_users WHERE username = ? AND is_active = 1
-  `).bind(username).first() as Record<string, any> | null;
+    SELECT * FROM app_users WHERE is_active = 1 AND (username = ? OR (? <> '' AND lower(email_address) = ?)) LIMIT 1
+  `).bind(username, emailLogin, emailLogin).first() as Record<string, any> | null;
 
   const passwordMatches = user ? await verifyStoredPassword(env, password, {
     password_hash: String(user.password_hash), password_salt: String(user.password_salt),
@@ -2113,8 +2147,9 @@ async function createWhatsAppTemplate(request: Request, env: Env) {
   return listWhatsAppTemplates(env);
 }
 
-async function processText(request: Request, env: Env) {
+async function processText(request: Request, env: Env, user: CurrentUser) {
   const payload = (await request.json()) as Metadata & { original_text?: string };
+  rejectRequestOwnershipFields(payload);
   const body = (payload.original_text || "").trim();
   if (!body) throw new UserInputError("Текст заявки пустой.");
 
@@ -2127,7 +2162,7 @@ async function processText(request: Request, env: Env) {
     original_text: originalText,
     uploaded_file_name: null,
     ai_result: aiResult,
-  });
+  }, undefined, user);
 }
 
 async function saveTextDraft(request: Request, env: Env, user: CurrentUser) {
@@ -2180,19 +2215,21 @@ async function saveTextDraft(request: Request, env: Env, user: CurrentUser) {
   if (!submission || submission.payload_hash !== hash) throw new UserInputError("Ключ сохранения уже использован для другого текста. Обновите форму перед новой заявкой.", 409);
   if (submission.request_id) {
     const saved = await getRequest(env, submission.request_id);
+    if (!saved && await env.DB.prepare("SELECT id FROM requests WHERE id=?").bind(submission.request_id).first()) throw new RequestAccessError();
     if (!saved) throw new UserInputError("Ранее сохранённая заявка удалена. Создайте новую заявку.", 409);
     return saved;
   }
   if (submission.claim_token !== claimToken) throw new UserInputError("Эта заявка уже сохраняется. Повторите попытку через минуту.", 409);
-  return insertRequest(env, item, { userId: user.id, key, hash, claimToken });
+  return insertRequest(env, item, { userId: user.id, key, hash, claimToken }, user);
 }
 
-async function processUpload(request: Request, env: Env) {
+async function processUpload(request: Request, env: Env, user: CurrentUser) {
   const contentLength = Number(request.headers.get("Content-Length") || 0);
   if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_REQUEST_BYTES) {
     throw new UserInputError("Файл слишком большой. Максимальный размер загрузки: 20 МБ.", 413);
   }
   const formData = await request.formData();
+  if (formData.has("assigned_user_id")) throw new UserInputError("Ответственного назначает администратор.");
   const file = formData.get("file");
   if (!isUploadedFile(file)) throw new UserInputError("Файл не передан.");
 
@@ -2269,7 +2306,7 @@ async function processUpload(request: Request, env: Env) {
     original_text: originalText,
     uploaded_file_name: fileName,
     ai_result: aiResult,
-  });
+  }, undefined, user);
 }
 
 async function checkParserService(env: Env) {
@@ -2585,6 +2622,7 @@ async function runOneCCommand(request: Request, env: Env, currentUser: CurrentUs
   if (!command) throw new UserInputError("Введите команду для 1С.");
 
   const requestId = Number(payload.request_id || 0);
+  if (requestId) await requireRequestAccess(env, requestId);
   const selectedRequest = requestId > 0 ? await getRequest(env, requestId) as Record<string, any> | null : null;
   if (requestId > 0 && !selectedRequest) throw new UserInputError("Выбранная заявка не найдена.");
 
@@ -2598,6 +2636,7 @@ async function runOneCCommand(request: Request, env: Env, currentUser: CurrentUs
     if (!clientId) {
       throw new UserInputError("Для этой команды выберите заявку с CRM-клиентом или укажите клиента в 1С-панели.");
     }
+    if (!await hasClientAccess(env, clientId)) throw new UserInputError("Клиент CRM не найден.", 404);
     response = await getOneCClientBusinessData(env, clientId, clientAction);
   } else if (oneCCommandWantsStockOrPrices(normalized)) {
     if (selectedRequest?.id && !oneCCommandHasExplicitProductSearch(command, payload)) {
@@ -2653,7 +2692,7 @@ async function runOneCCommand(request: Request, env: Env, currentUser: CurrentUs
 
 async function getOneCClientBusinessData(env: Env, clientId: number, action: string) {
   const client = await getCrmClientForOneC(env, clientId);
-  if (!client) throw new UserInputError("CRM-клиент не найден.");
+  if (!client) throw new UserInputError("CRM-клиент не найден.", 404);
 
   const search = oneCClientSearchText(client);
   if (!search) throw new UserInputError("У CRM-клиента нет названия, БИН или привязки 1С для поиска.");
@@ -2772,6 +2811,7 @@ function oneCClientDebtResultText(client: Record<string, unknown>, operationalSe
 }
 
 async function listRequestOneCProducts(env: Env, requestId: number) {
+  const guard = requestChildGuard(env, requestId);
   const result = await env.DB.prepare(`
     SELECT
       id,
@@ -2786,13 +2826,14 @@ async function listRequestOneCProducts(env: Env, requestId: number) {
       created_at,
       updated_at
     FROM request_onec_products
-    WHERE request_id = ?
+    WHERE request_id = ? AND ${guard.sql}
     ORDER BY id ASC
-  `).bind(requestId).all();
+  `).bind(requestId, ...guard.bindings).all();
   return result.results;
 }
 
 async function getRequestOneCProduct(env: Env, requestId: number, productId: number) {
+  const guard = requestChildGuard(env, requestId);
   return env.DB.prepare(`
     SELECT
       id,
@@ -2807,15 +2848,17 @@ async function getRequestOneCProduct(env: Env, requestId: number, productId: num
       created_at,
       updated_at
     FROM request_onec_products
-    WHERE request_id = ? AND id = ?
-  `).bind(requestId, productId).first();
+    WHERE request_id = ? AND id = ? AND ${guard.sql}
+  `).bind(requestId, productId, ...guard.bindings).first();
 }
 
 async function linkRequestOneCProduct(request: Request, env: Env, requestId: number, user: CurrentUser) {
+  const guard = requestChildGuard(env, requestId);
   const existingRequest = await getRequest(env, requestId);
-  if (!existingRequest) throw new UserInputError("Заявка не найдена.");
+  if (!existingRequest) throw new RequestAccessError();
 
   const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  rejectRequestOwnershipFields(payload);
   const candidate = normalizeOneCProductCandidate(payload);
   if (!candidate.product_ref && !candidate.code && !candidate.article && !candidate.name && !candidate.full_name) {
     throw new UserInputError("Выберите найденный товар 1С или передайте код/артикул/наименование.");
@@ -2853,7 +2896,7 @@ async function linkRequestOneCProduct(request: Request, env: Env, requestId: num
       onec_product_unit,
       onec_product_vat_rate,
       onec_product_payload_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard.sql} RETURNING id
   `).bind(
     requestId,
     candidate.product_ref || null,
@@ -2864,9 +2907,11 @@ async function linkRequestOneCProduct(request: Request, env: Env, requestId: num
     candidate.unit || null,
     candidate.vat_rate || null,
     JSON.stringify(candidate.raw || payload),
-  ).run();
+    ...guard.bindings,
+  ).all();
 
-  const productId = Number(result.meta.last_row_id);
+  if (!result.results.length) throw new RequestAccessError();
+  const productId = Number((result.results[0] as Record<string, unknown>).id);
   await createRequestEvent(env, requestId, "request.onec_product_linked", user.display_name || user.username, {
     product_id: productId,
     product_ref: candidate.product_ref || null,
@@ -2880,13 +2925,15 @@ async function linkRequestOneCProduct(request: Request, env: Env, requestId: num
 }
 
 async function deleteRequestOneCProduct(env: Env, requestId: number, productId: number, user: CurrentUser) {
+  const guard = requestChildGuard(env, requestId);
   const existing = await getRequestOneCProduct(env, requestId, productId) as Record<string, unknown> | null;
   if (!existing) return null;
 
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     DELETE FROM request_onec_products
-    WHERE request_id = ? AND id = ?
-  `).bind(requestId, productId).run();
+    WHERE request_id = ? AND id = ? AND ${guard.sql} RETURNING id
+  `).bind(requestId, productId, ...guard.bindings).all();
+  if (!result.results.length) throw new RequestAccessError();
 
   await createRequestEvent(env, requestId, "request.onec_product_unlinked", user.display_name || user.username, {
     product_id: productId,
@@ -2900,7 +2947,7 @@ async function deleteRequestOneCProduct(env: Env, requestId: number, productId: 
 
 async function getRequestOneCProductStockPrices(env: Env, requestId: number) {
   const existingRequest = await getRequest(env, requestId);
-  if (!existingRequest) throw new UserInputError("Заявка не найдена.");
+  if (!existingRequest) throw new RequestAccessError();
 
   const products = await listRequestOneCProducts(env, requestId) as Record<string, unknown>[];
   if (products.length === 0) {
@@ -2945,6 +2992,7 @@ async function getRequestOneCProductStockPrices(env: Env, requestId: number) {
     }
   }
 
+  await requireRequestAccess(env, requestId);
   return {
     tool: "get_request_linked_products_stock_prices",
     request_id: requestId,
@@ -2954,7 +3002,7 @@ async function getRequestOneCProductStockPrices(env: Env, requestId: number) {
 
 async function refreshRequestOneCContext(env: Env, requestId: number, user: CurrentUser) {
   const item = await getRequest(env, requestId) as Record<string, unknown> | null;
-  if (!item) throw new UserInputError("Заявка не найдена.");
+  if (!item) throw new RequestAccessError();
 
   const metadata: Metadata = {
     client_company: normalizeOptionalText(item.client_company),
@@ -3183,6 +3231,7 @@ function oneCCommandLinkedProductsText(response: Record<string, unknown>): strin
 }
 
 async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<string, string> | null> {
+  const guard = clientGuard(env);
   const client = await env.DB.prepare(`
     SELECT
       id,
@@ -3202,8 +3251,8 @@ async function getCrmClientForOneC(env: Env, clientId: number): Promise<Record<s
       onec_counterparty_partner,
       onec_counterparty_linked_at
     FROM crm_clients
-    WHERE id = ?
-  `).bind(clientId).first();
+    WHERE id = ? AND ${guard.sql}
+  `).bind(clientId, ...guard.bindings).first();
   return client as Record<string, string> | null;
 }
 
@@ -3507,7 +3556,7 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   const subject = normalizeOptionalText(payload.subject);
   const body = normalizeOptionalText(payload.body);
   const requestId = Number(payload.request_id || 0);
-
+  if (requestId) await requireRequestAccess(env, requestId);
   if (!to || !to.includes("@")) throw new UserInputError("Укажите email получателя.");
   if (!subject) throw new UserInputError("Тема письма пустая.");
   if (!body) throw new UserInputError("Текст письма пустой.");
@@ -3581,6 +3630,7 @@ async function sendWhatsAppTemplateMessage(request: Request, env: Env, currentUs
     body_parameters?: unknown;
   };
   const requestId = Number(payload.request_id || 0);
+  if (requestId) await requireRequestAccess(env, requestId);
   const toPhone = normalizeWhatsAppPhone(payload.to);
   const templateKey = normalizeOptionalText(payload.template_key);
   const bodyParameters = normalizeWhatsAppBodyParameters(payload.body_parameters);
@@ -3990,9 +4040,12 @@ async function readGeminiInteractionText(response: Response): Promise<string> {
 }
 
 async function listRequests(env: Env) {
+  const scope = requestScope(env.REQUEST_USER);
   const result = await env.DB.prepare(`
     SELECT
       r.*,
+      assigned.display_name AS assigned_user_name,
+      assigned.username AS assigned_user_username,
       c.onec_partner_ref,
       c.onec_partner_code,
       c.onec_partner_name,
@@ -4011,6 +4064,7 @@ async function listRequests(env: Env) {
       COALESCE(task_counts.total_task_count, 0) AS total_task_count,
       COALESCE(product_counts.onec_product_count, 0) AS onec_product_count
     FROM requests r
+    LEFT JOIN app_users assigned ON assigned.id = r.assigned_user_id
     LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
       SELECT
@@ -4026,10 +4080,59 @@ async function listRequests(env: Env) {
       FROM request_onec_products
       GROUP BY request_id
     ) product_counts ON product_counts.request_id = r.id
+    WHERE ${scope.sql}
     ORDER BY r.created_at DESC
     LIMIT 100
-  `).all();
+  `).bind(...scope.bindings).all();
   return result.results;
+}
+
+function rejectRequestOwnershipFields(value: unknown): void {
+  if (value && typeof value === "object" && Object.keys(value).some(key => ["assigned_user_id", "assigned_user_name", "assigned_user_username"].includes(key))) {
+    throw new UserInputError("Ответственного назначает администратор через передачу заявки.");
+  }
+}
+
+function requestChildGuard(env: Env, requestId: number): { sql: string; bindings: number[] } {
+  const scope = requestScope(env.REQUEST_USER, "owned");
+  return { sql: `EXISTS(SELECT 1 FROM requests owned WHERE owned.id=? AND ${scope.sql})`, bindings: [requestId, ...scope.bindings] };
+}
+
+function clientGuard(env: Env): { sql: string; bindings: number[] } {
+  if (env.REQUEST_USER?.role === "admin") return { sql: "1=1", bindings: [] };
+  const scope = requestScope(env.REQUEST_USER, "owned");
+  return { sql: `EXISTS(SELECT 1 FROM requests owned WHERE owned.client_id=crm_clients.id AND ${scope.sql})`, bindings: scope.bindings };
+}
+
+/** Keep the authorization check in the modifying SQL, after any slow AI/1C work. */
+async function updateScopedRequest(env: Env, id: number, assignments: string, values: (string | number | null)[]): Promise<void> {
+  const scope = requestScope(env.REQUEST_USER, "requests");
+  const result = await env.DB.prepare(`UPDATE requests SET ${assignments} WHERE id=? AND ${scope.sql} RETURNING id`)
+    .bind(...values, id, ...scope.bindings).all();
+  if (!result.results.length) throw new RequestAccessError();
+}
+
+async function assignRequest(request: Request, env: Env, id: number, actor: CurrentUser) {
+  const payload = await readUserMutation(request);
+  if (Object.keys(payload).some(key => key !== "assigned_user_id") || !Number.isSafeInteger(payload.assigned_user_id) || Number(payload.assigned_user_id) < 1) {
+    throw new UserInputError("Выберите активного менеджера.");
+  }
+  const targetId = Number(payload.assigned_user_id);
+  const target = await env.DB.prepare("SELECT id FROM app_users WHERE id=? AND role='manager' AND is_active=1").bind(targetId).first();
+  if (!target) throw new UserInputError("Выберите активного менеджера.");
+  const condition = `EXISTS (SELECT 1 FROM app_users actor WHERE actor.id=? AND actor.role='admin' AND actor.is_active=1 AND actor.auth_version=?)
+    AND EXISTS (SELECT 1 FROM app_users target WHERE target.id=? AND target.role='manager' AND target.is_active=1)`;
+  const values = [actor.id, actor.auth_version, targetId];
+  const result = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO request_events(request_id,event_type,actor,payload_json)
+      SELECT id,'request.assigned',?,json_object('actor_user_id',?,'previous_assigned_user_id',assigned_user_id,'assigned_user_id',?)
+      FROM requests WHERE id=? AND ${condition}`)
+      .bind(actor.username, actor.id, targetId, id, ...values),
+    env.DB.prepare(`UPDATE requests SET assigned_user_id=?,updated_at=datetime('now') WHERE id=? AND ${condition} RETURNING id`)
+      .bind(targetId, id, ...values),
+  ]);
+  if (!result[1].results.length) throw new UserInputError("Доступ администратора или статус менеджера изменён. Обновите страницу.", 409);
+  return getRequest(env, id);
 }
 
 async function listEmailMessages(env: Env, user: CurrentUser, folderParam: string | null) {
@@ -4264,6 +4367,7 @@ async function assignExistingEmailsToUser(env: Env, emailAddress: string, manage
 }
 
 async function getEmailMessage(env: Env, id: number) {
+  const scope = env.REQUEST_USER ? emailMailboxScope(env.REQUEST_USER) : { sql: "", bindings: [] };
   return env.DB.prepare(`
     SELECT
       *,
@@ -4275,11 +4379,13 @@ async function getEmailMessage(env: Env, id: number) {
           AND sender_filters.sender_email = lower(trim(email_messages.from_address))
       ) AS is_sender_hidden
     FROM email_messages
-    WHERE id = ?
-  `).bind(id).first() as Promise<Record<string, any> | null>;
+    WHERE id = ? ${scope.sql}
+  `).bind(id, ...scope.bindings).first() as Promise<Record<string, any> | null>;
 }
 
 async function updateEmailMessage(request: Request, env: Env, id: number) {
+  if (!env.REQUEST_USER) throw new UserInputError("Нужно войти в программу.", 401);
+  const scope = emailMailboxScope(env.REQUEST_USER);
   const existing = await getEmailMessage(env, id);
   if (!existing) return null;
 
@@ -4298,7 +4404,7 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
   if (requestedStatus && !requestedFolder) folder = emailFolderForStatus(requestedStatus);
 
   const isRead = typeof payload.is_read === "boolean" ? (payload.is_read ? 1 : 0) : Number(existing.is_read || 0);
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     UPDATE email_messages
     SET
       folder = ?,
@@ -4320,7 +4426,7 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
         ELSE deleted_at
       END,
       updated_at = datetime('now')
-    WHERE id = ?
+    WHERE id = ? ${scope.sql} RETURNING id
   `).bind(
     folder,
     status,
@@ -4332,7 +4438,9 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
     folder,
     folder,
     id,
-  ).run();
+    ...scope.bindings,
+  ).all();
+  if (!result.results.length) throw new UserInputError("Письмо не найдено.", 404);
 
   if (requestedFolder && isEmailSenderRouteFolder(requestedFolder) && existing.from_address) {
     await upsertEmailSenderFolderRule(env, existing.from_address, existing.mailbox_email || existing.to_address, requestedFolder);
@@ -4342,10 +4450,12 @@ async function updateEmailMessage(request: Request, env: Env, id: number) {
 }
 
 async function moveEmailMessageToTrash(env: Env, id: number) {
+  if (!env.REQUEST_USER) throw new UserInputError("Нужно войти в программу.", 401);
+  const scope = emailMailboxScope(env.REQUEST_USER);
   const existing = await getEmailMessage(env, id);
   if (!existing) return null;
 
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     UPDATE email_messages
     SET
       folder = 'trash',
@@ -4354,8 +4464,9 @@ async function moveEmailMessageToTrash(env: Env, id: number) {
       read_at = COALESCE(read_at, datetime('now')),
       deleted_at = COALESCE(deleted_at, datetime('now')),
       updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(id).run();
+    WHERE id = ? ${scope.sql} RETURNING id
+  `).bind(id, ...scope.bindings).all();
+  if (!result.results.length) throw new UserInputError("Письмо не найдено.", 404);
 
   return getEmailMessage(env, id);
 }
@@ -4637,11 +4748,12 @@ async function storeEmailMessage(env: Env, item: EmailMessageInput): Promise<{ i
   };
 }
 
-async function processEmailMessage(env: Env, emailId: number) {
+async function processEmailMessage(env: Env, emailId: number, user: CurrentUser) {
   const emailItem = await getEmailMessage(env, emailId);
   if (!emailItem) return null;
 
   if (emailItem.processed_request_id) {
+    await requireRequestAccess(env, Number(emailItem.processed_request_id));
     const existing = await getRequest(env, Number(emailItem.processed_request_id));
     if (existing) return existing;
   }
@@ -4667,7 +4779,7 @@ async function processEmailMessage(env: Env, emailId: number) {
     original_text: originalText,
     uploaded_file_name: emailItem.attachment_names || null,
     ai_result: aiResult,
-  }) as Record<string, any> | null;
+  }, undefined, user) as Record<string, any> | null;
 
   if (!item?.id) throw new Error("Не удалось создать заявку из письма.");
 
@@ -4882,9 +4994,12 @@ function htmlToText(value: string): string {
 }
 
 async function getRequest(env: Env, id: number) {
+  const scope = requestScope(env.REQUEST_USER);
   return env.DB.prepare(`
     SELECT
       r.*,
+      assigned.display_name AS assigned_user_name,
+      assigned.username AS assigned_user_username,
       c.onec_partner_ref,
       c.onec_partner_code,
       c.onec_partner_name,
@@ -4903,6 +5018,7 @@ async function getRequest(env: Env, id: number) {
       COALESCE(task_counts.total_task_count, 0) AS total_task_count,
       COALESCE(product_counts.onec_product_count, 0) AS onec_product_count
     FROM requests r
+    LEFT JOIN app_users assigned ON assigned.id = r.assigned_user_id
     LEFT JOIN crm_clients c ON c.id = r.client_id
     LEFT JOIN (
       SELECT
@@ -4918,11 +5034,12 @@ async function getRequest(env: Env, id: number) {
       FROM request_onec_products
       GROUP BY request_id
     ) product_counts ON product_counts.request_id = r.id
-    WHERE r.id = ?
-  `).bind(id).first();
+    WHERE r.id = ? AND ${scope.sql}
+  `).bind(id, ...scope.bindings).first();
 }
 
-async function insertRequest(env: Env, item: Record<string, any>, submission?: DraftSubmissionClaim) {
+async function insertRequest(env: Env, item: Record<string, any>, submission?: DraftSubmissionClaim, actor?: RequestActor) {
+  if (!actor || !Number.isSafeInteger(actor.id)) throw new UserInputError("Нужно войти в программу.", 401);
   const crm = await ensureCrmLink(env, item);
   const status = normalizeStatus(item.status);
   const priority = normalizePriority(item.priority);
@@ -4935,8 +5052,8 @@ async function insertRequest(env: Env, item: Record<string, any>, submission?: D
       communication_channel, original_text, uploaded_file_name, ai_result,
       status, priority, client_type, requires_contract_appendix,
       next_action, client_id, contact_id, michael_manager_id,
-      invoice_status, contract_appendix_status, updated_at
-    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
+      invoice_status, contract_appendix_status, assigned_user_id, updated_at
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
       ${submission ? `WHERE EXISTS (SELECT 1 FROM request_draft_submissions WHERE user_id=? AND idempotency_key=? AND payload_hash=? AND claim_token=? AND request_id IS NULL)` : ""}
   `)
     .bind(
@@ -4958,6 +5075,7 @@ async function insertRequest(env: Env, item: Record<string, any>, submission?: D
       crm.michaelManagerId,
       "not_required",
       appendixStatus,
+      actor.id,
       ...(submission ? [submission.userId, submission.key, submission.hash, submission.claimToken] : []),
     );
   if (submission) {
@@ -4997,6 +5115,7 @@ async function insertRequest(env: Env, item: Record<string, any>, submission?: D
     requires_contract_appendix: crm.requiresContractAppendix,
     invoice_status: "not_required",
     contract_appendix_status: appendixStatus,
+    assigned_user_id: actor.id,
   });
   await createDefaultTasks(env, requestId, item, crm.requiresContractAppendix);
   return getRequest(env, requestId);
@@ -5012,16 +5131,13 @@ async function updateRequestStatus(request: Request, env: Env, id: number) {
     next_action?: string;
     actor?: string;
   };
+  rejectRequestOwnershipFields(payload);
   const status = normalizeStatus(payload.status || existing.status || "new");
   const priority = normalizePriority(payload.priority || existing.priority || "normal");
   const nextAction = normalizeOptionalText(payload.next_action);
   const actor = normalizeOptionalText(payload.actor) || existing.michael_manager || "system";
 
-  await env.DB.prepare(`
-    UPDATE requests
-    SET status = ?, priority = ?, next_action = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(status, priority, nextAction, id).run();
+  await updateScopedRequest(env, id, "status=?,priority=?,next_action=?,updated_at=datetime('now')", [status, priority, nextAction]);
 
   await createRequestEvent(env, id, "request.status_updated", actor, {
     previous_status: existing.status || "new",
@@ -5063,11 +5179,7 @@ async function reanalyzeRequestWithOneC(env: Env, id: number, user: CurrentUser)
 
   const aiResult = await analyzeText(env, analysisText);
 
-  await env.DB.prepare(`
-    UPDATE requests
-    SET ai_result = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(aiResult, id).run();
+  await updateScopedRequest(env, id, "ai_result=?,updated_at=datetime('now')", [aiResult]);
 
   await createRequestEvent(env, id, "request.reanalyzed_with_1c", user.display_name || user.username, {
     products_count: productContext.count,
@@ -5081,17 +5193,21 @@ async function deleteRequest(env: Env, id: number) {
   const existing = await getRequest(env, id) as Record<string, any> | null;
   if (!existing) return null;
 
-  await env.DB.batch([
+  const scope = requestScope(env.REQUEST_USER, "owned");
+  const authorized = `EXISTS(SELECT 1 FROM requests owned WHERE owned.id=? AND ${scope.sql})`;
+  const values = [id, ...scope.bindings];
+  const result = await env.DB.batch([
     env.DB.prepare(`
       UPDATE email_messages
       SET processed_request_id = NULL
-      WHERE processed_request_id = ?
-    `).bind(id),
-    env.DB.prepare("DELETE FROM request_tasks WHERE request_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM request_events WHERE request_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM request_onec_products WHERE request_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(id),
+      WHERE processed_request_id = ? AND ${authorized}
+    `).bind(id, ...values),
+    env.DB.prepare(`DELETE FROM request_tasks WHERE request_id=? AND ${authorized}`).bind(id, ...values),
+    env.DB.prepare(`DELETE FROM request_events WHERE request_id=? AND ${authorized}`).bind(id, ...values),
+    env.DB.prepare(`DELETE FROM request_onec_products WHERE request_id=? AND ${authorized}`).bind(id, ...values),
+    env.DB.prepare(`DELETE FROM requests WHERE id=? AND ${authorized} RETURNING id`).bind(id, ...values),
   ]);
+  if (!result[4].results.length) throw new RequestAccessError();
 
   return { ok: true, request_id: id };
 }
@@ -5109,6 +5225,7 @@ async function updateDealDocuments(request: Request, env: Env, id: number) {
     customer_sent_at?: string;
     actor?: string;
   };
+  rejectRequestOwnershipFields(payload);
 
   const invoiceNumber = normalizeOptionalText(payload.invoice_number);
   const invoiceDate = normalizeIsoDate(payload.invoice_date);
@@ -5122,25 +5239,20 @@ async function updateDealDocuments(request: Request, env: Env, id: number) {
   const customerSentAt = normalizeOptionalText(payload.customer_sent_at);
   const actor = normalizeOptionalText(payload.actor) || existing.michael_manager || "system";
 
-  await env.DB.prepare(`
-    UPDATE requests
-    SET invoice_number = ?,
+  await updateScopedRequest(env, id, `invoice_number = ?,
         invoice_date = ?,
         invoice_status = ?,
         contract_appendix_status = ?,
         contract_appendix_note = ?,
         customer_sent_at = ?,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(
+        updated_at = datetime('now')`, [
     invoiceNumber || null,
     invoiceDate || null,
     invoiceStatus,
     appendixStatus,
     appendixNote || null,
     customerSentAt || null,
-    id,
-  ).run();
+  ]);
 
   await createRequestEvent(env, id, "request.deal_documents_updated", actor, {
     invoice_number: invoiceNumber || null,
@@ -5165,13 +5277,7 @@ async function generateContractAppendix(env: Env, id: number, currentUser: Curre
   const previousNote = normalizeOptionalText(existing.contract_appendix_note);
   const nextNote = previousNote ? `${previousNote}\n${eventNote}` : eventNote;
 
-  await env.DB.prepare(`
-    UPDATE requests
-    SET contract_appendix_status = ?,
-        contract_appendix_note = ?,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).bind("prepared", nextNote, id).run();
+  await updateScopedRequest(env, id, "contract_appendix_status=?,contract_appendix_note=?,updated_at=datetime('now')", ["prepared", nextNote]);
 
   await createRequestEvent(env, id, "request.contract_appendix_generated", actor, {
     file_name: appendix.file_name,
@@ -5898,28 +6004,31 @@ function escapeHtml(value: string): string {
 }
 
 async function listRequestEvents(env: Env, requestId: number) {
+  const guard = requestChildGuard(env, requestId);
   const result = await env.DB.prepare(`
     SELECT * FROM request_events
-    WHERE request_id = ?
+    WHERE request_id = ? AND ${guard.sql}
     ORDER BY created_at DESC, id DESC
     LIMIT 100
-  `).bind(requestId).all();
+  `).bind(requestId, ...guard.bindings).all();
   return result.results;
 }
 
 async function listRequestTasks(env: Env, requestId: number) {
+  const guard = requestChildGuard(env, requestId);
   const result = await env.DB.prepare(`
     SELECT * FROM request_tasks
-    WHERE request_id = ?
+    WHERE request_id = ? AND ${guard.sql}
     ORDER BY
       CASE status WHEN 'open' THEN 0 WHEN 'done' THEN 1 ELSE 2 END,
       COALESCE(due_date, '9999-12-31') ASC,
       id ASC
-  `).bind(requestId).all();
+  `).bind(requestId, ...guard.bindings).all();
   return result.results;
 }
 
 async function listOpenTasks(env: Env) {
+  const scope = requestScope(env.REQUEST_USER);
   const result = await env.DB.prepare(`
     SELECT
       t.*,
@@ -5935,23 +6044,26 @@ async function listOpenTasks(env: Env) {
     INNER JOIN requests r ON r.id = t.request_id
     WHERE t.status = 'open'
       AND r.status NOT IN ('done', 'closed', 'lost')
+      AND ${scope.sql}
     ORDER BY
       CASE r.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
       COALESCE(t.due_date, '9999-12-31') ASC,
       t.created_at ASC
     LIMIT 50
-  `).all();
+  `).bind(...scope.bindings).all();
   return result.results;
 }
 
 async function getRequestTask(env: Env, requestId: number, taskId: number) {
+  const guard = requestChildGuard(env, requestId);
   return env.DB.prepare(`
     SELECT * FROM request_tasks
-    WHERE request_id = ? AND id = ?
-  `).bind(requestId, taskId).first();
+    WHERE request_id = ? AND id = ? AND ${guard.sql}
+  `).bind(requestId, taskId, ...guard.bindings).first();
 }
 
 async function createRequestTask(request: Request, env: Env, requestId: number) {
+  const guard = requestChildGuard(env, requestId);
   const existingRequest = await getRequest(env, requestId);
   if (!existingRequest) return null;
 
@@ -5962,6 +6074,7 @@ async function createRequestTask(request: Request, env: Env, requestId: number) 
     due_date?: string;
     actor?: string;
   };
+  rejectRequestOwnershipFields(payload);
   const title = normalizeOptionalText(payload.title);
   if (!title) throw new UserInputError("Название задачи пустое.");
 
@@ -5973,10 +6086,11 @@ async function createRequestTask(request: Request, env: Env, requestId: number) 
 
   const result = await env.DB.prepare(`
     INSERT INTO request_tasks (request_id, title, status, owner_name, due_date, completed_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(requestId, title, status, ownerName || null, dueDate || null, completedAt).run();
+    SELECT ?, ?, ?, ?, ?, ? WHERE ${guard.sql} RETURNING id
+  `).bind(requestId, title, status, ownerName || null, dueDate || null, completedAt, ...guard.bindings).all();
 
-  const taskId = Number(result.meta.last_row_id);
+  if (!result.results.length) throw new RequestAccessError();
+  const taskId = Number((result.results[0] as Record<string, unknown>).id);
   await createRequestEvent(env, requestId, "request.task_created", actor, {
     task_id: taskId,
     title,
@@ -5989,6 +6103,7 @@ async function createRequestTask(request: Request, env: Env, requestId: number) 
 }
 
 async function updateRequestTask(request: Request, env: Env, requestId: number, taskId: number) {
+  const guard = requestChildGuard(env, requestId);
   const existing = await getRequestTask(env, requestId, taskId) as Record<string, any> | null;
   if (!existing) return null;
 
@@ -5999,6 +6114,7 @@ async function updateRequestTask(request: Request, env: Env, requestId: number, 
     due_date?: string;
     actor?: string;
   };
+  rejectRequestOwnershipFields(payload);
   const title = normalizeOptionalText(payload.title ?? existing.title);
   if (!title) throw new UserInputError("Название задачи пустое.");
 
@@ -6008,11 +6124,12 @@ async function updateRequestTask(request: Request, env: Env, requestId: number, 
   const completedAt = status === "done" ? (existing.completed_at || new Date().toISOString()) : null;
   const actor = normalizeOptionalText(payload.actor) || "manager";
 
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     UPDATE request_tasks
     SET title = ?, status = ?, owner_name = ?, due_date = ?, completed_at = ?
-    WHERE request_id = ? AND id = ?
-  `).bind(title, status, ownerName || null, dueDate || null, completedAt, requestId, taskId).run();
+    WHERE request_id = ? AND id = ? AND ${guard.sql} RETURNING id
+  `).bind(title, status, ownerName || null, dueDate || null, completedAt, requestId, taskId, ...guard.bindings).all();
+  if (!result.results.length) throw new RequestAccessError();
 
   await createRequestEvent(env, requestId, "request.task_updated", actor, {
     task_id: taskId,
@@ -6028,13 +6145,15 @@ async function updateRequestTask(request: Request, env: Env, requestId: number, 
 }
 
 async function deleteRequestTask(env: Env, requestId: number, taskId: number, currentUser: CurrentUser) {
+  const guard = requestChildGuard(env, requestId);
   const existing = await getRequestTask(env, requestId, taskId) as Record<string, any> | null;
   if (!existing) return null;
 
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     DELETE FROM request_tasks
-    WHERE request_id = ? AND id = ?
-  `).bind(requestId, taskId).run();
+    WHERE request_id = ? AND id = ? AND ${guard.sql} RETURNING id
+  `).bind(requestId, taskId, ...guard.bindings).all();
+  if (!result.results.length) throw new RequestAccessError();
 
   await createRequestEvent(
     env,
@@ -6087,19 +6206,23 @@ async function createDefaultTasks(
 }
 
 async function getCrmSummary(env: Env) {
+  const scope = requestScope(env.REQUEST_USER);
+  const admin = env.REQUEST_USER?.role === "admin";
+  const related = (column: string, alias: string) => admin ? "1=1" : `EXISTS (SELECT 1 FROM requests r WHERE r.${column}=${alias}.id AND ${scope.sql})`;
   const [clients, contacts, managers, openRequests, vipRequests, openTasks, overdueTasks, statusCounts] = await Promise.all([
-    env.DB.prepare("SELECT * FROM crm_clients ORDER BY updated_at DESC LIMIT 100").all(),
-    env.DB.prepare("SELECT * FROM crm_contacts ORDER BY updated_at DESC LIMIT 100").all(),
-    env.DB.prepare("SELECT * FROM michael_managers ORDER BY display_name ASC LIMIT 100").all(),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE status NOT IN ('done', 'closed', 'lost')").first(),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE client_type = 'vip'").first(),
+    env.DB.prepare(`SELECT c.* FROM crm_clients c WHERE ${related("client_id", "c")} ORDER BY c.updated_at DESC LIMIT 100`).bind(...scope.bindings).all(),
+    env.DB.prepare(`SELECT c.* FROM crm_contacts c WHERE ${related("contact_id", "c")} ORDER BY c.updated_at DESC LIMIT 100`).bind(...scope.bindings).all(),
+    env.DB.prepare(`SELECT m.* FROM michael_managers m WHERE ${related("michael_manager_id", "m")} ORDER BY m.display_name ASC LIMIT 100`).bind(...scope.bindings).all(),
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM requests r WHERE r.status NOT IN ('done', 'closed', 'lost') AND ${scope.sql}`).bind(...scope.bindings).first(),
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM requests r WHERE r.client_type = 'vip' AND ${scope.sql}`).bind(...scope.bindings).first(),
     env.DB.prepare(`
       SELECT COUNT(*) AS count
       FROM request_tasks t
       INNER JOIN requests r ON r.id = t.request_id
       WHERE t.status = 'open'
         AND r.status NOT IN ('done', 'closed', 'lost')
-    `).first(),
+        AND ${scope.sql}
+    `).bind(...scope.bindings).first(),
     env.DB.prepare(`
       SELECT COUNT(*) AS count
       FROM request_tasks t
@@ -6108,8 +6231,9 @@ async function getCrmSummary(env: Env) {
         AND t.due_date IS NOT NULL
         AND t.due_date < date('now')
         AND r.status NOT IN ('done', 'closed', 'lost')
-    `).first(),
-    env.DB.prepare("SELECT status, COUNT(*) AS count FROM requests GROUP BY status ORDER BY count DESC").all(),
+        AND ${scope.sql}
+    `).bind(...scope.bindings).first(),
+    env.DB.prepare(`SELECT r.status, COUNT(*) AS count FROM requests r WHERE ${scope.sql} GROUP BY r.status ORDER BY count DESC`).bind(...scope.bindings).all(),
   ]);
 
   return {
@@ -6199,16 +6323,25 @@ async function ensureCrmLink(env: Env, metadata: Metadata): Promise<CrmLink> {
 }
 
 async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientId: number, user: CurrentUser) {
+  const guard = clientGuard(env);
+  if (!await hasClientAccess(env, clientId)) throw new UserInputError("Клиент CRM не найден.", 404);
   const existing = await env.DB.prepare("SELECT * FROM crm_clients WHERE id = ?").bind(clientId).first();
   if (!existing) return null;
 
   const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const requestId = Number(payload.request_id || 0);
+  if (requestId) {
+    await requireRequestAccess(env, requestId);
+    const linked = await getRequest(env, requestId) as Record<string, unknown> | null;
+    if (Number(linked?.client_id) !== clientId) throw new UserInputError("Клиент CRM не найден.", 404);
+  }
   const candidate = normalizeOneCCounterpartyCandidate(payload);
   if (!candidate.counterparty_ref && !candidate.partner_ref && !candidate.counterparty_code && !candidate.partner_code && !candidate.name && !candidate.bin) {
     throw new UserInputError("Выберите найденного партнера/контрагента 1С или передайте имя, БИН или код 1С.");
   }
 
-  await env.DB.prepare(`
+  const requestGuard = requestId ? requestChildGuard(env, requestId) : { sql: "1=1", bindings: [] };
+  const result = await env.DB.prepare(`
     UPDATE crm_clients
     SET
       onec_partner_ref = ?,
@@ -6227,7 +6360,7 @@ async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientI
       onec_counterparty_payload_json = ?,
       onec_counterparty_linked_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE onec_counterparty_linked_at END,
       updated_at = datetime('now')
-    WHERE id = ?
+    WHERE id = ? AND ${guard.sql} AND ${requestGuard.sql} RETURNING id
   `).bind(
     candidate.partner_ref || candidate.partner_name || null,
     candidate.partner_code || null,
@@ -6245,9 +6378,11 @@ async function linkCrmClientOneCCounterparty(request: Request, env: Env, clientI
     JSON.stringify(candidate.raw || payload),
     candidate.counterparty_ref || null,
     clientId,
-  ).run();
+    ...guard.bindings,
+    ...requestGuard.bindings,
+  ).all();
+  if (!result.results.length) throw new UserInputError("Клиент CRM не найден.", 404);
 
-  const requestId = Number(payload.request_id || 0);
   if (requestId > 0) {
     const requestItem = await getRequest(env, requestId) as Record<string, unknown> | null;
     if (requestItem && Number(requestItem.client_id || 0) === clientId) {
@@ -6275,10 +6410,12 @@ async function createRequestEvent(
   actor: string,
   payload: Record<string, unknown>,
 ) {
-  await env.DB.prepare(`
+  const guard = requestChildGuard(env, requestId);
+  const result = await env.DB.prepare(`
     INSERT INTO request_events (request_id, event_type, actor, payload_json)
-    VALUES (?, ?, ?, ?)
-  `).bind(requestId, eventType, actor, JSON.stringify(payload)).run();
+    SELECT ?, ?, ?, ? WHERE ${guard.sql} RETURNING id
+  `).bind(requestId, eventType, actor, JSON.stringify(payload), ...guard.bindings).all();
+  if (!result.results.length) throw new RequestAccessError();
 }
 
 function buildContextPrefix(metadata: Metadata): string {
@@ -7153,15 +7290,17 @@ function canManageTasks(user: CurrentUser): boolean {
   return ["admin", "manager", "accountant"].includes(user.role);
 }
 
-function emailMailboxScope(user: CurrentUser): { sql: string; bindings: string[] } {
+function emailMailboxScope(user: CurrentUser): { sql: string; bindings: (string | number)[] } {
   if (isAdmin(user)) return { sql: "", bindings: [] };
 
   const emailAddress = normalizeCompanyMailboxAddress(user.email_address);
   if (!emailAddress) return { sql: "AND 1 = 0", bindings: [] };
 
   return {
-    sql: "AND (lower(trim(mailbox_email)) = ? OR lower(trim(to_address)) = ?)",
-    bindings: [emailAddress, emailAddress],
+    sql: `AND (lower(trim(mailbox_email)) = ? OR lower(trim(to_address)) = ?)
+      AND (email_messages.processed_request_id IS NULL OR EXISTS (
+        SELECT 1 FROM requests owned WHERE owned.id=email_messages.processed_request_id AND owned.assigned_user_id=?))`,
+    bindings: [emailAddress, emailAddress, user.id],
   };
 }
 
@@ -7184,10 +7323,6 @@ function userToCurrentUser(row: Record<string, any>): CurrentUser {
     email_address: normalizeOptionalText(row.email_address),
     auth_version: Number(row.auth_version),
   };
-}
-
-function normalizeUsername(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
 }
 
 async function loginAttemptKey(request: Request, username: string): Promise<string> {

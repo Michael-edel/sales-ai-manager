@@ -3,6 +3,7 @@ import {
   validateCatalogOffer, validateQuoteDraft,
   type CatalogOffer, type QuoteDraft,
 } from "./catalog-selection";
+import { hasRequestAccess, requestScope } from "./request-access";
 
 type CatalogUser = { id: number; username: string; role: string };
 type CatalogEnv = { DB: D1Database };
@@ -277,8 +278,7 @@ async function evaluate(env: CatalogEnv, value: Record<string, unknown>) {
   }
   return { draft, evaluation: input(() => evaluateQuote(draft, offers, { now: new Date(), environment: active.environment })), catalogSnapshotId: active.id };
 }
-async function candidates(request: Request, env: CatalogEnv) {
-  const value = await body(request);
+async function findCandidates(env: CatalogEnv, value: Record<string, unknown>) {
   const active = await activeSnapshot(env);
   if (!active) throw new CatalogInputError("Сначала импортируйте каталог.", 409);
   if (value.catalogSnapshotId != null && value.catalogSnapshotId !== active.id)
@@ -338,8 +338,11 @@ async function candidates(request: Request, env: CatalogEnv) {
   const ranked = input(() => rankOffers(line, offers, context));
   return { candidates: ranked.slice(0, 30), catalogSnapshotId: active.id, searchTruncated: searchTruncated || ranked.length > 30 };
 }
-async function readQuote(env: CatalogEnv, requestId: number) {
-  const saved = await env.DB.prepare("SELECT * FROM request_quotations WHERE request_id=?").bind(requestId).first<SavedQuote>();
+async function readQuote(env: CatalogEnv, requestId: number, user: CatalogUser) {
+  const scope = requestScope(user);
+  const saved = await env.DB.prepare("SELECT q.* FROM request_quotations q WHERE q.request_id=? AND EXISTS(SELECT 1 FROM requests r WHERE r.id=q.request_id AND " + scope.sql + ")")
+    .bind(requestId, ...scope.bindings).first<SavedQuote>();
+  if (!saved && !await hasRequestAccess(env, user, requestId)) throw new CatalogInputError("Заявка не найдена.", 404);
   const active = await activeSnapshot(env);
   const evaluation = saved ? JSON.parse(saved.evaluation_json) : null;
   const evaluationOutdated = Boolean(saved && (Date.now() - Date.parse(saved.updated_at) > 15 * 60 * 1000
@@ -357,6 +360,7 @@ async function readQuote(env: CatalogEnv, requestId: number) {
   };
 }
 async function saveQuote(request: Request, env: CatalogEnv, requestId: number, user: CatalogUser) {
+  const scope = requestScope(user);
   const value = await body(request);
   const revision = integer(value.expectedRevision, 0, Number.MAX_SAFE_INTEGER - 1, "версия подбора");
   const calculated = await evaluate(env, value);
@@ -365,12 +369,13 @@ async function saveQuote(request: Request, env: CatalogEnv, requestId: number, u
   if (new TextEncoder().encode(draftJson + evaluationJson).length > 1800000)
     throw new CatalogInputError("Подбор слишком велик для одной заявки. Разделите его на несколько заявок.", 413);
   const result = await env.DB.batch([
-    env.DB.prepare("INSERT INTO request_quotations (request_id,revision,catalog_snapshot_id,draft_json,evaluation_json,write_token,updated_by,updated_at) SELECT ?,1,?,?,?,?,?,? WHERE (?=0 OR EXISTS(SELECT 1 FROM request_quotations WHERE request_id=?)) AND EXISTS(SELECT 1 FROM catalog_state WHERE id=1 AND active_snapshot_id=?) ON CONFLICT(request_id) DO UPDATE SET revision=request_quotations.revision+1,catalog_snapshot_id=excluded.catalog_snapshot_id,draft_json=excluded.draft_json,evaluation_json=excluded.evaluation_json,write_token=excluded.write_token,updated_by=excluded.updated_by,updated_at=excluded.updated_at WHERE request_quotations.revision=? RETURNING revision")
-      .bind(requestId, calculated.catalogSnapshotId, draftJson, evaluationJson, token, user.id, now, revision, requestId, calculated.catalogSnapshotId, revision),
+    env.DB.prepare("INSERT INTO request_quotations (request_id,revision,catalog_snapshot_id,draft_json,evaluation_json,write_token,updated_by,updated_at) SELECT ?,1,?,?,?,?,?,? WHERE (?=0 OR EXISTS(SELECT 1 FROM request_quotations WHERE request_id=?)) AND EXISTS(SELECT 1 FROM catalog_state WHERE id=1 AND active_snapshot_id=?) AND EXISTS(SELECT 1 FROM requests r WHERE r.id=? AND " + scope.sql + ") ON CONFLICT(request_id) DO UPDATE SET revision=request_quotations.revision+1,catalog_snapshot_id=excluded.catalog_snapshot_id,draft_json=excluded.draft_json,evaluation_json=excluded.evaluation_json,write_token=excluded.write_token,updated_by=excluded.updated_by,updated_at=excluded.updated_at WHERE request_quotations.revision=? AND EXISTS(SELECT 1 FROM requests r WHERE r.id=? AND " + scope.sql + ") RETURNING revision")
+      .bind(requestId, calculated.catalogSnapshotId, draftJson, evaluationJson, token, user.id, now, revision, requestId, calculated.catalogSnapshotId, requestId, ...scope.bindings, revision, requestId, ...scope.bindings),
     env.DB.prepare("INSERT INTO request_events (request_id,event_type,actor,payload_json) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM request_quotations WHERE request_id=? AND write_token=?)")
       .bind(requestId, "quotation_saved", user.username, JSON.stringify({ revision: revision + 1, catalogSnapshotId: calculated.catalogSnapshotId, lineCount: calculated.draft.lines.length }), requestId, token),
   ]);
   if (!result[0].results.length) {
+    if (!await hasRequestAccess(env, user, requestId)) throw new CatalogInputError("Заявка не найдена.", 404);
     await requireActive(env, calculated.catalogSnapshotId);
     throw new CatalogInputError("Подбор уже изменён другим сотрудником. Загрузите сохранённую версию.", 409);
   }
@@ -380,14 +385,21 @@ async function saveQuote(request: Request, env: CatalogEnv, requestId: number, u
 /** Called only after the existing session authentication. Does not call AI or write to 1C. */
 export async function handleCatalogRoutes(request: Request, env: CatalogEnv, user: CatalogUser): Promise<Response | null> {
   const url = new URL(request.url), path = url.pathname;
-  if (!(path === "/api/catalog/status" || path.startsWith("/api/catalog/imports")
+  if (!(path === "/api/catalog/status" || path === "/api/catalog/search" || path.startsWith("/api/catalog/imports")
     || /^\/api\/requests\/\d+\/quotation(?:\/|$)/.test(path))) return null;
   try {
-    if (!["admin", "manager"].includes(user.role)) throw new CatalogInputError("Подбор и закупочные цены доступны администратору и менеджеру.", 403);
+    if (!["admin", "manager", "accountant", "viewer"].includes(user.role)) throw new CatalogInputError("Недостаточно прав.", 403);
     if (request.method !== "GET" && request.headers.get("Origin") !== url.origin)
       throw new CatalogInputError("Откройте программу на её основном адресе.", 403);
     if (path === "/api/catalog/status" && request.method === "GET")
       return json({ activeSnapshot: publicSnapshot(await activeSnapshot(env)) });
+    if (path === "/api/catalog/search" && request.method === "GET") {
+      const query = (url.searchParams.get("q") || "").trim();
+      const article = (url.searchParams.get("article") || "").trim();
+      const brand = (url.searchParams.get("brand") || "").trim();
+      if ([query, article, brand].some(value => value.length > 300)) throw new CatalogInputError("Поисковая строка слишком длинная.");
+      return json(await findCandidates(env, { line: { id: "catalog-search", query: query || article, article, brand, quantity: 1, unit: null, allocations: [] } }));
+    }
     if (path.startsWith("/api/catalog/imports")) {
       if (user.role !== "admin") throw new CatalogInputError("Импорт каталога доступен администратору.", 403);
       if (path === "/api/catalog/imports" && request.method === "POST") return json(await createImport(request, env, user), 201);
@@ -402,14 +414,17 @@ export async function handleCatalogRoutes(request: Request, env: CatalogEnv, use
     const match = path.match(/^\/api\/requests\/(\d+)\/quotation(?:\/(prepare|candidates|evaluate))?$/);
     if (!match) throw new CatalogInputError("Метод подбора не найден.", 404);
     const requestId = Number(match[1]);
-    const existing = await env.DB.prepare("SELECT id,original_text,source_type FROM requests WHERE id=?").bind(requestId).first<{ id: number; original_text: string; source_type: string }>();
+    if (!await hasRequestAccess(env, user, requestId)) throw new CatalogInputError("Заявка не найдена.", 404);
+    const scope = requestScope(user);
+    const existing = await env.DB.prepare("SELECT r.id,r.original_text,r.source_type FROM requests r WHERE r.id=? AND " + scope.sql).bind(requestId, ...scope.bindings).first<{ id: number; original_text: string; source_type: string }>();
     if (!existing) throw new CatalogInputError("Заявка не найдена.", 404);
     const action = match[2];
-    if (!action && request.method === "GET") return json(await readQuote(env, requestId));
+    if (!action && request.method === "GET") return json(await readQuote(env, requestId, user));
+    if (!["admin", "manager"].includes(user.role)) throw new CatalogInputError("Изменять подбор может администратор или менеджер.", 403);
     if (!action && request.method === "PUT") return json(await saveQuote(request, env, requestId, user));
     if (action === "prepare" && request.method === "POST")
       return json({ draft: { lines: input(() => parseRequestLines(existing.original_text, { legacyContext: existing.source_type === "text" })), notes: "" }, catalogSnapshotId: (await activeSnapshot(env))?.id || null });
-    if (action === "candidates" && request.method === "POST") return json(await candidates(request, env));
+    if (action === "candidates" && request.method === "POST") return json(await findCandidates(env, await body(request)));
     if (action === "evaluate" && request.method === "POST") return json(await evaluate(env, await body(request)));
     throw new CatalogInputError("Недопустимый метод.", 405);
   } catch (error) {

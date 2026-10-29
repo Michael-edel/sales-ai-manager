@@ -20,6 +20,7 @@ jobs:
           package-manager-cache: false
       - run: node --test catalog-bridge/export.test.mjs
       - run: node --test frontend/src/lib/user-accounts.test.mjs
+      - run: node --test frontend/src/lib/request-access.test.mjs frontend/src/lib/email-registration.test.mjs frontend/src/lib/session-requests.test.mjs
       - run: npm ci
         working-directory: worker
       - run: npm run typecheck

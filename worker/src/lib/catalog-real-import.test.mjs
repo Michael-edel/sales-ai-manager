@@ -57,7 +57,7 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(snapshot.exportedAt));
     sqlite = new DatabaseSync(":memory:");
-    sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text'); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT);");
+    sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT);");
     sqlite.prepare("INSERT INTO requests(id,original_text) VALUES(1,?)").run(requestText);
     for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql"])
       sqlite.exec(readFileSync(new URL("../../migrations/" + migration, import.meta.url), "utf8"));

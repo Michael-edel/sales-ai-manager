@@ -76,6 +76,29 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); sqlite.close(); });
 
 describe("manager accounts with a real private KDF and transactional SQLite", () => {
+  it("bootstraps the configured administrator before first public staff registration on a fresh database", async () => {
+    sqlite.exec("DELETE FROM app_users");
+    env.ACCESS_USERNAME = "bootstrap-admin"; env.ACCESS_PASSWORD = newPassword;
+    env.EMAIL_BRIDGE_URL = "https://fixture-bridge.test"; env.EMAIL_BRIDGE_TOKEN = "fixture-bridge-token";
+    env.REGISTRATION_FROM_EMAIL = "admin@edel.kz";
+    let verificationToken;
+    fetch.mockImplementation(async (_url, init) => {
+      const message = JSON.parse(init.body);
+      const link = message.body.match(/https:\/\/ai\.michael\.kz\/\?registration_token=[A-Za-z0-9_-]+/)[0];
+      verificationToken = new URL(link).searchParams.get("registration_token");
+      return new Response(JSON.stringify({ sent: true }));
+    });
+    const response = await call("/auth/registration", "POST", { email: "first@edel.kz", display_name: "First manager" }, null);
+    expect(response.status).toBe(202);
+    const users = sqlite.prepare("SELECT username,role,password_scheme FROM app_users").all();
+    expect(users).toEqual([{ username: "bootstrap-admin", role: "admin", password_scheme: "scrypt-v1" }]);
+    expect((await call("/auth/registration/verify", "POST", { token: verificationToken, password: newPassword }, null)).status).toBe(201);
+    expect(sqlite.prepare("SELECT username,role FROM app_users ORDER BY id").all()).toEqual([
+      { username: "bootstrap-admin", role: "admin" }, { username: "first@edel.kz", role: "manager" },
+    ]);
+    expect((await login("bootstrap-admin", newPassword)).status).toBe(200);
+    expect((await login("first@edel.kz", newPassword)).status).toBe(200);
+  });
   it("creates an independent manager, preserves the exact Unicode password, and refuses their admin operations", async () => {
     const password = "  пароль сотрудника 🔐  ";
     const created = await call("/users", "POST", { username: "  New.Manager  ", display_name: "Ирина", password });
@@ -200,7 +223,7 @@ describe("manager accounts with a real private KDF and transactional SQLite", ()
       { username: "new", role: "superuser" }, { username: "new", display_name: "a".repeat(201) },
       { username: "new", email_address: "person@outside.test" }, { username: "new", email_address: "a".repeat(255) },
       { username: "new", email_address: "Staff <staff@edel.kz>" },
-      { username: "new", password: "a".repeat(11) }, { username: "new", password: "a".repeat(257) },
+      { username: "new", password: "a".repeat(7) }, { username: "new", password: "a".repeat(257) },
       { username: "new", auth_version: 1 },
     ];
     for (const fields of invalid) expect((await call("/users", "POST", { password: newPassword, ...fields })).status).toBe(400);
@@ -208,10 +231,18 @@ describe("manager accounts with a real private KDF and transactional SQLite", ()
     expect(kdfCalls).toBe(0);
   });
 
-  it.each([12, 256])("accepts the exact %i-character boundary for a new password and can authenticate it", async length => {
-    const password = "я".repeat(length), username = length === 12 ? "x" : "x".repeat(64);
+  it.each([8, 256])("accepts the exact %i-character boundary for a new password and can authenticate it", async length => {
+    const password = "я".repeat(length), username = length === 8 ? "x" : "x".repeat(64);
     expect((await call("/users", "POST", { username, password })).status).toBe(200);
     expect((await login(username, password)).status).toBe(200);
+  });
+
+  it("creates and resets passwords with Cyrillic and ! at exactly eight characters", async () => {
+    const password = "Ёжик!123";
+    expect((await call("/users", "POST", { username:"cyrillic-password", password })).status).toBe(200);
+    expect((await login("cyrillic-password", password)).status).toBe(200);
+    expect((await call("/users/2/password", "PATCH", { password })).status).toBe(200);
+    expect((await login("staff", password)).status).toBe(200);
   });
 
   it("returns a safe conflict if another admin creates the same normalized login during hashing", async () => {

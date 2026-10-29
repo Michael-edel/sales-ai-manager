@@ -9,7 +9,7 @@ const fixturePassword = "fixture-only-wrong-password";
 let sqlite, env, kdfCalls, userLookups, intercept;
 function statement(sql, bindings = []) {
   const execute = () => {
-    if (/SELECT \* FROM app_users WHERE username/.test(sql)) userLookups++;
+    if (/SELECT \* FROM app_users WHERE/.test(sql)) userLookups++;
     const prepared = sqlite.prepare(sql);
     if (prepared.columns().length) return { results: prepared.all(...bindings), success: true, meta: {} };
     const result = prepared.run(...bindings);

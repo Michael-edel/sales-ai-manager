@@ -1,4 +1,4 @@
-export const NEW_PASSWORD_MIN = 12;
+export const NEW_PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 256;
 
 export const ROLE_DESCRIPTIONS = {

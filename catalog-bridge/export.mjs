@@ -57,7 +57,7 @@ function article(product) {
   const sku = text(product.sku, 5000);
   // Earlier XLS imports used the complete name as a synthetic SKU. It is not an article.
   if (product.sourceId === CT1 && (sku === text(product.name) || sku === text(product.externalId))) return '';
-  if (['supplier:azerti', 'supplier:elco'].includes(product.sourceId) && sku === String(product.externalId || '')) return '';
+  if (['supplier:azerti', 'supplier:elco', 'supplier:vint', 'supplier:comportal'].includes(product.sourceId) && sku === String(product.externalId || '')) return '';
   return text(sku, 512);
 }
 function observation(product, supplier) {

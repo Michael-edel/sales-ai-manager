@@ -42,6 +42,14 @@ test('only explicit product AND unit confirmation groups offers; lookalike artic
   assert.throws(()=>run([a,d,b],{matching:{links:[a,d].map(p=>({ownId:p.id,offerId:b.id,confirmed:true,unitConfirmed:true}))}}),/противоречивые/);
 });
 
+test('Apicore internal product IDs are not invented supplier articles for any connected distributor', () => {
+  for (const sourceId of ['supplier:azerti','supplier:elco','supplier:vint','supplier:comportal']) {
+    const product = supplier({ sourceId, externalId:'18429', sku:'18429' });
+    assert.equal(run([product]).offers[0].article, '');
+    assert.equal(run([{...product, sku:'REAL-ARTICLE'}]).offers[0].article, 'REAL-ARTICLE');
+  }
+});
+
 test('test 1C stays test, physical quantity is separate, code never replaces article, taxes are not guessed', () => {
   const a=warehouse(),result=buildAiCatalogSnapshot({products:[a],suppliers:[]},{exportedAt:stamp,environment:'live'}),offer=result.offers[0];
   assert.equal(result.environment,'test');

@@ -3,17 +3,24 @@ import assert from "node:assert/strict";
 import { accountCreatePayload, emptyAccountDraft, validateAccountDraft, validateNewPassword } from "./user-accounts.mjs";
 
 describe("employee credential form contract", () => {
-  it("enforces the same 12..256-character boundary for create and reset", () => {
+  it("enforces the same 8..256-character boundary for create and reset", () => {
     for (const mode of ["create", "reset"]) {
-      for (const size of [0, 8, 11, 257]) {
+      for (const size of [0, 7, 257]) {
         const value = "x".repeat(size);
         assert.notEqual(validateAccountDraft({ ...emptyAccountDraft(), username: "manager1", password: value, confirmation: value }, mode), "");
       }
-      for (const size of [12, 256]) {
+      for (const size of [8, 256]) {
         const value = "x".repeat(size);
         assert.equal(validateAccountDraft({ ...emptyAccountDraft(), username: "manager1", password: value, confirmation: value }, mode), "");
       }
     }
+  });
+
+  it("accepts Cyrillic, digits and exclamation marks at the eight-character boundary", () => {
+    const password = "Ёжик!123";
+    assert.equal(password.length, 8);
+    for (const mode of ["create", "reset"])
+      assert.equal(validateAccountDraft({ ...emptyAccountDraft(), username:"manager1", password, confirmation:password }, mode), "");
   });
 
   it("does not normalize or trim passwords and catches a visually small confirmation difference", () => {

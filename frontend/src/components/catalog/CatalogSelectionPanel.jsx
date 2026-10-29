@@ -24,7 +24,7 @@ function NumberField({ label, value, onChange, min = 0, max, step = "any", place
   return <label><span>{label}</span><input type="number" inputMode="decimal" min={min} max={max} step={step} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(numericValue(event.target.value))} disabled={disabled} /></label>;
 }
 
-function CandidateCard({ candidate, added, onAdd, disabled }) {
+export function CandidateCard({ candidate, added, onAdd, disabled }) {
   const { offer } = candidate;
   const own = offer.sourceType === "warehouse";
   return <article className={`catalog-candidate ${own ? "catalog-candidate-own" : ""}`}>
@@ -41,7 +41,7 @@ function CandidateCard({ candidate, added, onAdd, disabled }) {
     </dl>
     {offer.delivery?.notes ? <p className="catalog-subtle">{offer.delivery.notes}</p> : null}
     <Warnings items={candidate.warnings} />
-    <button type="button" className="secondary-button" disabled={disabled || added} onClick={() => onAdd(offer)}>{added ? <Check size={16} /> : <Plus size={16} />}{added ? "Добавлено в подбор" : "Добавить в подбор"}</button>
+    {onAdd ? <button type="button" className="secondary-button" disabled={disabled || added} onClick={() => onAdd(offer)}>{added ? <Check size={16} /> : <Plus size={16} />}{added ? "Добавлено в подбор" : "Добавить в подбор"}</button> : null}
   </article>;
 }
 

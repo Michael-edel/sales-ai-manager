@@ -55,6 +55,13 @@ async function call(path, method, data, cookie) {
 const login = (username = "manager", password = fixturePassword) => call("/auth/login", "POST", { username, password });
 
 describe("login under the actual Workers PBKDF2 ceiling", () => {
+  it("accepts the verified corporate email as login without rewriting the legacy username", async () => {
+    sqlite.prepare("UPDATE app_users SET email_address='staff@edel.kz' WHERE id=1").run();
+    expect((await login(" STAFF@EDEL.KZ ")).status).toBe(200);
+    expect(sqlite.prepare("SELECT username FROM app_users WHERE id=1").get().username).toBe("manager");
+    expect((await login("manager!")).status).toBe(401);
+    expect((await login("staff@outside.test")).status).toBe(401);
+  });
   it("verifies a legacy password and opens a normal authenticated session without rewriting its hash", async () => {
     const before = savedPassword();
     const response = await login();

@@ -17,8 +17,11 @@ import {
   getOneCMcpHealth,
   getOneCStockAndPrices,
   getRequestOneCProductStockPrices,
+  getRequest,
   getParserHealth,
   getWhatsAppHealth,
+  invalidateApiSession,
+  isStaleSessionResponse,
   listAiRules,
   listEmailMessages,
   listRequestOneCProducts,
@@ -26,6 +29,7 @@ import {
   listRequestEvents,
   listRequestTasks,
   listRequests,
+  onRequestAccessLost,
   listWhatsAppTemplates,
   linkRequestOneCProduct,
   linkCrmClientOneCCounterparty,
@@ -53,9 +57,20 @@ import {
 import EmailFolderNavigation from "./components/email/EmailFolderNavigation";
 import EmailMessageList from "./components/email/EmailMessageList";
 import CatalogSelectionPanel from "./components/catalog/CatalogSelectionPanel";
+import SharedCatalogPanel from "./components/catalog/SharedCatalogPanel";
 import UserManagementPanel from "./components/users/UserManagementPanel";
+import RequestAssigneePanel from "./components/users/RequestAssigneePanel";
+import EmailRegistrationForm from "./components/users/EmailRegistrationForm";
+import { assigneeCaption, reconcileRequestSelection, requestVisibleToUser, visibleRequests } from "./lib/request-access.mjs";
+import { registrationLinkState } from "./lib/email-registration.mjs";
 import { EMAIL_FOLDER_LABELS, EMAIL_STATUS_LABELS, emailSmtpHealthPresentation } from "./components/email/email-utils";
 import "./styles.css";
+
+// Consume the mail link before any API effects run. Keep it in memory only;
+// never retain it in the address bar, storage, diagnostic output or UI text.
+const initialRegistrationLink = typeof window === "undefined" ? { hasLink: false, token: "", cleanPath: null }
+  : registrationLinkState(window.location.href);
+if (initialRegistrationLink.cleanPath !== null) window.history.replaceState(window.history.state, "", initialRegistrationLink.cleanPath);
 
 function splitSections(result) {
   if (!result) return [];
@@ -412,6 +427,9 @@ export default function App() {
   const [loginDraft, setLoginDraft] = useState({ username: "manager", password: "" });
   const [loginError, setLoginError] = useState("");
   const [loginNotice, setLoginNotice] = useState("");
+  const [registrationView, setRegistrationView] = useState(initialRegistrationLink.hasLink ? "verify" : null);
+  const [registrationToken, setRegistrationToken] = useState(initialRegistrationLink.token);
+  useEffect(() => { initialRegistrationLink.token = ""; }, []);
   const [aiRules, setAiRules] = useState([]);
   const [aiRulesStatus, setAiRulesStatus] = useState("");
   const [whatsappTemplates, setWhatsAppTemplates] = useState([]);
@@ -433,8 +451,13 @@ export default function App() {
   });
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
-  const [requests, setRequests] = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [requests, setRequestsState] = useState([]);
+  const [selected, setSelectedState] = useState(null);
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [requestReadLoading, setRequestReadLoading] = useState(false);
+  const requestScope = useRef(null), inaccessibleRequests = useRef(new Set());
+  const requestReadVersion = useRef(0), historyVersion = useRef(0), selectedDataVersion = useRef(0), selectedIdRef = useRef(null), pendingRequestId = useRef(null);
+  requestScope.current = authUser; selectedIdRef.current = selected?.id;
   const [loading, setLoading] = useState(false);
   const [savingTextDraft, setSavingTextDraft] = useState(false);
   const [draftSaveStatus, setDraftSaveStatus] = useState("");
@@ -498,6 +521,73 @@ export default function App() {
   const canManageRequests = ["admin", "manager"].includes(authUser?.role);
   const canManageDocuments = ["admin", "manager", "accountant"].includes(authUser?.role);
   const canManageTasks = ["admin", "manager", "accountant"].includes(authUser?.role);
+  const reportSessionError = setter => err => { if (!isStaleSessionResponse(err)) setter(err.safeMessage || err.message); };
+
+  // Server ownership is authoritative. These guards also prevent late responses
+  // from reopening a request after another call has reported access loss.
+  function setRequests(value) {
+    setRequestsState(current => visibleRequests(typeof value === "function" ? value(current) : value, requestScope.current)
+      .filter(item => !inaccessibleRequests.current.has(Number(item.id))));
+  }
+
+  function setSelected(value) {
+    selectedDataVersion.current++;
+    setSelectedState(current => {
+      const next = typeof value === "function" ? value(current) : value;
+      return next && (!requestVisibleToUser(next, requestScope.current) || inaccessibleRequests.current.has(Number(next.id))) ? null : next;
+    });
+  }
+
+  useEffect(() => { inaccessibleRequests.current.clear(); setUnassignedOnly(false); }, [authUser?.id]);
+  useEffect(() => onRequestAccessLost(requestId => {
+    inaccessibleRequests.current.add(requestId); historyVersion.current++;
+    setRequests(current => current.filter(item => Number(item.id) !== requestId));
+    if (Number(pendingRequestId.current) === requestId) {
+      requestReadVersion.current++; setRequestReadLoading(false);
+    }
+    if (Number(selectedIdRef.current) === requestId || Number(pendingRequestId.current) === requestId) {
+      setSelected(null); setRequestEvents([]); setRequestTasks([]); setRequestOneCProducts([]);
+      setOnecLookupResult(null); setEmailSendStatus(""); setWhatsAppSendStatus("");
+      pendingRequestId.current = null;
+      setError("Заявка больше недоступна: она передана другому сотруднику или удалена. Обновите список заявок.");
+    }
+  }), []);
+  useEffect(() => {
+    if (!authUser) return undefined;
+    let lastCheck = 0;
+    const refreshVisibleRequests = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastCheck < 10000) return;
+      lastCheck = Date.now();
+      void refreshHistory().catch(reportSessionError(setError));
+    };
+    window.addEventListener("focus", refreshVisibleRequests);
+    document.addEventListener("visibilitychange", refreshVisibleRequests);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleRequests);
+      document.removeEventListener("visibilitychange", refreshVisibleRequests);
+    };
+  }, [authUser?.id]);
+
+  async function selectRequest(item) {
+    const version = ++requestReadVersion.current;
+    pendingRequestId.current = item.id;
+    setSelected(null); setRequestReadLoading(true); setError("");
+    try {
+      const current = await getRequest(item.id);
+      if (version !== requestReadVersion.current) return;
+      inaccessibleRequests.current.delete(Number(current.id));
+      setRequests(items => [current, ...items.filter(existing => Number(existing.id) !== Number(current.id))]);
+      setSelected(current);
+    } catch (err) {
+      if (isStaleSessionResponse(err)) return;
+      if (version === requestReadVersion.current) setError(err.safeMessage || err.message);
+    } finally { if (version === requestReadVersion.current) { setRequestReadLoading(false); pendingRequestId.current = null; } }
+  }
+
+  function handleRequestAssigned(item) {
+    setRequests(current => current.map(existing => Number(existing.id) === Number(item.id) ? item : existing));
+    setSelected(item);
+  }
 
   async function refreshAiRules() {
     const items = await listAiRules();
@@ -519,15 +609,14 @@ export default function App() {
   }
 
   async function refreshHistory(latestItem = null) {
+    const version = ++historyVersion.current;
     const items = await listRequests();
+    if (version !== historyVersion.current) return;
+    for (const item of visibleRequests(items, requestScope.current)) inaccessibleRequests.current.delete(Number(item.id));
     setRequests(items);
     getCrmSummary().then(setCrmSummary).catch(() => {});
     listOpenTasks().then(setOpenTasks).catch(() => {});
-    if (latestItem) {
-      setSelected(latestItem);
-    } else if (!selected && items.length > 0) {
-      setSelected(items[0]);
-    }
+    setSelected(current => reconcileRequestSelection(current, items, latestItem, requestScope.current));
   }
 
   async function refreshRequestOneCProducts(requestId = selected?.id) {
@@ -536,7 +625,7 @@ export default function App() {
       return [];
     }
     const items = await listRequestOneCProducts(requestId);
-    setRequestOneCProducts(items);
+    if (Number(selectedIdRef.current) === Number(requestId) && !inaccessibleRequests.current.has(Number(requestId))) setRequestOneCProducts(items);
     return items;
   }
 
@@ -558,6 +647,7 @@ export default function App() {
       const status = await getParserHealth();
       setParserStatus(status);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setParserStatus({
         configured: false,
         reachable: false,
@@ -576,6 +666,7 @@ export default function App() {
       const status = await getOneCMcpHealth();
       setOnecMcpStatus(status);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecMcpStatus({
         configured: false,
         reachable: false,
@@ -610,6 +701,7 @@ export default function App() {
         items: response.items || [],
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Партнеры и контрагенты в 1C", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -644,6 +736,7 @@ export default function App() {
         error: "",
       }));
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult((current) => ({
         ...(current || { title: "Партнеры и контрагенты в 1C", body: "" }),
         error: err.message,
@@ -672,6 +765,7 @@ export default function App() {
         items: response.items || [],
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Товары в 1C", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -705,6 +799,7 @@ export default function App() {
         error: "",
       }));
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult((current) => ({
         ...(current || { title: "Товары в 1C", body: "" }),
         error: err.message,
@@ -730,6 +825,7 @@ export default function App() {
       setRequests(items);
       setSelected(updatedSelected);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setOnecLookupLoading("");
@@ -756,6 +852,7 @@ export default function App() {
         body: `### Остатки\n\n${response.stock_result_text || "нет данных"}\n\n### Цены\n\n${response.price_result_text || "нет данных"}`,
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Остатки и цены в 1C", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -798,6 +895,7 @@ export default function App() {
         setRequestEvents(events);
       }
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Команда 1С", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -845,6 +943,7 @@ export default function App() {
         body: body || "Нет данных",
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Остатки и цены по товарам заявки", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -873,6 +972,7 @@ export default function App() {
       const events = await listRequestEvents(selected.id);
       setRequestEvents(events);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "1С-данные заявки", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -904,6 +1004,7 @@ export default function App() {
         body: "Результат заявки обновлен. Использован свежий read-only контекст 1С и привязанные товары заявки.",
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -940,6 +1041,7 @@ export default function App() {
         ].filter((line) => line !== "").join("\n"),
       });
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setOnecLookupResult({ title: "Полная карточка партнера 1С", error: err.message });
     } finally {
       setOnecLookupLoading("");
@@ -951,6 +1053,7 @@ export default function App() {
       const status = await getEmailSmtpHealth();
       setSmtpStatus(status);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setSmtpStatus({
         configured: false,
         reachable: false,
@@ -966,31 +1069,41 @@ export default function App() {
         setAuthUser(user);
         setAuthLoading(false);
       })
-      .catch(() => setAuthLoading(false));
+      .catch(err => { if (!isStaleSessionResponse(err)) setAuthLoading(false); });
   }, []);
 
   useEffect(() => {
     if (!authUser) return;
-    refreshHistory().catch((err) => setError(err.message));
-    refreshEmails().catch((err) => setEmailStatus(err.message));
+    refreshHistory().catch(reportSessionError(setError));
+    refreshEmails().catch(reportSessionError(setEmailStatus));
     refreshParserStatus().catch(() => {});
     refreshOneCMcpStatus().catch(() => {});
     refreshSmtpStatus().catch(() => {});
-    refreshAiRules().catch((err) => setAiRulesStatus(err.message));
-    refreshWhatsAppTemplates().catch((err) => setWhatsAppTemplatesStatus(err.message));
-    refreshWhatsAppHealth().catch(() => setWhatsAppHealth({ configured: false, status: "error" }));
+    refreshAiRules().catch(reportSessionError(setAiRulesStatus));
+    refreshWhatsAppTemplates().catch(reportSessionError(setWhatsAppTemplatesStatus));
+    refreshWhatsAppHealth().catch(err => { if (!isStaleSessionResponse(err)) setWhatsAppHealth({ configured: false, status: "error" }); });
   }, [authUser]);
 
   async function handleLogin(event) {
     event.preventDefault();
+    invalidateApiSession();
     setLoginError("");
     setLoginNotice("");
     setAuthLoading(true);
     try {
       const { user } = await login(loginDraft.username, loginDraft.password);
+      invalidateApiSession();
+      requestReadVersion.current++; historyVersion.current++; selectedDataVersion.current++;
+      requestScope.current = user; inaccessibleRequests.current.clear();
+      setRequestsState([]); setSelectedState(null); setRequestEvents([]); setRequestTasks([]); setRequestOneCProducts([]); setOpenTasks([]); setCrmSummary(null);
+      setEmails([]); setEmailStats({}); setEmailSenderFilters([]); setSelectedEmail(null); setOnecLookupResult(null);
+      setEmailSendStatus(""); setWhatsAppSendStatus(""); setText(""); setFile(null); setFileInputKey(value => value + 1);
+      setMetadata(current => ({ ...current, client_company: "", client_contact_name: "", michael_manager: "", next_action: "" }));
       setAuthUser(user);
+      setRegistrationToken(""); setRegistrationView(null);
       setLoginDraft((current) => ({ ...current, password: "" }));
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setLoginError(err.message);
     } finally {
       setAuthLoading(false);
@@ -998,8 +1111,11 @@ export default function App() {
   }
 
   async function handleLogout() {
+    invalidateApiSession();
     setLoginNotice("");
-    await logout().catch(() => {});
+    try { await logout(); } catch (err) { if (isStaleSessionResponse(err)) return false; }
+    requestReadVersion.current++; historyVersion.current++; pendingRequestId.current = null;
+    requestScope.current = null; setRequestReadLoading(false);
     setAuthUser(null);
     setRequests([]);
     setSelected(null);
@@ -1008,10 +1124,11 @@ export default function App() {
     setEmailStats({});
     setSelectedEmail(null);
     setCrmSummary(null);
+    return true;
   }
 
   async function handleSessionExpired(message) {
-    await handleLogout();
+    if (await handleLogout() === false) return;
     setLoginDraft(current => ({ ...current, password: "" }));
     setLoginError("");
     setLoginNotice(message);
@@ -1041,6 +1158,7 @@ export default function App() {
       setAiRules(saved);
       setAiRulesStatus("Правила сохранены и будут применяться к новым обработкам.");
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setAiRulesStatus(err.message);
     } finally {
       setLoading(false);
@@ -1071,6 +1189,7 @@ export default function App() {
       setWhatsAppTemplates(saved);
       setWhatsAppTemplatesStatus("Шаблоны сохранены. Используйте только имена, уже утвержденные в Meta.");
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setWhatsAppTemplatesStatus(err.message);
     } finally {
       setLoading(false);
@@ -1094,6 +1213,7 @@ export default function App() {
       });
       setWhatsAppTemplatesStatus("Новый локальный шаблон добавлен. Проверьте, что template_name уже утвержден в Meta.");
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setWhatsAppTemplatesStatus(err.message);
     } finally {
       setLoading(false);
@@ -1124,9 +1244,13 @@ export default function App() {
     });
     const phone = normalizePhoneCandidate(selected.client_contact_name);
     setWhatsAppDraft((current) => ({ ...current, to_phone: phone || current.to_phone }));
-    listRequestEvents(selected.id).then(setRequestEvents).catch(() => setRequestEvents([]));
-    listRequestTasks(selected.id).then(setRequestTasks).catch(() => setRequestTasks([]));
-    listRequestOneCProducts(selected.id).then(setRequestOneCProducts).catch(() => setRequestOneCProducts([]));
+    let active = true;
+    const version = selectedDataVersion.current;
+    const apply = setter => items => { if (active && version === selectedDataVersion.current) setter(items); };
+    listRequestEvents(selected.id).then(apply(setRequestEvents)).catch(() => apply(setRequestEvents)([]));
+    listRequestTasks(selected.id).then(apply(setRequestTasks)).catch(() => apply(setRequestTasks)([]));
+    listRequestOneCProducts(selected.id).then(apply(setRequestOneCProducts)).catch(() => apply(setRequestOneCProducts)([]));
+    return () => { active = false; };
   }, [selected]);
 
   async function handleProcess() {
@@ -1143,6 +1267,7 @@ export default function App() {
       setFileInputKey((value) => value + 1);
       await refreshHistory(item);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1165,10 +1290,12 @@ export default function App() {
       setRequests((current) => [item, ...current.filter((existing) => existing.id !== item.id)]);
       setText(""); draftSubmission.current = null;
       setDraftSaveStatus("Заявка сохранена для подбора. ИИ-анализ не запускался; можно выбирать товары из каталога.");
-      try { await refreshHistory(item); } catch {
+      try { await refreshHistory(item); } catch (err) {
+        if (isStaleSessionResponse(err)) return;
         setDraftSaveStatus("Заявка сохранена и открыта для подбора. Историю не удалось обновить; ИИ-анализ не запускался.");
       }
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       // Keep both the entered text and submission key for a safe retry after a lost response.
       setError(err.message || "Не удалось сохранить заявку. Текст сохранён в форме — повторите попытку.");
     } finally {
@@ -1192,6 +1319,7 @@ export default function App() {
       setEmailStatus(result.detail || `Писем в базе: ${result.total_seen || 0}`);
       await refreshEmails(emailFolder);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1205,6 +1333,7 @@ export default function App() {
     try {
       await refreshEmails(folder);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     }
   }
@@ -1231,6 +1360,7 @@ export default function App() {
       setSelectedEmail(updated);
       await refreshEmails(emailFolder);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     }
   }
@@ -1248,6 +1378,7 @@ export default function App() {
       }
       await refreshEmails(emailFolder);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1264,6 +1395,7 @@ export default function App() {
       setSelectedEmail(null);
       await refreshEmails(emailFolder);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1284,6 +1416,7 @@ export default function App() {
       await refreshEmails(emailFolder);
       setEmailStatus(`Письма от ${filter.sender_email || email.from_address} скрыты.`);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1299,6 +1432,7 @@ export default function App() {
       await refreshEmails(emailFolder);
       setEmailStatus(`Письма от ${filter.sender_email} снова показываются.`);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1316,6 +1450,7 @@ export default function App() {
       await refreshEmails("in_work");
       setEmailStatus(`Создана заявка #${item.id} из письма.`);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setEmailStatus(err.message);
     } finally {
       setLoading(false);
@@ -1473,6 +1608,7 @@ export default function App() {
       const events = await listRequestEvents(selected.id);
       setRequestEvents(events);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1510,6 +1646,7 @@ export default function App() {
       const events = await listRequestEvents(selected.id);
       setRequestEvents(events);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1529,6 +1666,7 @@ export default function App() {
       const events = await listRequestEvents(item.id);
       setRequestEvents(events);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1548,6 +1686,7 @@ export default function App() {
       const events = await listRequestEvents(item.id);
       setRequestEvents(events);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1583,6 +1722,7 @@ export default function App() {
         setRequestEvents(events);
       }
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1629,6 +1769,7 @@ export default function App() {
       });
       await refreshSelectedTasksAndEvents(selected.id);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1649,6 +1790,7 @@ export default function App() {
       setNewTaskTitle("");
       await refreshSelectedTasksAndEvents(selected.id);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1670,6 +1812,7 @@ export default function App() {
       });
       await refreshOpenTaskState(task.request_id);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1690,6 +1833,7 @@ export default function App() {
       await deleteRequestTask(task.request_id, task.id);
       await refreshOpenTaskState(task.request_id);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
       await refreshOpenTaskState(task.request_id);
     } finally {
@@ -1711,6 +1855,7 @@ export default function App() {
       });
       await refreshHistory(updated);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1733,6 +1878,7 @@ export default function App() {
         getCrmSummary().then(setCrmSummary).catch(() => {}),
       ]);
     } catch (err) {
+      if (isStaleSessionResponse(err)) return;
       setError(err.message);
     } finally {
       setLoading(false);
@@ -1774,7 +1920,18 @@ export default function App() {
 
   function selectTaskRequest(task) {
     const requestItem = requests.find((item) => Number(item.id) === Number(task.request_id));
-    if (requestItem) setSelected(requestItem);
+    if (requestItem) void selectRequest(requestItem);
+  }
+
+  if (registrationView && registrationView !== "login") {
+    return <EmailRegistrationForm mode={registrationView} token={registrationToken}
+      onBack={() => { setRegistrationToken(""); setRegistrationView(null); }}
+      onRequestLink={() => { setRegistrationToken(""); setRegistrationView("request"); }}
+      onRegistered={(email, detail) => {
+        setRegistrationToken(""); setRegistrationView("login");
+        setLoginDraft({ username: email, password: "" }); setLoginError("");
+        setLoginNotice(detail || "Почта подтверждена. Войдите с корпоративным адресом и новым паролем.");
+      }} />;
   }
 
   if (authLoading && !authUser) {
@@ -1785,7 +1942,7 @@ export default function App() {
     );
   }
 
-  if (!authUser) {
+  if (!authUser || registrationView === "login") {
     return (
       <main className="auth-shell">
         <form className="login-card" onSubmit={handleLogin}>
@@ -1797,7 +1954,7 @@ export default function App() {
             </div>
           </div>
           <label>
-            <span>Имя пользователя</span>
+            <span>Логин или корпоративный email</span>
             <input
               value={loginDraft.username}
               onChange={(event) => setLoginDraft((current) => ({ ...current, username: event.target.value }))}
@@ -1820,6 +1977,8 @@ export default function App() {
             Войти
           </button>
           <p className="muted">Входите под личным логином. Забыли пароль? Обратитесь к администратору.</p>
+          <button type="button" className="secondary-button" onClick={() => { setRegistrationToken(""); setRegistrationView("request"); }}>Регистрация с почтой @edel.kz</button>
+          {authUser ? <button type="button" className="auth-back-link" onClick={() => setRegistrationView(null)}>Вернуться в текущий кабинет</button> : null}
         </form>
       </main>
     );
@@ -1912,16 +2071,19 @@ export default function App() {
           </div>
         </div>
 
-        <h2>История заявок</h2>
+        <div className="request-history-heading"><h2>{authUser.role === "admin" ? "Все заявки" : "Мои заявки"}</h2><button type="button" className="secondary-button compact-button" onClick={() => void refreshHistory().catch(reportSessionError(setError))} disabled={loading || requestReadLoading} aria-label="Обновить заявки"><RefreshCw size={16} /></button></div>
+        {authUser.role === "admin" ? <label className="unassigned-filter"><input type="checkbox" checked={unassignedOnly} onChange={event => setUnassignedOnly(event.target.checked)} />Без ответственного ({requests.filter(item => !item.assigned_user_id).length})</label> : <p className="muted request-scope-note">Здесь только заявки, назначенные вам.</p>}
         <div className="history-list">
-          {requests.length === 0 && <p className="muted">История пока пустая</p>}
-            {requests.map((item) => (
+          {requests.length === 0 && <p className="muted">{authUser.role === "admin" ? "История пока пустая" : "Назначенных вам заявок пока нет"}</p>}
+          {unassignedOnly && requests.length > 0 && !requests.some(item => !item.assigned_user_id) ? <p className="muted">Все заявки назначены сотрудникам.</p> : null}
+            {requests.filter(item => !unassignedOnly || !item.assigned_user_id).map((item) => (
               <div
                 key={item.id}
                 className={selected?.id === item.id ? "history-item active" : "history-item"}
               >
-                <button className="history-main" onClick={() => setSelected(item)}>
+                <button className="history-main" onClick={() => void selectRequest(item)} disabled={requestReadLoading}>
                   <span>#{item.id} {requestTitle(item)}</span>
+                  <small className={item.assigned_user_id ? "request-owner" : "request-owner request-owner-empty"}>{assigneeCaption(item)}</small>
                   <div className="history-tags">
                     <small className={`status-pill status-${item.status || "new"}`}>
                       {STATUS_LABELS[item.status || "new"] || "Новая"}
@@ -1970,6 +2132,7 @@ export default function App() {
       </aside>
 
       <section className="workspace">
+        <SharedCatalogPanel key={authUser.id} user={authUser} />
         <section className="input-area">
           <div className="section-title">
             <h2>Новая обработка</h2>
@@ -1996,11 +2159,11 @@ export default function App() {
               />
             </label>
             <label>
-              <span>Менеджер Michael</span>
+              <span>Менеджер в исходных данных</span>
               <input
                 value={metadata.michael_manager}
                 onChange={(event) => updateMetadata("michael_manager", event.target.value)}
-                placeholder="Имя ответственного менеджера"
+                placeholder="Имя для текста заявки"
                 disabled={loading || !canManageRequests}
               />
             </label>
@@ -2040,6 +2203,8 @@ export default function App() {
               />
             </label>
           </div>
+
+          <p className="muted request-scope-note">Новая заявка закрепляется за вашей учётной записью. Передать её другому менеджеру может администратор.</p>
 
           <label className="field-label" htmlFor="request-text">
             {inputLabel}
@@ -2414,7 +2579,7 @@ export default function App() {
           )}
         </section>
 
-        {authUser.role === "admin" && <UserManagementPanel authUser={authUser} roles={ROLE_OPTIONS} onSessionExpired={handleSessionExpired} />}
+        {authUser.role === "admin" && <UserManagementPanel key={authUser.id} authUser={authUser} roles={ROLE_OPTIONS} onSessionExpired={handleSessionExpired} />}
 
         {authUser.role === "admin" && (
           <section className="input-area ai-rules-area">
@@ -2679,10 +2844,11 @@ export default function App() {
           {emailSendStatus && <div className="email-send-status">{emailSendStatus}</div>}
           {whatsappSendStatus && <div className="email-send-status">{whatsappSendStatus}</div>}
 
-          {!selected && <div className="empty-state">Результат появится здесь после обработки заявки.</div>}
+          {!selected && <div className="empty-state">{requestReadLoading ? "Проверяем доступ и загружаем заявку…" : "Выберите доступную заявку или создайте новую."}</div>}
 
           {selected && (
             <>
+            <RequestAssigneePanel key={selected.id} request={selected} user={authUser} onAssigned={handleRequestAssigned} />
             {!String(selected.ai_result || "").trim() ? <div className="role-note">Заявка ожидает ИИ-анализа. Исходный текст сохранён; подбор товаров доступен без анализа.</div> : null}
             {canManageRequests ? <CatalogSelectionPanel key={selected.id} selectedRequest={selected} user={authUser} /> : null}
             <div className="whatsapp-send-panel">
@@ -2754,7 +2920,7 @@ export default function App() {
                   <strong>{selected.client_contact_name || "не указан"}</strong>
                 </div>
                 <div>
-                  <span>Менеджер Michael</span>
+                  <span>Менеджер в исходных данных</span>
                   <strong>{selected.michael_manager || "не указан"}</strong>
                 </div>
                 <div>

@@ -2,7 +2,7 @@
 export const SCRYPT_SCHEME = "scrypt-v1";
 export const LEGACY_SCHEME = "pbkdf2-sha256";
 export const LEGACY_ITERATIONS = 100_000;
-export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 256;
 const KDF_URL = "https://password-kdf.internal/v1/password";
 export interface StoredPassword {
