@@ -135,6 +135,15 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     console.info("Private catalogue searches:", JSON.stringify(results));
   });
 
+  it("reads the matching supplier price observation from the full real-sized snapshot", async () => {
+    const item = pick(source.volt, "23876");
+    const response = await call(`/catalog/price-history?offerId=${encodeURIComponent(item.id)}`);
+    expect(response.status).toBe(200);
+    expect(response.data.points).toHaveLength(1);
+    expect(response.data.points[0].price).toEqual(item.prices.purchase);
+    expect(response.data.points[0].unit).toEqual(item.unit);
+  });
+
   it("prepares, saves and reopens the five-line six-source quotation without inventing missing tax or units", async () => {
     const prepared = await call("/requests/1/quotation/prepare", "POST", {});
     expect(prepared.status).toBe(200); expect(prepared.data.draft.lines).toHaveLength(5);

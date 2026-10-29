@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import worker from "../index";
+import { zipSync, strToU8 } from "fflate";
 import { handleCatalogRoutes } from "./catalog-api";
 
 let sqlite, env, beforeBatch;
@@ -174,6 +175,31 @@ describe("request ownership across all authenticated HTTP routes", () => {
     expect((await upload(true)).status).toBe(400);
     const created = await upload(false);
     expect(created.status).toBe(200); expect(created.data).toMatchObject({ assigned_user_id: 2, uploaded_file_name: "fixture.png", source_type: "image" });
+  });
+
+  it("lets every active employee upload XLSX into their own requests without granting other upload rights", async () => {
+    env.OPENAI_API_KEY = "fixture-key";
+    fetch.mockImplementation(async () => new Response(JSON.stringify({ output_text: "Fixture upload result" })));
+    const bytes = zipSync({
+      "xl/workbook.xml": strToU8('<workbook><sheets><sheet name="Fixture" r:id="r1"/></sheets></workbook>'),
+      "xl/_rels/workbook.xml.rels": strToU8('<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>'),
+      "xl/worksheets/sheet1.xml": strToU8('<worksheet><sheetData><row><c r="A1" t="inlineStr"><is><t>Fixture item</t></is></c><c r="B1"><v>5</v></c></row></sheetData></worksheet>'),
+    });
+    async function upload(account, file) {
+      const body = new FormData(); body.set("file", file);
+      const response = await worker.fetch(new Request("https://ai.michael.kz/api/requests/upload", {
+        method: "POST", headers: { Origin: "https://ai.michael.kz", Cookie: `sales_ai_session=${token(account)}` }, body,
+      }), env);
+      return { status: response.status, data: await response.json() };
+    }
+    for (const role of ["admin", "a", "accountant", "viewer"]) {
+      const result = await upload(role, new File([bytes], "request.xlsx"));
+      expect(result.status).toBe(200); expect(result.data.assigned_user_id).toBe(accounts[role]);
+      expect(result.data.original_text).toContain("Fixture item | 5");
+      if (role !== "admin") expect((await call(`/requests/${result.data.id}`, "GET", undefined, "b")).status).toBe(404);
+    }
+    expect((await upload("viewer", new File(["image"], "request.png"))).status).toBe(403);
+    expect((await upload("inactive", new File([bytes], "request.xlsx"))).status).toBe(401);
   });
 
   it("only admin transfers to active managers, audits the exact prior owner and immediately revokes old-manager access", async () => {

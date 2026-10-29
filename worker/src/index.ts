@@ -1,3 +1,4 @@
+import { extractXlsx, XlsxError } from "./lib/xlsx";
 import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
 import { isD1DailyQuotaError } from "./lib/d1-errors";
@@ -1420,7 +1421,7 @@ export default {
         return json(await saveTextDraft(request, env, currentUser));
       }
       if (request.method === "POST" && url.pathname === "/api/requests/upload") {
-        if (!canManageRequests(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
+        if (!["admin", "manager", "accountant", "viewer"].includes(currentUser.role)) return json({ detail: "Недостаточно прав." }, 403);
         return json(await processUpload(request, env, currentUser));
       }
       if (request.method === "GET" && url.pathname === "/api/crm/summary") {
@@ -2259,6 +2260,7 @@ async function processUpload(request: Request, env: Env, user: CurrentUser) {
   const context = buildContextPrefix(metadata);
   const fileName = file.name || "uploaded-file";
   const lowerName = fileName.toLowerCase();
+  if (!canManageRequests(user) && !lowerName.endsWith(".xlsx")) throw new UserInputError("Ваша роль может загружать только Excel-заявки.", 403);
   validateUploadedFile(file, lowerName);
 
   let originalText = "";
@@ -2289,7 +2291,9 @@ async function processUpload(request: Request, env: Env, user: CurrentUser) {
       originalText = appendTextBlock(originalText, oneCContext);
       aiResult = await analyzePdfGemini(env, filePayload, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
     } else {
-      const parsed = await parseDocumentWithService(env, file);
+      let parsed: ParsedDocument;
+      try { parsed = lowerName.endsWith(".xlsx") ? await extractXlsx(file) : await parseDocumentWithService(env, file); }
+      catch (error) { if (error instanceof XlsxError) throw new UserInputError(error.message); throw error; }
       const parsedText = parsedDocumentText(parsed);
       const warningsText = parsed.warnings?.length
         ? `\n\nПредупреждения parser-service:\n${parsed.warnings.join("\n")}`
@@ -4860,7 +4864,7 @@ async function buildStoredEmailAttachmentText(env: Env, emailId: number): Promis
         const file = new File([content], fileName, {
           type: normalizeOptionalText(row.content_type) || "application/octet-stream",
         });
-        const parsed = await parseDocumentWithService(env, file);
+        const parsed = fileName.toLowerCase().endsWith(".xlsx") ? await extractXlsx(file) : await parseDocumentWithService(env, file);
         text = parsedDocumentText(parsed);
         if (!text) {
           const pages = parsedImagePages(parsed);

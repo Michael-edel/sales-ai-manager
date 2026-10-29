@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Calculator, Check, FileText, Loader2, Package, Plus, RefreshCw, Save, Search, Trash2, Truck, Upload } from "lucide-react";
-import { commitCatalogImport, createCatalogImport, evaluateRequestQuotation, findQuotationCandidates, getCatalogImport, getCatalogStatus, getRequestQuotation, prepareRequestQuotation, saveRequestQuotation, uploadCatalogBatch } from "../../api";
+import { commitCatalogImport, createCatalogImport, evaluateRequestQuotation, findQuotationCandidates, getSupplierPriceHistory, getCatalogImport, getCatalogStatus, getRequestQuotation, prepareRequestQuotation, saveRequestQuotation, uploadCatalogBatch } from "../../api";
 import { importCatalogFile, readImportCheckpoint } from "../../lib/catalog-import.mjs";
 import "./catalog-selection.css";
 
@@ -24,6 +24,36 @@ function NumberField({ label, value, onChange, min = 0, max, step = "any", place
   return <label><span>{label}</span><input type="number" inputMode="decimal" min={min} max={max} step={step} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(numericValue(event.target.value))} disabled={disabled} /></label>;
 }
 
+function PriceHistory({ offer }) {
+  const [expanded, setExpanded] = useState(false);
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const controller = useRef(null);
+  useEffect(() => () => controller.current?.abort(), [offer.id]);
+  async function load(before = null) {
+    if (busy) return;
+    controller.current?.abort(); const signal = new AbortController(); controller.current = signal;
+    setBusy(true); setError("");
+    try {
+      const result = await getSupplierPriceHistory(offer.id, before, { signal: signal.signal });
+      if (!signal.signal.aborted) setData(previous => ({ ...result, points: before ? [...previous.points, ...result.points] : result.points }));
+    } catch (err) { if (!signal.signal.aborted) setError(err.safeMessage || err.message || "История недоступна."); }
+    finally { if (!signal.signal.aborted) setBusy(false); }
+  }
+  const comparable = (data?.points || []).filter(point => point.price && point.price.currency === offer.prices?.purchase?.currency && point.unit === offer.unit && point.price.vatIncluded === offer.prices?.purchase?.vatIncluded && point.price.vatRate === offer.prices?.purchase?.vatRate).slice().reverse();
+  const values = comparable.map(point => point.price.amount), low = Math.min(...values), high = Math.max(...values);
+  const firstTime = Date.parse(comparable[0]?.snapshotAt), lastTime = Date.parse(comparable.at(-1)?.snapshotAt);
+  const coords = comparable.map(point => ({ x: firstTime === lastTime ? 50 : 4 + (Date.parse(point.snapshotAt) - firstTime) * 92 / (lastTime - firstTime), y: high === low ? 40 : 75 - (point.price.amount - low) * 65 / (high - low) }));
+  return <div className="price-history"><button type="button" className="secondary-button" aria-expanded={expanded} onClick={() => { setExpanded(!expanded); if (!expanded && !data) void load(); }}>История закупочной цены</button>
+    {expanded ? <div><p className="catalog-subtle">Цены сохраняются при загрузке обновлённого каталога на сайт. Дата — время снимка; источник и единица не смешиваются.</p>
+      {busy ? <p role="status">Загрузка истории…</p> : null}{error ? <p role="alert">{error}</p> : null}
+      {data && comparable.length ? <><svg viewBox="0 0 100 85" role="img" aria-label={`График закупочной цены: ${comparable.length} наблюдений`} preserveAspectRatio="none" style={{ width: "100%", height: 120 }}><polyline points={coords.map(p => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#226348" strokeWidth="1" vectorEffect="non-scaling-stroke" />{coords.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="1.3" fill="#226348" />)}</svg><p className="catalog-subtle">{money(low, offer.prices?.purchase?.currency)} — {money(high, offer.prices?.purchase?.currency)} · {offer.unit || "единица не указана"}. График включает только цены с одинаковыми валютой, единицей и условиями НДС.</p></> : data ? <p>Сопоставимых цен пока нет.</p> : null}
+      {data?.points.length ? <div className="price-history-table"><table><thead><tr><th>Снимок</th><th>Цена закупки</th><th>Дата источника</th></tr></thead><tbody>{data.points.map((p, i) => <tr key={`${p.snapshotAt}-${i}`}><td>{dateTime(p.snapshotAt)}</td><td>{p.price ? `${money(p.price.amount, p.price.currency)} / ${p.unit || "ед. не указана"} · ${priceCaption(p.price)}` : "Не указана"}</td><td>{dateTime(p.sourceUpdatedAt)}</td></tr>)}</tbody></table></div> : null}
+      {data?.nextBefore ? <button type="button" className="secondary-button" disabled={busy} onClick={() => void load(data.nextBefore)}>Показать более ранние снимки</button> : null}
+      {data && !data.nextBefore ? <p className="catalog-subtle">Показана доступная история загруженных снимков. Изменения между снимками могут быть неизвестны.</p> : null}</div> : null}</div>;
+}
+
 export function CandidateCard({ candidate, added, onAdd, disabled }) {
   const { offer } = candidate;
   const own = offer.sourceType === "warehouse";
@@ -41,6 +71,7 @@ export function CandidateCard({ candidate, added, onAdd, disabled }) {
     </dl>
     {offer.delivery?.notes ? <p className="catalog-subtle">{offer.delivery.notes}</p> : null}
     <Warnings items={candidate.warnings} />
+    {!own ? <PriceHistory offer={offer} /> : null}
     {onAdd ? <button type="button" className="secondary-button" disabled={disabled || added} onClick={() => onAdd(offer)}>{added ? <Check size={16} /> : <Plus size={16} />}{added ? "Добавлено в подбор" : "Добавить в подбор"}</button> : null}
   </article>;
 }

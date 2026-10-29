@@ -74,6 +74,21 @@ function raceBatches() {
 }
 
 describe("bounded catalog page storage", () => {
+  it("reads supplier prices only from complete snapshots for the same source and all employee roles", async () => {
+    const source = offer("supplier:x", { sourceType: "supplier", sourceId: "s1", sourceName: "S1", unit: "шт" });
+    const old = await load([source], { exportedAt: new Date(Date.now() - 120000).toISOString() });
+    const draft = await begin(1, { exportedAt: new Date(Date.now() - 60000).toISOString() });
+    await upload(draft, 0, [{ ...source, prices: { ...source.prices, purchase: { ...source.prices.purchase, amount: 9999 } } }]);
+    await load([{ ...source, prices: { ...source.prices, purchase: { ...source.prices.purchase, amount: 700 } } }]);
+    for (const role of ["admin", "manager", "accountant", "viewer"]) {
+      const result = await call(`/catalog/price-history?offerId=${encodeURIComponent(source.id)}`, "GET", undefined, { id: 2, username: "fixture", role });
+      expect(result.status).toBe(200);
+      expect(result.data.points.map(p => p.price.amount)).toEqual([700, 580]);
+    }
+    expect((await call('/catalog/price-history?offerId=missing')).status).toBe(404);
+    expect((await call('/catalog/price-history?offerId=supplier%3Ax&before=invalid')).status).toBe(400);
+  });
+
   it("stores file identity and exposes only the owning administrator's resumable manifest", async () => {
     const contentHash = "a".repeat(64), id = await begin(2, { contentHash });
     await upload(id, 4, [offer()]);

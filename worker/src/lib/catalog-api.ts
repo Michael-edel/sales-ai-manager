@@ -243,6 +243,27 @@ async function offersByIds(env: CatalogEnv, snapshot: ImportRow, ids: string[]):
   }
   return result;
 }
+// Each successfully activated immutable snapshot is a durable observation. Read only
+// the same source offer; names, product links and fuzzy matches are not identities.
+async function priceHistory(env: CatalogEnv, offerId: string, before: string | null) {
+  if (!offerId || offerId.length > 6000) throw new CatalogInputError("Укажите предложение товара.");
+  const active = await activeSnapshot(env);
+  if (!active) throw new CatalogInputError("Каталог ещё не загружен.", 409);
+  const current = (await offersByIds(env, active, [offerId]))[0];
+  if (!current) throw new CatalogInputError("Предложение не найдено в текущем каталоге.", 404);
+  if (before && (!UUID.test(before) || !(await env.DB.prepare("SELECT id FROM catalog_imports WHERE id=? AND status='complete' AND exported_at<=?").bind(before, active.exported_at).first())))
+    throw new CatalogInputError("Неверная страница истории.", 400);
+  const rows = await env.DB.prepare("SELECT * FROM catalog_imports WHERE status='complete' AND exported_at<=? AND (? IS NULL OR exported_at < (SELECT exported_at FROM catalog_imports WHERE id=?)) ORDER BY exported_at DESC LIMIT 11")
+    .bind(active.exported_at, before, before).all<ImportRow>();
+  const chosen = rows.results.slice(0, 10);
+  const points: { snapshotAt: string; sourceUpdatedAt: string | null; price: CatalogOffer['prices']['purchase']; unit: string }[] = [];
+  for (const snapshot of chosen) {
+    const old = (await offersByIds(env, snapshot, [offerId]))[0];
+    if (old && old.sourceId === current.sourceId && old.sourceType === current.sourceType)
+      points.push({ snapshotAt: snapshot.exported_at, sourceUpdatedAt: old.prices.purchase?.updatedAt || old.updatedAt, price: old.prices.purchase, unit: old.unit });
+  }
+  return { sourceName: current.sourceName, points, nextBefore: rows.results.length > 10 ? chosen[chosen.length - 1].id : null };
+}
 async function offersByProducts(env: CatalogEnv, snapshot: ImportRow, products: string[], forSearch = false) {
   if (snapshot.storage_version === 2) {
     const wanted = new Set(products);
@@ -385,7 +406,7 @@ async function saveQuote(request: Request, env: CatalogEnv, requestId: number, u
 /** Called only after the existing session authentication. Does not call AI or write to 1C. */
 export async function handleCatalogRoutes(request: Request, env: CatalogEnv, user: CatalogUser): Promise<Response | null> {
   const url = new URL(request.url), path = url.pathname;
-  if (!(path === "/api/catalog/status" || path === "/api/catalog/search" || path.startsWith("/api/catalog/imports")
+  if (!(path === "/api/catalog/status" || path === "/api/catalog/search" || path === "/api/catalog/price-history" || path.startsWith("/api/catalog/imports")
     || /^\/api\/requests\/\d+\/quotation(?:\/|$)/.test(path))) return null;
   try {
     if (!["admin", "manager", "accountant", "viewer"].includes(user.role)) throw new CatalogInputError("Недостаточно прав.", 403);
@@ -393,6 +414,8 @@ export async function handleCatalogRoutes(request: Request, env: CatalogEnv, use
       throw new CatalogInputError("Откройте программу на её основном адресе.", 403);
     if (path === "/api/catalog/status" && request.method === "GET")
       return json({ activeSnapshot: publicSnapshot(await activeSnapshot(env)) });
+    if (path === "/api/catalog/price-history" && request.method === "GET")
+      return json(await priceHistory(env, url.searchParams.get("offerId") || "", url.searchParams.get("before")));
     if (path === "/api/catalog/search" && request.method === "GET") {
       const query = (url.searchParams.get("q") || "").trim();
       const article = (url.searchParams.get("article") || "").trim();

@@ -122,6 +122,12 @@ export function assignRequest(requestId, assignedUserId) {
   });
 }
 
+export function getSupplierPriceHistory(offerId, before, options = {}) {
+  const params = new URLSearchParams({ offerId });
+  if (before) params.set("before", before);
+  return request(`/catalog/price-history?${params}`, options);
+}
+
 export function searchSharedCatalog(query, options = {}) {
   return request(`/catalog/search?${new URLSearchParams({ q: query })}`, options);
 }

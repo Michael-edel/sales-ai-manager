@@ -87,3 +87,10 @@
 @media (max-width: 600px) { .catalog-selection { padding: 15px; margin: 14px 0; } .catalog-panel-heading h3 { font-size: 20px; } .catalog-line { padding: 12px; } .catalog-line-fields, .catalog-options-grid, .catalog-allocation-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .catalog-line-fields > label:last-child { grid-column: 1 / -1; } .catalog-options-grid > label:last-child { grid-column: 1 / -1; } .catalog-summary-grid, .catalog-allocation-result { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; } .catalog-summary-grid strong { font-size: 17px; } .catalog-candidate, .catalog-allocation { padding: 12px; } .catalog-status { padding: 12px; } .catalog-status button, .catalog-line-search button, .catalog-bottom-toolbar button { width: 100%; justify-content: center; } .catalog-toolbar button { max-width: 100%; } .catalog-candidates { max-height: 620px; } .catalog-offer-facts { gap: 12px; } .catalog-revision { max-width: none; } .catalog-summary .catalog-card-heading { flex-wrap: wrap; } }
 @media (max-width: 370px) { .catalog-line-fields, .catalog-options-grid, .catalog-allocation-fields, .catalog-offer-facts, .catalog-summary-grid, .catalog-allocation-result { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) { .catalog-allocation-fields > label:nth-child(3), .catalog-allocation-fields > label:last-child { grid-column: 1 / -1; } .catalog-purchase-vat .catalog-options-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.price-history { margin: 12px 0; }
+.price-history-table { overflow-x: auto; }
+.price-history-table table { width: 100%; min-width: 460px; border-collapse: collapse; }
+.price-history-table th, .price-history-table td { padding: 6px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #e5ebe5; }
+.catalog-candidate, .price-history { min-width: 0; } .price-history-table { max-width: 100%; }
+.price-history { width: 100%; }
