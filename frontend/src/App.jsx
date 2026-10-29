@@ -1255,7 +1255,7 @@ export default function App() {
   }, [selected]);
 
   async function handleProcess() {
-    if ((!canManageRequests && !file?.name?.toLowerCase().endsWith(".xlsx")) || loading || draftSaveInFlight.current) return;
+    if ((!canManageRequests && !/\.(?:xlsx|docx)$/.test(file?.name?.toLowerCase() || "")) || loading || draftSaveInFlight.current) return;
     setError("");
     setDraftSaveStatus("");
     setCopied(false);
@@ -1886,7 +1886,7 @@ export default function App() {
     }
   }
 
-  const canProcess = (canManageRequests && Boolean(text.trim() || file) || Boolean(file?.name?.toLowerCase().endsWith(".xlsx"))) && !loading;
+  const canProcess = (canManageRequests && Boolean(text.trim() || file) || Boolean(/\.(?:xlsx|docx)$/.test(file?.name?.toLowerCase() || ""))) && !loading;
   const canSaveTextDraft = canManageRequests && Boolean(text.trim()) && !file && !loading;
   const inputLabel = file ? "Пояснение к выбранному файлу" : "Текст заявки";
   const parserHealthClass = parserStatus?.reachable
@@ -2230,7 +2230,7 @@ export default function App() {
               <input
                 key={fileInputKey}
                 type="file"
-                accept={canManageRequests ? ".xlsx,.pdf,.docx,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.ogg,.opus,.webm" : ".xlsx"}
+                accept={canManageRequests ? ".xlsx,.pdf,.docx,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.ogg,.opus,.webm" : ".xlsx,.docx"}
                 onChange={(event) => {
                   setFile(event.target.files?.[0] || null);
                 }}
@@ -2269,7 +2269,7 @@ export default function App() {
               <strong>Parser-service</strong>
               <span>{parserLoading ? "проверяется" : parserHealthText}</span>
               {!parserStatus?.configured && !parserLoading ? (
-                <small>Excel XLSX обрабатывается на сайте; DOCX требует внешний сервис</small>
+                <small>Excel XLSX и Word DOCX обрабатываются на сайте</small>
               ) : null}
             </div>
             <button
@@ -2310,7 +2310,7 @@ export default function App() {
             </div>
           )}
 
-          {!canManageRequests && <div className="role-note">Ваша роль позволяет обрабатывать Excel-заявки; другие форматы доступны менеджерам и администраторам.</div>}
+          {!canManageRequests && <div className="role-note">Ваша роль позволяет обрабатывать Excel- и Word-заявки; другие форматы доступны менеджерам и администраторам.</div>}
           {error && <div className="error-box">{error}</div>}
         </section>
 

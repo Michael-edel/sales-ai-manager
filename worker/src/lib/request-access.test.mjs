@@ -198,6 +198,13 @@ describe("request ownership across all authenticated HTTP routes", () => {
       expect(result.data.original_text).toContain("Fixture item | 5");
       if (role !== "admin") expect((await call(`/requests/${result.data.id}`, "GET", undefined, "b")).status).toBe(404);
     }
+    const document = zipSync({"word/document.xml":strToU8('<w:document><w:body><w:p><w:r><w:t>DOCX fixture</w:t></w:r></w:p></w:body></w:document>')});
+    for (const role of ["admin", "a", "accountant", "viewer"]) {
+      const result = await upload(role, new File([document], "request.docx"));
+      expect(result.status).toBe(200); expect(result.data.assigned_user_id).toBe(accounts[role]);
+      expect(result.data.original_text).toContain("DOCX fixture");
+      if (role !== "admin") expect((await call(`/requests/${result.data.id}`, "GET", undefined, "b")).status).toBe(404);
+    }
     expect((await upload("viewer", new File(["image"], "request.png"))).status).toBe(403);
     expect((await upload("inactive", new File([bytes], "request.xlsx"))).status).toBe(401);
   });

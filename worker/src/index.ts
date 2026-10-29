@@ -1,3 +1,4 @@
+import { extractDocx, DocxError } from "./lib/docx";
 import { extractXlsx, XlsxError } from "./lib/xlsx";
 import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
@@ -2260,7 +2261,7 @@ async function processUpload(request: Request, env: Env, user: CurrentUser) {
   const context = buildContextPrefix(metadata);
   const fileName = file.name || "uploaded-file";
   const lowerName = fileName.toLowerCase();
-  if (!canManageRequests(user) && !lowerName.endsWith(".xlsx")) throw new UserInputError("Ваша роль может загружать только Excel-заявки.", 403);
+  if (!canManageRequests(user) && !/\.(?:xlsx|docx)$/.test(lowerName)) throw new UserInputError("Ваша роль может загружать только Excel и Word заявки.", 403);
   validateUploadedFile(file, lowerName);
 
   let originalText = "";
@@ -2292,8 +2293,8 @@ async function processUpload(request: Request, env: Env, user: CurrentUser) {
       aiResult = await analyzePdfGemini(env, filePayload, fileName, appendTextBlock(`${context}${managerNote}`.trim(), oneCContext));
     } else {
       let parsed: ParsedDocument;
-      try { parsed = lowerName.endsWith(".xlsx") ? await extractXlsx(file) : await parseDocumentWithService(env, file); }
-      catch (error) { if (error instanceof XlsxError) throw new UserInputError(error.message); throw error; }
+      try { parsed = lowerName.endsWith(".xlsx") ? await extractXlsx(file) : lowerName.endsWith(".docx") ? await extractDocx(file) : await parseDocumentWithService(env, file); }
+      catch (error) { if ((error instanceof XlsxError || error instanceof DocxError)) throw new UserInputError(error.message); throw error; }
       const parsedText = parsedDocumentText(parsed);
       const warningsText = parsed.warnings?.length
         ? `\n\nПредупреждения parser-service:\n${parsed.warnings.join("\n")}`
@@ -4864,7 +4865,7 @@ async function buildStoredEmailAttachmentText(env: Env, emailId: number): Promis
         const file = new File([content], fileName, {
           type: normalizeOptionalText(row.content_type) || "application/octet-stream",
         });
-        const parsed = fileName.toLowerCase().endsWith(".xlsx") ? await extractXlsx(file) : await parseDocumentWithService(env, file);
+        const parsed = fileName.toLowerCase().endsWith(".xlsx") ? await extractXlsx(file) : fileName.toLowerCase().endsWith(".docx") ? await extractDocx(file) : await parseDocumentWithService(env, file);
         text = parsedDocumentText(parsed);
         if (!text) {
           const pages = parsedImagePages(parsed);
