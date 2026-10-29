@@ -120,7 +120,7 @@ try {
         method: 'DELETE', headers: { Authorization: 'Bearer ' + process.env.CLOUDFLARE_API_TOKEN }, signal: AbortSignal.timeout(30000),
       });
       const result = await deleted.json().catch(() => null);
-      if (!deleted.ok || result?.success !== true)
+      if (!deleted.ok || result?.success === false)
         throw new Error(`Temporary runtime probe deletion failed (HTTP ${deleted.status}).`);
       console.log('Temporary runtime probe removed: ' + name);
     }
