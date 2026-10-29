@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { handleCatalogRoutes } from "./catalog-api";
+import { catalogAnalysisEvidence, extractAnalysisProducts } from "./catalog-analysis";
 
 // Execute real SQLite migrations and transactions; only D1's transport is adapted.
 let sqlite, env, queries;
@@ -74,6 +75,18 @@ function raceBatches() {
 }
 
 describe("bounded catalog page storage", () => {
+  it("provides catalog candidates and test provenance to request analysis", async () => {
+    const id = await load([offer("cable", { name: "Кабель КГ 4*4", article: "КГ 4*4", onecCode: "C1", unit: "м" })]);
+    sqlite.prepare("UPDATE catalog_pages SET search_text=? WHERE snapshot_id=?").run("кабель кг 4 4", id);
+    const text = "| № | Код | Наименование | Ед. изм. | Кол-во | Цена |\n|---|---|---|---|---|---|\n| 1 | уточняется | Кабель КГ 4х4 | м | 30 | уточняется |";
+    expect(extractAnalysisProducts(text)).toEqual([{query:"Кабель КГ 4х4",quantity:30,unit:"м"}]);
+    const evidence = await catalogAnalysisEvidence(env, text);
+    expect(evidence.prompt).toContain("среда test");
+    expect(evidence.prompt).toContain("Кабель КГ 4*4");
+    expect(evidence.prompt).toContain("тестовой 1С");
+    expect(evidence.prompt).toContain('"quantity":10');
+    expect(evidence.report).toContain("остаток: 10 м");
+  });
   it("finds cable dimensions across old indexes without accepting a different size", async () => {
     const cable = offer("cable:4", { name: "Кабель КГ 4*4", article: "КГ 4*4", brand: "", onecCode: "", unit: "м" });
     const other = offer("cable:40", { name: "Кабель КГ 4*40", article: "КГ 4*40", brand: "", onecCode: "", unit: "м" });

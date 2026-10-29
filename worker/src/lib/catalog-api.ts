@@ -299,7 +299,7 @@ async function evaluate(env: CatalogEnv, value: Record<string, unknown>) {
   }
   return { draft, evaluation: input(() => evaluateQuote(draft, offers, { now: new Date(), environment: active.environment })), catalogSnapshotId: active.id };
 }
-async function findCandidates(env: CatalogEnv, value: Record<string, unknown>) {
+export async function findCandidates(env: CatalogEnv, value: Record<string, unknown>) {
   const active = await activeSnapshot(env);
   if (!active) throw new CatalogInputError("Сначала импортируйте каталог.", 409);
   if (value.catalogSnapshotId != null && value.catalogSnapshotId !== active.id)

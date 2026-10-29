@@ -2,6 +2,7 @@ import { extractDocx, DocxError } from "./lib/docx";
 import { extractXlsx, XlsxError } from "./lib/xlsx";
 import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
+import { catalogAnalysisEvidence, extractAnalysisProducts } from "./lib/catalog-analysis";
 import { isD1DailyQuotaError } from "./lib/d1-errors";
 import { requestScope, requireRequestAccess, hasRequestAccess, hasClientAccess, RequestAccessError, type RequestActor } from "./lib/request-access";
 import { handleEmailRegistration } from "./lib/email-registration";
@@ -2171,7 +2172,7 @@ async function processText(request: Request, env: Env, user: CurrentUser) {
 
   let originalText = buildContextPrefix(payload) + body;
   originalText = await appendOneCAnalysisContext(env, payload, originalText);
-  const aiResult = await analyzeText(env, originalText);
+  const aiResult = await reviewWithCatalog(env, await analyzeText(env, originalText), originalText);
   return insertRequest(env, {
     source_type: "text",
     ...payload,
@@ -2319,6 +2320,7 @@ async function processUpload(request: Request, env: Env, user: CurrentUser) {
     }
   }
 
+  aiResult = await reviewWithCatalog(env, aiResult, originalText);
   return insertRequest(env, {
     source_type: sourceType,
     ...metadata,
@@ -3819,6 +3821,24 @@ async function analyzeText(env: Env, originalText: string): Promise<string> {
   return readOpenAIText(response);
 }
 
+async function reviewWithCatalog(env: Env, first: string, original: string): Promise<string> {
+  if (!extractAnalysisProducts(first).length) return `${first}\n\nОбщий каталог: позиции автоматически не распознаны; проверьте подбор вручную.`;
+  let evidence: {prompt:string; report:string};
+  try { evidence = await catalogAnalysisEvidence(env, first); }
+  catch { return `${first}\n\nОбщий каталог: автоматическая проверка не выполнена. Проверьте подбор вручную.`; }
+  try {
+    const revised = await analyzeText(env, [
+      "Пересмотри предварительный разбор заявки с учётом справочных результатов общего каталога. Сохрани исходные позиции и количество. Кандидат не является подтверждённым совпадением. Не считай данные тестовой базы данными рабочего склада, не обещай наличие по устаревшему снимку, не выдавай закупочную цену клиенту как продажную. Если данных недостаточно, укажи что требуется проверка.",
+      `Исходная информация и проверка 1С:\n${original}`,
+      `Предварительный разбор:\n${first}`,
+      evidence.prompt,
+    ].join("\n\n"));
+    return `${revised}\n\n### Проверка общего каталога\n${evidence.report}`;
+  } catch {
+    return `${first}\n\nОбщий каталог: автоматический пересмотр ответа не выполнен; проверьте подбор вручную.\n\n### Проверка общего каталога\n${evidence.report}`;
+  }
+}
+
 async function analyzeImage(env: Env, filePayload: FilePayload, fileName: string, managerNote: string): Promise<string> {
   const systemPrompt = await buildSystemPrompt(env);
   if (useGemini(env)) {
@@ -4807,7 +4827,7 @@ async function processEmailMessage(env: Env, emailId: number, user: CurrentUser)
   };
   let originalText = `${buildContextPrefix(metadata)}${emailText}`;
   originalText = await appendOneCAnalysisContext(env, metadata, originalText);
-  const aiResult = await analyzeText(env, originalText);
+  const aiResult = await reviewWithCatalog(env, await analyzeText(env, originalText), originalText);
 
   const item = await insertRequest(env, {
     source_type: "email",
@@ -5213,7 +5233,7 @@ async function reanalyzeRequestWithOneC(env: Env, id: number, user: CurrentUser)
     ].join("\n"),
   );
 
-  const aiResult = await analyzeText(env, analysisText);
+  const aiResult = await reviewWithCatalog(env, await analyzeText(env, analysisText), analysisText);
 
   await updateScopedRequest(env, id, "ai_result=?,updated_at=datetime('now')", [aiResult]);
 
