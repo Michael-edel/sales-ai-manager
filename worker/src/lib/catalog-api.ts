@@ -315,13 +315,22 @@ async function findCandidates(env: CatalogEnv, value: Record<string, unknown>) {
     return term;
   });
   if (!query || (terms.length === 0 && !article)) throw new CatalogInputError("Введите артикул или название товара.");
+  // Older snapshots retain their original search index: multiplication signs
+  // were indexed as spaces and Cyrillic х was distinct from Latin x.
+  const variants = (term: string): string[] => {
+    if (!/\d+x\d/.test(term)) return [term];
+    const parts = term.split(/(?<=\d)x(?=\d)/);
+    if (parts.length > 4) return [term];
+    return parts.slice(1).reduce((all, part) => all.flatMap(prefix => ["x", "х", " "].map(separator => prefix + separator + part)), [parts[0]]);
+  };
   let offers: CatalogOffer[], searchTruncated = false;
   if (active.storage_version === 2) {
     const exact = await pageOffers(env, active.id, keyPredicates("exact_keys", article ? [article] : []), MAX_SEARCH_PAGES, MAX_SEARCH_BYTES);
     offers = exact.offers.filter(offer => normalizeCatalogText(offer.article) === article || normalizeCatalogText(offer.onecCode) === article);
     searchTruncated ||= exact.truncated;
     if (terms.length) {
-      const text = await pageOffers(env, active.id, [{ sql: terms.map(() => "instr(search_text,?)>0").join(" AND "), bindings: terms }], MAX_SEARCH_PAGES, MAX_SEARCH_BYTES);
+      const groups = terms.map(variants);
+      const text = await pageOffers(env, active.id, [{ sql: groups.map(group => "(" + group.map(() => "instr(search_text,?)>0").join(" OR ") + ")").join(" AND "), bindings: groups.flat() }], MAX_SEARCH_PAGES, MAX_SEARCH_BYTES);
       const known = new Set(offers.map(offer => offer.id));
       for (const offer of text.offers) {
         // A page can match different terms in different offers. Never return such
@@ -336,8 +345,9 @@ async function findCandidates(env: CatalogEnv, value: Record<string, unknown>) {
     const bindings: (string | number)[] = [active.id];
     if (article) { conditions.push("article_key=? OR onec_code_key=?"); bindings.push(article, article); }
     if (terms.length) {
-      conditions.push("(" + terms.map(() => "search_text LIKE ? ESCAPE '\\'").join(" AND ") + ")");
-      bindings.push(...terms.map(t => "%" + t.replace(/[\\%_]/g, c => "\\" + c) + "%"));
+      const groups = terms.map(variants);
+      conditions.push("(" + groups.map(group => "(" + group.map(() => "search_text LIKE ? ESCAPE '\\'").join(" OR ") + ")").join(" AND ") + ")");
+      bindings.push(...groups.flat().map(t => "%" + t.replace(/[\\%_]/g, c => "\\" + c) + "%"));
     }
     const rows = await env.DB.prepare("SELECT payload_json FROM catalog_offers WHERE snapshot_id=? AND (" + conditions.join(" OR ") + ") ORDER BY CASE WHEN article_key=? OR onec_code_key=? THEN 0 WHEN source_type='warehouse' THEN 1 ELSE 2 END LIMIT 201")
       .bind(...bindings, article, article).all<{ payload_json: string }>();

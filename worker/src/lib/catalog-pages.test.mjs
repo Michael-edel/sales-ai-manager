@@ -74,6 +74,20 @@ function raceBatches() {
 }
 
 describe("bounded catalog page storage", () => {
+  it("finds cable dimensions across old indexes without accepting a different size", async () => {
+    const cable = offer("cable:4", { name: "Кабель КГ 4*4", article: "КГ 4*4", brand: "", onecCode: "", unit: "м" });
+    const other = offer("cable:40", { name: "Кабель КГ 4*40", article: "КГ 4*40", brand: "", onecCode: "", unit: "м" });
+    const id = await load([cable, other]);
+    // Simulate pages imported before numeric separators were normalized.
+    sqlite.prepare("UPDATE catalog_pages SET search_text=? WHERE snapshot_id=?").run("кабель кг 4 4 кабель кг 4 40", id);
+    for (const query of ["КГ 4х4", "КГ 4x4", "КГ 4×4", "КГ 4*4"]) {
+      const result = await search(id, line(query, { unit: "м" }));
+      expect(result.status).toBe(200);
+      expect(result.data.candidates.map(item => item.offer.id)).toContain("cable:4");
+      const wrong = result.data.candidates.find(item => item.offer.id === "cable:40");
+      if (wrong) expect(wrong.matchKind).toBe("similar");
+    }
+  });
   it("reads supplier prices only from complete snapshots for the same source and all employee roles", async () => {
     const source = offer("supplier:x", { sourceType: "supplier", sourceId: "s1", sourceName: "S1", unit: "шт" });
     const old = await load([source], { exportedAt: new Date(Date.now() - 120000).toISOString() });

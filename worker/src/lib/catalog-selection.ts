@@ -125,7 +125,7 @@ export function validateQuoteDraft(input: unknown): QuoteDraft {
 
 /** Search normalization deliberately preserves all numbers/model parts. */
 export function normalizeCatalogText(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/(\d),(?=\d)/g, "$1.").replace(/[^\p{L}\p{N}.]+/gu, " ").replace(/\s+/g, " ").trim();
+  return value.normalize("NFKC").toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/(\d),(?=\d)/g, "$1.").replace(/(\d)\s*[xх×*]\s*(?=\d)/gu, "$1x").replace(/[^\p{L}\p{N}.]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 function normalizedUnit(value: string): string {
   const u = normalizeCatalogText(value).replace(/\.$/, "");
@@ -134,7 +134,7 @@ function normalizedUnit(value: string): string {
 }
 function parameters(value: string): string[] {
   const replacements: Record<string, string> = { а: "a", в: "b", с: "c", е: "e", к: "k", м: "m", н: "h", о: "o", р: "p", т: "t", х: "x" };
-  const compact = value.normalize("NFKC").toLowerCase().replace(/(\d),(?=\d)/g, "$1.").replace(/(^|[^\p{L}\p{N}])([a-zа-я]{1,4})\s+(?=\d)/gu, "$1$2").replace(/(\d)\s+(?=(?:[aа]|[pр]|[кk][aа]|[вv]|[wв][tт])(?:\s|$|[),]))/g, "$1");
+  const compact = value.normalize("NFKC").toLowerCase().replace(/(\d),(?=\d)/g, "$1.").replace(/(\d)\s*[xх×*]\s*(?=\d)/gu, "$1x").replace(/(^|[^\p{L}\p{N}])([a-zа-я]{1,4})\s+(?=\d)/gu, "$1$2").replace(/(\d)\s+(?=(?:[aа]|[pр]|[кk][aа]|[вv]|[wв][tт])(?:\s|$|[),]))/g, "$1");
   return (compact.match(/[\p{L}]*\d+(?:[.\-/xх×]\d+)*[\p{L}]*/gu) || []).map(token => token.replace(/[авсекмнортх]/g, char => replacements[char] || char)).filter(Boolean);
 }
 function match(line: RequestLine, offer: CatalogOffer): { score: number; kind: RankedOffer["matchKind"]; conflict: boolean; brandConflict: boolean } {
