@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Save, Search, Send, Server, Shield, Trash2, Upload, UserPlus } from "lucide-react";
+import { Archive, Check, CheckSquare, ChevronDown, ChevronUp, Clipboard, Database, Eye, FilePlus2, FileText, FolderOpen, Inbox, Loader2, LogOut, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Save, Search, Send, Server, Trash2, Upload } from "lucide-react";
 import {
   checkEmail,
   createEmailSenderFilter,
   createWhatsAppTemplate,
-  createUser,
   createRequestTask,
   deleteEmailSenderFilter,
   deleteRequest,
@@ -30,7 +29,6 @@ import {
   listWhatsAppTemplates,
   linkRequestOneCProduct,
   linkCrmClientOneCCounterparty,
-  listUsers,
   login,
   logout,
   processEmailMessage,
@@ -38,7 +36,6 @@ import {
   saveTextDraft,
   reanalyzeRequestWithOneC,
   refreshRequestOneCContext,
-  resetUserPassword,
   runOneCCommand,
   searchOneCCounterparties,
   searchOneCProducts,
@@ -48,9 +45,7 @@ import {
   updateDealDocuments,
   updateEmailMessage,
   updateAiRules,
-  updateUserEmail,
   updateWhatsAppTemplates,
-  updateUserActive,
   updateRequestTask,
   updateRequestStatus,
   uploadFile,
@@ -58,6 +53,7 @@ import {
 import EmailFolderNavigation from "./components/email/EmailFolderNavigation";
 import EmailMessageList from "./components/email/EmailMessageList";
 import CatalogSelectionPanel from "./components/catalog/CatalogSelectionPanel";
+import UserManagementPanel from "./components/users/UserManagementPanel";
 import { EMAIL_FOLDER_LABELS, EMAIL_STATUS_LABELS, emailSmtpHealthPresentation } from "./components/email/email-utils";
 import "./styles.css";
 
@@ -415,7 +411,7 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null);
   const [loginDraft, setLoginDraft] = useState({ username: "manager", password: "" });
   const [loginError, setLoginError] = useState("");
-  const [users, setUsers] = useState([]);
+  const [loginNotice, setLoginNotice] = useState("");
   const [aiRules, setAiRules] = useState([]);
   const [aiRulesStatus, setAiRulesStatus] = useState("");
   const [whatsappTemplates, setWhatsAppTemplates] = useState([]);
@@ -434,13 +430,6 @@ export default function App() {
     language_code: "ru",
     category: "UTILITY",
     body_text: "",
-  });
-  const [userDraft, setUserDraft] = useState({
-    username: "",
-    display_name: "",
-    email_address: "",
-    role: "manager",
-    password: "",
   });
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -509,12 +498,6 @@ export default function App() {
   const canManageRequests = ["admin", "manager"].includes(authUser?.role);
   const canManageDocuments = ["admin", "manager", "accountant"].includes(authUser?.role);
   const canManageTasks = ["admin", "manager", "accountant"].includes(authUser?.role);
-
-  async function refreshUsers() {
-    if (authUser?.role !== "admin") return;
-    const items = await listUsers();
-    setUsers(items);
-  }
 
   async function refreshAiRules() {
     const items = await listAiRules();
@@ -993,19 +976,15 @@ export default function App() {
     refreshParserStatus().catch(() => {});
     refreshOneCMcpStatus().catch(() => {});
     refreshSmtpStatus().catch(() => {});
-    refreshUsers().catch(() => {});
     refreshAiRules().catch((err) => setAiRulesStatus(err.message));
     refreshWhatsAppTemplates().catch((err) => setWhatsAppTemplatesStatus(err.message));
     refreshWhatsAppHealth().catch(() => setWhatsAppHealth({ configured: false, status: "error" }));
   }, [authUser]);
 
-  useEffect(() => {
-    refreshUsers().catch(() => {});
-  }, [authUser?.role]);
-
   async function handleLogin(event) {
     event.preventDefault();
     setLoginError("");
+    setLoginNotice("");
     setAuthLoading(true);
     try {
       const { user } = await login(loginDraft.username, loginDraft.password);
@@ -1019,6 +998,7 @@ export default function App() {
   }
 
   async function handleLogout() {
+    setLoginNotice("");
     await logout().catch(() => {});
     setAuthUser(null);
     setRequests([]);
@@ -1030,60 +1010,11 @@ export default function App() {
     setCrmSummary(null);
   }
 
-  async function handleCreateUser() {
-    setError("");
-    setLoading(true);
-    try {
-      await createUser(userDraft);
-      setUserDraft({ username: "", display_name: "", email_address: "", role: "manager", password: "" });
-      await refreshUsers();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleResetUserPassword(user) {
-    const password = window.prompt(`Новый пароль для ${user.username}`);
-    if (!password) return;
-    setError("");
-    setLoading(true);
-    try {
-      await resetUserPassword(user.id, password);
-      await refreshUsers();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleUpdateUserEmail(user) {
-    setError("");
-    setLoading(true);
-    try {
-      await updateUserEmail(user.id, user.email_address || "");
-      await refreshUsers();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleToggleUserActive(user) {
-    const nextActive = !Boolean(user.is_active);
-    setError("");
-    setLoading(true);
-    try {
-      await updateUserActive(user.id, nextActive);
-      await refreshUsers();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+  async function handleSessionExpired(message) {
+    await handleLogout();
+    setLoginDraft(current => ({ ...current, password: "" }));
+    setLoginError("");
+    setLoginNotice(message);
   }
 
   function updateAiRuleDraft(ruleKey, field, value) {
@@ -1882,11 +1813,13 @@ export default function App() {
               autoComplete="current-password"
             />
           </label>
-          {loginError && <div className="error-box">{loginError}</div>}
+          {loginNotice && <div className="users-notice" role="status">{loginNotice}</div>}
+          {loginError && <div className="error-box" role="alert">{loginError}</div>}
           <button className="primary-button" disabled={authLoading || !loginDraft.username || !loginDraft.password}>
             {authLoading ? <Loader2 className="spin" size={18} /> : null}
             Войти
           </button>
+          <p className="muted">Входите под личным логином. Забыли пароль? Обратитесь к администратору.</p>
         </form>
       </main>
     );
@@ -2481,109 +2414,7 @@ export default function App() {
           )}
         </section>
 
-        {authUser.role === "admin" && (
-          <section className="input-area users-area">
-            <div className="section-title">
-              <h2>Пользователи</h2>
-              <p>Аккаунты менеджеров Michael и бухгалтерии</p>
-            </div>
-
-            <div className="user-create-grid">
-              <label>
-                <span>Логин</span>
-                <input
-                  value={userDraft.username}
-                  onChange={(event) => setUserDraft((current) => ({ ...current, username: event.target.value }))}
-                  placeholder="manager1"
-                />
-              </label>
-              <label>
-                <span>Имя</span>
-                <input
-                  value={userDraft.display_name}
-                  onChange={(event) => setUserDraft((current) => ({ ...current, display_name: event.target.value }))}
-                  placeholder="Менеджер Michael"
-                />
-              </label>
-              <label>
-                <span>Email edel.kz</span>
-                <input
-                  value={userDraft.email_address}
-                  onChange={(event) => setUserDraft((current) => ({ ...current, email_address: event.target.value }))}
-                  placeholder="manager@edel.kz"
-                />
-              </label>
-              <label>
-                <span>Роль</span>
-                <select
-                  value={userDraft.role}
-                  onChange={(event) => setUserDraft((current) => ({ ...current, role: event.target.value }))}
-                >
-                  {ROLE_OPTIONS.map(([value, label]) => (
-                    <option key={value} value={value}>{label}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Пароль</span>
-                <input
-                  type="password"
-                  value={userDraft.password}
-                  onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))}
-                  placeholder="минимум 8 символов"
-                />
-              </label>
-              <button
-                className="secondary-button"
-                onClick={handleCreateUser}
-                disabled={loading || !userDraft.username || !userDraft.password}
-              >
-                <UserPlus size={18} />
-                Добавить
-              </button>
-            </div>
-
-            <div className="users-list">
-              {users.map((user) => (
-                <article className="user-row" key={user.id}>
-                  <Shield size={18} />
-                  <div>
-                    <strong>{user.display_name}</strong>
-                    <span>
-                      {user.username} · {ROLE_LABELS[user.role] || user.role} ·{" "}
-                      {user.is_active ? "активен" : "отключен"}
-                    </span>
-                  </div>
-                  <label className="user-email-field">
-                    <span>Email edel.kz</span>
-                    <input
-                      value={user.email_address || ""}
-                      onChange={(event) => setUsers((current) => current.map((item) => (
-                        item.id === user.id ? { ...item, email_address: event.target.value } : item
-                      )))}
-                      placeholder="user@edel.kz"
-                      disabled={loading}
-                    />
-                  </label>
-                  <button className="secondary-button" onClick={() => handleUpdateUserEmail(user)} disabled={loading}>
-                    Сохранить email
-                  </button>
-                  <button className="secondary-button" onClick={() => handleResetUserPassword(user)} disabled={loading}>
-                    Сбросить пароль
-                  </button>
-                  <button
-                    className="secondary-button"
-                    onClick={() => handleToggleUserActive(user)}
-                    disabled={loading || Number(user.id) === Number(authUser.id)}
-                    title={Number(user.id) === Number(authUser.id) ? "Нельзя отключить текущий аккаунт" : ""}
-                  >
-                    {user.is_active ? "Отключить" : "Включить"}
-                  </button>
-                </article>
-              ))}
-            </div>
-          </section>
-        )}
+        {authUser.role === "admin" && <UserManagementPanel authUser={authUser} roles={ROLE_OPTIONS} onSessionExpired={handleSessionExpired} />}
 
         {authUser.role === "admin" && (
           <section className="input-area ai-rules-area">

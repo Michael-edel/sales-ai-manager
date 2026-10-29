@@ -2,6 +2,11 @@ import PostalMime from "postal-mime";
 import { handleCatalogRoutes } from "./lib/catalog-api";
 import { isD1DailyQuotaError } from "./lib/d1-errors";
 import {
+  createPassword, dummyPasswordCheck, verifyStoredPassword, PasswordHashUnavailableError,
+  LEGACY_SCHEME, LEGACY_ITERATIONS, PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH,
+} from "./lib/password-kdf";
+export { PasswordKdf } from "./lib/password-kdf-object";
+import {
   AI_EXTERNAL_TIMEOUT_MS,
   DEFAULT_EXTERNAL_TIMEOUT_MS,
   PARSER_EXTERNAL_TIMEOUT_MS,
@@ -43,6 +48,7 @@ export interface Env {
   WHATSAPP_API_VERSION: string;
   ACCESS_USERNAME: string;
   ACCESS_PASSWORD: string;
+  PASSWORD_KDF?: DurableObjectNamespace;
 }
 
 type Metadata = {
@@ -75,6 +81,7 @@ type CurrentUser = {
   display_name: string;
   role: string;
   email_address: string;
+  auth_version: number;
 };
 
 type FormValue = string | File;
@@ -170,12 +177,10 @@ type EmailStatus = "received" | "in_work" | "done" | "deleted";
 const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers", "done", "trash"];
 const EMAIL_SENDER_ROUTE_FOLDERS: EmailFolder[] = ["suppliers", "buyers"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
-const PASSWORD_PBKDF2_ITERATIONS = 600_000;
-const LEGACY_PASSWORD_PBKDF2_ITERATIONS = 100_000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_BLOCK_MS = 15 * 60 * 1000;
-const DUMMY_PASSWORD_SALT = "AAAAAAAAAAAAAAAAAAAAAA==";
+const LOGIN_IP_ATTEMPT_LIMIT = 20;
 const DEFAULT_ONEC_MCP_ALLOWED_TOOLS = [
   "get_metadata_tree",
   "get_object_structure",
@@ -1219,7 +1224,7 @@ export default {
         return json({ user });
       }
       if (request.method === "POST" && url.pathname === "/api/auth/login") {
-        await ensureInitialUser(env);
+        assertBrowserOrigin(request);
         return await login(request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -1334,18 +1339,18 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/users") {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        return json(await createUser(request, env));
+        return json(await createUser(request, env, currentUser));
       }
       const userPasswordMatch = url.pathname.match(/^\/api\/users\/(\d+)\/password$/);
       if (request.method === "PATCH" && userPasswordMatch) {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        const user = await resetUserPassword(request, env, Number(userPasswordMatch[1]));
+        const user = await resetUserPassword(request, env, Number(userPasswordMatch[1]), currentUser);
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
       const userEmailMatch = url.pathname.match(/^\/api\/users\/(\d+)\/email$/);
       if (request.method === "PATCH" && userEmailMatch) {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
-        const user = await updateUserEmail(request, env, Number(userEmailMatch[1]));
+        const user = await updateUserEmail(request, env, Number(userEmailMatch[1]), currentUser);
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
       const userActiveMatch = url.pathname.match(/^\/api\/users\/(\d+)\/active$/);
@@ -1353,9 +1358,10 @@ export default {
         if (!isAdmin(currentUser)) return json({ detail: "Недостаточно прав." }, 403);
         const userId = Number(userActiveMatch[1]);
         if (userId === currentUser.id) return json({ detail: "Нельзя отключить текущего пользователя." }, 400);
-        const payload = (await request.json()) as { is_active?: unknown };
+        const payload = await readUserMutation(request);
+        allowUserFields(payload, ["is_active"]);
         if (typeof payload.is_active !== "boolean") return json({ detail: "Передайте is_active true/false." }, 400);
-        const user = await updateUserActive(env, userId, payload.is_active);
+        const user = await updateUserActive(env, userId, payload.is_active, currentUser);
         return user ? json(user) : json({ detail: "Пользователь не найден." }, 404);
       }
       const crmOneCMatch = url.pathname.match(/^\/api\/crm\/clients\/(\d+)\/1c-counterparty$/);
@@ -1572,20 +1578,22 @@ async function ensureInitialUser(env: Env): Promise<void> {
   if (Number(row?.count || 0) > 0) return;
   if (!env.ACCESS_PASSWORD) throw new Error("ACCESS_PASSWORD не задан. Нельзя создать первого пользователя.");
 
-  const username = normalizeUsername(env.ACCESS_USERNAME || "manager");
-  const password = await hashPassword(env.ACCESS_PASSWORD);
+  const username = validateNewUsername(env.ACCESS_USERNAME || "manager");
+  validateNewPassword(env.ACCESS_PASSWORD);
+  const password = await createPassword(env, env.ACCESS_PASSWORD);
   await env.DB.prepare(`
     INSERT OR IGNORE INTO app_users (
-      username, display_name, role, password_hash, password_salt, password_iterations
+      username, display_name, role, password_hash, password_salt, password_iterations, password_scheme
     )
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).bind(
     username,
     "Администратор",
     "admin",
     password.hash,
     password.salt,
-    PASSWORD_PBKDF2_ITERATIONS,
+    LEGACY_ITERATIONS,
+    password.scheme,
   ).run();
 }
 
@@ -1595,17 +1603,21 @@ const MAX_EMAIL_ATTACHMENTS = 20;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 async function login(request: Request, env: Env): Promise<Response> {
-  let payload: { username?: string; password?: string };
-  try {
-    payload = (await request.json()) as { username?: string; password?: string };
-  } catch {
-    return json({ detail: "Передайте логин и пароль в формате JSON." }, 400);
-  }
-  const username = normalizeUsername(payload.username || "");
+  const payload = await readBoundedJson(request, 4096);
+  const username = normalizeUsername(typeof payload.username === "string" ? payload.username : "");
   const password = typeof payload.password === "string" ? payload.password : "";
   if (!username || !password) return json({ detail: "Введите имя пользователя и пароль." }, 400);
-  if (username.length > 64 || password.length > 256) {
+  if (username.length > 64 || password.length > PASSWORD_MAX_LENGTH) {
     return json({ detail: "Неверное имя пользователя или пароль." }, 401);
+  }
+
+  // Reserve before any user lookup or expensive real/dummy KDF. Rotating a
+  // username must not bypass the limit or queue unbounded work in the private DO.
+  const ipBlockedUntil = await reserveLoginIpAttempt(request, env);
+  if (ipBlockedUntil) {
+    const retryAfter = Math.max(1, Math.ceil((ipBlockedUntil.getTime() - Date.now()) / 1000));
+    return jsonWithHeaders({ detail: "Слишком много попыток входа. Повторите позже." }, 429,
+      { "Retry-After": String(retryAfter) });
   }
 
   const attemptKey = await loginAttemptKey(request, username);
@@ -1617,17 +1629,15 @@ async function login(request: Request, env: Env): Promise<Response> {
     }, 429, { "Retry-After": String(retryAfter) });
   }
 
+  await ensureInitialUser(env);
   const user = await env.DB.prepare(`
     SELECT * FROM app_users WHERE username = ? AND is_active = 1
   `).bind(username).first() as Record<string, any> | null;
 
-  const passwordIterations = normalizePasswordIterations(user?.password_iterations);
-  const passwordMatches = await verifyPassword(
-    password,
-    user ? String(user.password_salt) : DUMMY_PASSWORD_SALT,
-    user ? String(user.password_hash) : "",
-    user ? passwordIterations : LEGACY_PASSWORD_PBKDF2_ITERATIONS,
-  );
+  const passwordMatches = user ? await verifyStoredPassword(env, password, {
+    password_hash: String(user.password_hash), password_salt: String(user.password_salt),
+    password_scheme: String(user.password_scheme), password_iterations: Number(user.password_iterations),
+  }) : (await dummyPasswordCheck(env, password), false);
   if (!user || !passwordMatches) {
     await recordLoginFailure(env, attemptKey);
     return json({ detail: "Неверное имя пользователя или пароль." }, 401);
@@ -1635,26 +1645,29 @@ async function login(request: Request, env: Env): Promise<Response> {
 
   await env.DB.prepare("DELETE FROM auth_login_attempts WHERE attempt_key = ?").bind(attemptKey).run();
 
-  if (passwordIterations < PASSWORD_PBKDF2_ITERATIONS) {
-    let upgradedPassword: { hash: string; salt: string } | null = null;
+  const credentialVersion = Number(user.auth_version);
+  if (user.password_scheme === LEGACY_SCHEME && env.PASSWORD_KDF) {
+    let upgradedPassword: Awaited<ReturnType<typeof createPassword>> | null = null;
     try {
-      upgradedPassword = await hashPassword(password);
+      upgradedPassword = await createPassword(env, password);
     } catch (error) {
-      // Workers rejects a single PBKDF2 derivation above 100,000 iterations.
-      // The existing password was already verified at its stored work factor;
-      // an optional upgrade must not lock out that user or rewrite its hash.
+      // Verification already succeeded at the original work factor. A transient
+      // failure of an optional upgrade never rewrites or weakens that credential.
       if (!(error instanceof PasswordHashUnavailableError)) throw error;
     }
     if (upgradedPassword) {
       await env.DB.prepare(`
         UPDATE app_users
-        SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
-        WHERE id = ?
+        SET password_hash = ?, password_salt = ?, password_scheme = ?, updated_at = datetime('now')
+        WHERE id = ? AND auth_version = ? AND is_active = 1 AND password_hash = ? AND password_salt = ?
       `).bind(
         upgradedPassword.hash,
         upgradedPassword.salt,
-        PASSWORD_PBKDF2_ITERATIONS,
+        upgradedPassword.scheme,
         Number(user.id),
+        credentialVersion,
+        user.password_hash,
+        user.password_salt,
       ).run();
     }
   }
@@ -1663,13 +1676,15 @@ async function login(request: Request, env: Env): Promise<Response> {
   const tokenHash = await sha256Base64(token);
   const expiresAt = toSqlDateTime(new Date(Date.now() + SESSION_TTL_SECONDS * 1000));
 
-  await env.DB.prepare(`
-    INSERT INTO auth_sessions (user_id, token_hash, expires_at)
-    VALUES (?, ?, ?)
-  `).bind(Number(user.id), tokenHash, expiresAt).run();
-  await env.DB.prepare(`
-    UPDATE app_users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
-  `).bind(Number(user.id)).run();
+  const session = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO auth_sessions (user_id, token_hash, expires_at, auth_version)
+      SELECT id, ?, ?, auth_version FROM app_users WHERE id = ? AND is_active = 1 AND auth_version = ? RETURNING id`)
+      .bind(tokenHash, expiresAt, Number(user.id), credentialVersion),
+    env.DB.prepare(`UPDATE app_users SET last_login_at = datetime('now'), updated_at = datetime('now')
+      WHERE id = ? AND auth_version = ? AND EXISTS (SELECT 1 FROM auth_sessions WHERE token_hash = ?)`)
+      .bind(Number(user.id), credentialVersion, tokenHash),
+  ]);
+  if (!session[0].results.length) return json({ detail: "Пароль или доступ изменены. Войдите заново." }, 401);
 
   const currentUser = userToCurrentUser(user);
   return jsonWithHeaders({ user: currentUser }, 200, {
@@ -1678,6 +1693,7 @@ async function login(request: Request, env: Env): Promise<Response> {
 }
 
 async function logout(request: Request, env: Env): Promise<Response> {
+  assertBrowserOrigin(request);
   const token = getCookie(request, SESSION_COOKIE_NAME);
   if (token) {
     await env.DB.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").bind(await sha256Base64(token)).run();
@@ -1693,12 +1709,13 @@ async function authenticateRequest(request: Request, env: Env): Promise<CurrentU
 
   const tokenHash = await sha256Base64(token);
   const row = await env.DB.prepare(`
-    SELECT u.id, u.username, u.display_name, u.role, u.email_address, s.last_seen_at
+    SELECT u.id, u.username, u.display_name, u.role, u.email_address, u.auth_version, s.last_seen_at
     FROM auth_sessions s
     INNER JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ?
       AND s.expires_at > datetime('now')
       AND u.is_active = 1
+      AND s.auth_version = u.auth_version
   `).bind(tokenHash).first() as Record<string, any> | null;
   if (!row) return null;
 
@@ -1728,70 +1745,145 @@ async function listUsers(env: Env) {
   return result.results;
 }
 
-async function createUser(request: Request, env: Env) {
-  const payload = (await request.json()) as {
-    username?: string;
-    display_name?: string;
-    role?: string;
-    email_address?: string;
-    password?: string;
-  };
-  const username = normalizeUsername(payload.username || "");
-  const displayName = normalizeOptionalText(payload.display_name) || username;
-  const role = normalizeRole(payload.role);
-  const emailAddress = normalizeEdelEmailAddress(payload.email_address);
-  const passwordValue = typeof payload.password === "string" ? payload.password : "";
-  if (!username) throw new UserInputError("Имя пользователя пустое.");
-  if (passwordValue.length < 8) throw new UserInputError("Пароль должен быть не короче 8 символов.");
-  await ensureUserEmailAvailable(env, emailAddress);
+const ADMIN_ACTOR_CONDITION = `EXISTS (
+  SELECT 1 FROM app_users actor WHERE actor.id = ? AND actor.is_active = 1
+    AND actor.role = 'admin' AND actor.auth_version = ?
+)`;
 
-  const password = await hashPassword(passwordValue);
-  const result = await env.DB.prepare(`
-    INSERT INTO app_users (
-      username, display_name, role, email_address, password_hash, password_salt, password_iterations
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    username,
-    displayName,
-    role,
-    emailAddress || null,
-    password.hash,
-    password.salt,
-    PASSWORD_PBKDF2_ITERATIONS,
-  ).run();
-  const id = Number(result.meta.last_row_id);
-  if (emailAddress) {
-    await assignExistingEmailsToUser(env, emailAddress, displayName || username);
+async function readBoundedJson(request: Request, maxBytes: number): Promise<Record<string, unknown>> {
+  if (!/^application\/json(?:;|$)/i.test(request.headers.get("Content-Type") || "")) {
+    throw new UserInputError("Передайте данные в формате JSON.", 415);
   }
+  if (Number(request.headers.get("Content-Length")) > maxBytes) throw new UserInputError("Слишком большой запрос.", 413);
+  const reader = request.body?.getReader();
+  if (!reader) throw new UserInputError("Передайте данные в формате JSON.");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); throw new UserInputError("Слишком большой запрос.", 413); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  let payload: unknown;
+  try { payload = JSON.parse(new TextDecoder().decode(bytes)); }
+  catch { throw new UserInputError("Некорректные данные JSON."); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new UserInputError("Передайте объект JSON.");
+  return payload as Record<string, unknown>;
+}
+
+async function readUserMutation(request: Request): Promise<Record<string, unknown>> {
+  assertBrowserOrigin(request);
+  return readBoundedJson(request, 8192);
+}
+
+function assertBrowserOrigin(request: Request): void {
+  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+    throw new UserInputError("Откройте кабинет на сайте и повторите действие.", 403);
+  }
+}
+
+function allowUserFields(payload: Record<string, unknown>, allowed: string[]): void {
+  if (Object.keys(payload).some(key => !allowed.includes(key))) throw new UserInputError("Неизвестное поле пользователя.");
+}
+
+function validateNewUsername(value: unknown): string {
+  const username = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!/^[a-z0-9._-]{1,64}$/.test(username)) {
+    throw new UserInputError("Логин: от 1 до 64 символов, латинские буквы, цифры, точка, дефис или подчёркивание.");
+  }
+  return username;
+}
+
+function validateNewPassword(value: unknown): string {
+  if (typeof value !== "string" || value.length < PASSWORD_MIN_LENGTH || value.length > PASSWORD_MAX_LENGTH) {
+    throw new UserInputError(`Пароль должен содержать от ${PASSWORD_MIN_LENGTH} до ${PASSWORD_MAX_LENGTH} символов.`);
+  }
+  return value;
+}
+
+function validateUserEmail(value: unknown): string {
+  if (value !== undefined && value !== null && (typeof value !== "string" || value.length > 254)) {
+    throw new UserInputError("Email должен содержать не более 254 символов.");
+  }
+  const email = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (email && !/^[a-z0-9._%+-]+@edel\.kz$/.test(email)) throw new UserInputError("Укажите корпоративный email @edel.kz.");
+  return email;
+}
+
+function throwUserConflict(error: unknown): never {
+  const message = error instanceof Error ? error.message : "";
+  if (/UNIQUE constraint failed: app_users\.username/i.test(message)) throw new UserInputError("Этот логин уже занят. Выберите другой.", 409);
+  if (/UNIQUE constraint failed: app_users\.email_address/i.test(message)) throw new UserInputError("Этот email уже привязан к другому пользователю.", 409);
+  throw error;
+}
+
+async function getSafeUser(env: Env, id: number) {
   return env.DB.prepare(`
     SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
     FROM app_users WHERE id = ?
   `).bind(id).first();
 }
 
-async function resetUserPassword(request: Request, env: Env, userId: number) {
-  const payload = (await request.json()) as { password?: string };
-  const passwordValue = typeof payload.password === "string" ? payload.password : "";
-  if (passwordValue.length < 8) throw new UserInputError("Пароль должен быть не короче 8 символов.");
-
-  const password = await hashPassword(passwordValue);
-  const result = await env.DB.prepare(`
-    UPDATE app_users
-    SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(password.hash, password.salt, PASSWORD_PBKDF2_ITERATIONS, userId).run();
-  if (!result.meta.changes) return null;
-  await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
-  return env.DB.prepare(`
-    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
-    FROM app_users WHERE id = ?
-  `).bind(userId).first();
+async function createUser(request: Request, env: Env, actor: CurrentUser) {
+  const payload = await readUserMutation(request);
+  allowUserFields(payload, ["username", "display_name", "role", "email_address", "password"]);
+  const username = validateNewUsername(payload.username);
+  if (payload.display_name !== undefined && (typeof payload.display_name !== "string" || payload.display_name.length > 200)) {
+    throw new UserInputError("Имя сотрудника должно содержать не более 200 символов.");
+  }
+  const displayName = typeof payload.display_name === "string" ? payload.display_name.trim() || username : username;
+  const role = payload.role === undefined ? "manager" : payload.role;
+  if (typeof role !== "string" || !["admin", "manager", "accountant", "viewer"].includes(role)) throw new UserInputError("Неизвестная роль пользователя.");
+  const emailAddress = validateUserEmail(payload.email_address);
+  const passwordValue = validateNewPassword(payload.password);
+  const existing = await env.DB.prepare("SELECT id FROM app_users WHERE username = ?").bind(username).first();
+  if (existing) throw new UserInputError("Этот логин уже занят. Выберите другой.", 409);
+  await ensureUserEmailAvailable(env, emailAddress);
+  const password = await createPassword(env, passwordValue);
+  let result: D1Result;
+  try {
+    result = await env.DB.prepare(`INSERT INTO app_users (
+      username, display_name, role, email_address, password_hash, password_salt, password_iterations, password_scheme
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${ADMIN_ACTOR_CONDITION} RETURNING id`)
+      .bind(username, displayName, role, emailAddress || null, password.hash, password.salt,
+        LEGACY_ITERATIONS, password.scheme, actor.id, actor.auth_version).all();
+  } catch (error) { throwUserConflict(error); }
+  if (!result.results.length) throw new UserInputError("Доступ администратора изменён. Войдите заново.", 403);
+  const id = Number((result.results[0] as Record<string, unknown>).id);
+  if (emailAddress) await assignExistingEmailsToUser(env, emailAddress, displayName);
+  return getSafeUser(env, id);
 }
 
-async function updateUserEmail(request: Request, env: Env, userId: number) {
-  const payload = (await request.json()) as { email_address?: unknown };
-  const emailAddress = normalizeEdelEmailAddress(payload.email_address);
+async function resetUserPassword(request: Request, env: Env, userId: number, actor: CurrentUser) {
+  const payload = await readUserMutation(request);
+  allowUserFields(payload, ["password"]);
+  const passwordValue = validateNewPassword(payload.password);
+  if (!await getSafeUser(env, userId)) return null;
+  const password = await createPassword(env, passwordValue);
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE app_users SET password_hash = ?, password_salt = ?, password_scheme = ?,
+      auth_version = auth_version + 1, updated_at = datetime('now')
+      WHERE id = ? AND ${ADMIN_ACTOR_CONDITION} RETURNING id`)
+      .bind(password.hash, password.salt, password.scheme, userId, actor.id, actor.auth_version),
+    env.DB.prepare(`DELETE FROM auth_sessions WHERE user_id = ? AND EXISTS (
+      SELECT 1 FROM app_users WHERE id = ? AND password_hash = ? AND password_salt = ? AND password_scheme = ?)`)
+      .bind(userId, userId, password.hash, password.salt, password.scheme),
+  ]);
+  if (!result[0].results.length) throw new UserInputError("Доступ администратора изменён. Войдите заново.", 403);
+  return { ...await getSafeUser(env, userId), sessions_revoked: true };
+}
+
+async function updateUserEmail(request: Request, env: Env, userId: number, actor: CurrentUser) {
+  const payload = await readUserMutation(request);
+  allowUserFields(payload, ["email_address"]);
+  const emailAddress = validateUserEmail(payload.email_address);
   const existing = await env.DB.prepare(`
     SELECT id, username, display_name, email_address
     FROM app_users
@@ -1800,12 +1892,13 @@ async function updateUserEmail(request: Request, env: Env, userId: number) {
   if (!existing) return null;
   await ensureUserEmailAvailable(env, emailAddress, userId);
 
-  const result = await env.DB.prepare(`
-    UPDATE app_users
-    SET email_address = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(emailAddress || null, userId).run();
-  if (!result.meta.changes) return null;
+  let result: D1Result;
+  try {
+    result = await env.DB.prepare(`UPDATE app_users SET email_address = ?, updated_at = datetime('now')
+      WHERE id = ? AND ${ADMIN_ACTOR_CONDITION} RETURNING id`)
+      .bind(emailAddress || null, userId, actor.id, actor.auth_version).all();
+  } catch (error) { throwUserConflict(error); }
+  if (!result.results.length) throw new UserInputError("Доступ администратора изменён. Войдите заново.", 403);
 
   if (emailAddress) {
     const managerName = normalizeOptionalText(existing.display_name) || normalizeOptionalText(existing.username);
@@ -1827,26 +1920,23 @@ async function ensureUserEmailAvailable(env: Env, emailAddress: string, userId: 
     WHERE email_address = ?
   `).bind(emailAddress).first() as Record<string, unknown> | null;
   if (existing && Number(existing.id) !== Number(userId)) {
-    throw new UserInputError("Этот email уже привязан к другому пользователю.");
+    throw new UserInputError("Этот email уже привязан к другому пользователю.", 409);
   }
 }
 
-async function updateUserActive(env: Env, userId: number, isActive: boolean) {
-  const result = await env.DB.prepare(`
-    UPDATE app_users
-    SET is_active = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).bind(isActive ? 1 : 0, userId).run();
-  if (!result.meta.changes) return null;
-
-  if (!isActive) {
-    await env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
-  }
-
-  return env.DB.prepare(`
-    SELECT id, username, display_name, role, email_address, is_active, created_at, updated_at, last_login_at
-    FROM app_users WHERE id = ?
-  `).bind(userId).first();
+async function updateUserActive(env: Env, userId: number, isActive: boolean, actor: CurrentUser) {
+  if (!await getSafeUser(env, userId)) return null;
+  const active = isActive ? 1 : 0;
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE app_users SET auth_version = auth_version + CASE WHEN is_active <> ? THEN 1 ELSE 0 END,
+      is_active = ?, updated_at = datetime('now') WHERE id = ? AND ${ADMIN_ACTOR_CONDITION} RETURNING id`)
+      .bind(active, active, userId, actor.id, actor.auth_version),
+    env.DB.prepare(`DELETE FROM auth_sessions WHERE user_id = ? AND EXISTS (
+      SELECT 1 FROM app_users WHERE id = ? AND is_active = 0) AND ${ADMIN_ACTOR_CONDITION}`)
+      .bind(userId, userId, actor.id, actor.auth_version),
+  ]);
+  if (!result[0].results.length) throw new UserInputError("Доступ администратора изменён. Войдите заново.", 403);
+  return getSafeUser(env, userId);
 }
 
 async function ensureDefaultAiRules(env: Env): Promise<void> {
@@ -4736,17 +4826,6 @@ function normalizeCompanyMailboxAddress(value: unknown): string {
   return emailAddress.endsWith("@edel.kz") ? emailAddress : "";
 }
 
-function normalizeEdelEmailAddress(value: unknown): string {
-  const raw = normalizeOptionalText(value);
-  if (!raw) return "";
-
-  const emailAddress = normalizeEmailFilterAddress(raw);
-  if (!emailAddress || !emailAddress.endsWith("@edel.kz")) {
-    throw new UserInputError("Email пользователя должен быть ящиком домена edel.kz.");
-  }
-  return emailAddress;
-}
-
 function normalizeEmailDate(value: unknown): string {
   const text = normalizeOptionalText(value);
   if (!text) return "";
@@ -7103,6 +7182,7 @@ function userToCurrentUser(row: Record<string, any>): CurrentUser {
     display_name: String(row.display_name),
     role: String(row.role),
     email_address: normalizeOptionalText(row.email_address),
+    auth_version: Number(row.auth_version),
   };
 }
 
@@ -7110,63 +7190,34 @@ function normalizeUsername(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
 }
 
-function normalizeRole(value: unknown): string {
-  const role = normalizeOptionalText(value) || "manager";
-  return ["admin", "manager", "accountant", "viewer"].includes(role) ? role : "manager";
-}
-
-class PasswordHashUnavailableError extends Error {
-  constructor() { super("The password work factor is not supported by this runtime."); }
-}
-
-async function hashPassword(
-  password: string,
-  saltBase64 = "",
-  iterations = PASSWORD_PBKDF2_ITERATIONS,
-): Promise<{ hash: string; salt: string }> {
-  const salt = saltBase64 ? base64ToBytes(saltBase64) : crypto.getRandomValues(new Uint8Array(16));
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  let bits: ArrayBuffer;
-  try {
-    bits = await crypto.subtle.deriveBits(
-      { name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256,
-    );
-  } catch (error) {
-    // Catch this documented platform limit only, never arbitrary crypto errors.
-    if (iterations > LEGACY_PASSWORD_PBKDF2_ITERATIONS && error instanceof Error
-      && error.name === "NotSupportedError"
-      && /^Pbkdf2 failed: iteration counts above 100000 are not supported \(requested \d+\)\.?$/.test(error.message)) {
-      throw new PasswordHashUnavailableError();
-    }
-    throw error;
-  }
-  return {
-    hash: bytesToBase64(new Uint8Array(bits)),
-    salt: bytesToBase64(salt),
-  };
-}
-
-async function verifyPassword(
-  password: string,
-  salt: string,
-  expectedHash: string,
-  iterations = PASSWORD_PBKDF2_ITERATIONS,
-): Promise<boolean> {
-  const actual = await hashPassword(password, salt, iterations);
-  return timingSafeEqualBytes(base64ToBytes(actual.hash), base64ToBytes(expectedHash));
-}
-
-function normalizePasswordIterations(value: unknown): number {
-  const iterations = Number(value || LEGACY_PASSWORD_PBKDF2_ITERATIONS);
-  return Number.isFinite(iterations) && iterations >= LEGACY_PASSWORD_PBKDF2_ITERATIONS
-    ? Math.floor(iterations)
-    : LEGACY_PASSWORD_PBKDF2_ITERATIONS;
-}
-
 async function loginAttemptKey(request: Request, username: string): Promise<string> {
   const source = request.headers.get("CF-Connecting-IP") || "unknown";
   return sha256Base64(`${username}|${source}`);
+}
+
+async function reserveLoginIpAttempt(request: Request, env: Env): Promise<Date | null> {
+  // CF-Connecting-IP is supplied by Cloudflare. Do not accept a client-selected
+  // X-Forwarded-For value; requests without platform metadata share one bucket.
+  const source = request.headers.get("CF-Connecting-IP") || "unknown";
+  const attemptKey = `ip:v1:${await sha256Base64(source)}`;
+  const windowModifier = `-${LOGIN_WINDOW_MS / 1000} seconds`;
+  const blockedModifier = `+${LOGIN_WINDOW_MS / 1000} seconds`;
+  const reserved = await env.DB.prepare(`
+    INSERT INTO auth_login_attempts (
+      attempt_key, failed_count, window_started_at, blocked_until, updated_at
+    ) VALUES (?, 1, datetime('now'), datetime('now', ?), datetime('now'))
+    ON CONFLICT(attempt_key) DO UPDATE SET
+      failed_count = CASE WHEN window_started_at <= datetime('now', ?) THEN 1 ELSE failed_count + 1 END,
+      window_started_at = CASE WHEN window_started_at <= datetime('now', ?) THEN excluded.window_started_at ELSE window_started_at END,
+      blocked_until = CASE WHEN window_started_at <= datetime('now', ?) THEN excluded.blocked_until ELSE blocked_until END,
+      updated_at = datetime('now')
+    WHERE window_started_at <= datetime('now', ?) OR failed_count < ?
+    RETURNING failed_count
+  `).bind(attemptKey, blockedModifier, windowModifier, windowModifier, windowModifier,
+    windowModifier, LOGIN_IP_ATTEMPT_LIMIT).first();
+  if (reserved) return null;
+  // A denied reservation never changes the counter or extends the window.
+  return await getLoginBlockedUntil(env, attemptKey) || new Date(Date.now() + 1000);
 }
 
 async function getLoginBlockedUntil(env: Env, attemptKey: string): Promise<Date | null> {
@@ -7182,40 +7233,22 @@ async function getLoginBlockedUntil(env: Env, attemptKey: string): Promise<Date 
 }
 
 async function recordLoginFailure(env: Env, attemptKey: string): Promise<void> {
-  const row = await env.DB.prepare(`
-    SELECT failed_count, window_started_at
-    FROM auth_login_attempts
-    WHERE attempt_key = ?
-  `).bind(attemptKey).first() as Record<string, unknown> | null;
-  const now = Date.now();
-  const startedAtText = normalizeOptionalText(row?.window_started_at);
-  const startedAt = startedAtText ? new Date(`${startedAtText.replace(" ", "T")}Z`).getTime() : 0;
-  const withinWindow = Number.isFinite(startedAt) && now - startedAt < LOGIN_WINDOW_MS;
-  const failedCount = withinWindow ? Number(row?.failed_count || 0) + 1 : 1;
-  const windowStartedAt = toSqlDateTime(new Date(withinWindow ? startedAt : now));
-  const blockedUntil = failedCount >= LOGIN_FAILURE_LIMIT
-    ? toSqlDateTime(new Date(now + LOGIN_BLOCK_MS))
-    : null;
-
+  // One SQL statement serializes concurrent failures. Reading the count into JS
+  // before incrementing would lose failures when multiple requests finish KDF.
+  const windowModifier = `-${LOGIN_WINDOW_MS / 1000} seconds`;
+  const blockedModifier = `+${LOGIN_BLOCK_MS / 1000} seconds`;
   await env.DB.prepare(`
     INSERT INTO auth_login_attempts (
       attempt_key, failed_count, window_started_at, blocked_until, updated_at
-    ) VALUES (?, ?, ?, ?, datetime('now'))
+    ) VALUES (?, 1, datetime('now'), NULL, datetime('now'))
     ON CONFLICT(attempt_key) DO UPDATE SET
-      failed_count = excluded.failed_count,
-      window_started_at = excluded.window_started_at,
-      blocked_until = excluded.blocked_until,
+      failed_count = CASE WHEN window_started_at <= datetime('now', ?) THEN 1 ELSE MIN(failed_count + 1, ?) END,
+      window_started_at = CASE WHEN window_started_at <= datetime('now', ?) THEN excluded.window_started_at ELSE window_started_at END,
+      blocked_until = CASE WHEN window_started_at > datetime('now', ?) AND failed_count + 1 >= ?
+        THEN datetime('now', ?) ELSE NULL END,
       updated_at = datetime('now')
-  `).bind(attemptKey, failedCount, windowStartedAt, blockedUntil).run();
-}
-
-function timingSafeEqualBytes(actual: Uint8Array, expected: Uint8Array): boolean {
-  let diff = actual.length ^ expected.length;
-  const length = Math.max(actual.length, expected.length);
-  for (let index = 0; index < length; index += 1) {
-    diff |= (actual[index] || 0) ^ (expected[index] || 0);
-  }
-  return diff === 0;
+  `).bind(attemptKey, windowModifier, LOGIN_FAILURE_LIMIT, windowModifier, windowModifier,
+    LOGIN_FAILURE_LIMIT, blockedModifier).run();
 }
 
 function generateSessionToken(): string {

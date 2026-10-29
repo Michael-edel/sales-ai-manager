@@ -1,10 +1,19 @@
 name = "sales-ai-manager"
 main = "src/index.ts"
 compatibility_date = "2026-06-15"
+compatibility_flags = ["nodejs_compat"]
 account_id = "3e2a044cfaf01abb436adfe910297e5c"
 workers_dev = true
 # Preserve service URLs managed in the Cloudflare dashboard during CI deployments.
 keep_vars = true
+
+[[durable_objects.bindings]]
+name = "PASSWORD_KDF"
+class_name = "PasswordKdf"
+
+[[migrations]]
+tag = "v1-password-kdf"
+new_sqlite_classes = ["PasswordKdf"]
 
 [[routes]]
 pattern = "ai.michael.kz"

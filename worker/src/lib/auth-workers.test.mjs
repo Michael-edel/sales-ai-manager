@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import worker from "../index";
 
 const fixturePassword = "fixture-local-password-16";
-const salt = Buffer.from("fixture-salt-1234").toString("base64");
+const salt = Buffer.from("fixture-salt-123").toString("base64");
 const hash = iterations => pbkdf2Sync(fixturePassword, Buffer.from(salt, "base64"), iterations, 32, "sha256").toString("base64");
 let sqlite, env, derive, actualDerive;
 function statement(sql, bindings = []) {
@@ -61,7 +61,7 @@ describe("login under the actual Workers PBKDF2 ceiling", () => {
     expect(response.status).toBe(200); expect(response.data.user).toMatchObject({ username: "manager", role: "admin" });
     expect(response.cookie).toMatch(/^sales_ai_session=/);
     expect(savedPassword()).toEqual(before);
-    expect(derive.mock.calls.map(([algorithm]) => algorithm.iterations)).toEqual([100000, 600000]);
+    expect(derive.mock.calls.map(([algorithm]) => algorithm.iterations)).toEqual([100000]);
     expect(count("auth_sessions")).toBe(1);
     const session = sqlite.prepare("SELECT token_hash FROM auth_sessions").get();
     expect(session.token_hash).toBe(createHash("sha256").update(response.cookie.split("=")[1]).digest("base64"));
@@ -75,7 +75,7 @@ describe("login under the actual Workers PBKDF2 ceiling", () => {
     expect(response.cookie).toBeUndefined(); expect(count("auth_sessions")).toBe(0);
     expect(savedPassword()).toEqual(before);
     expect(derive.mock.calls.map(([algorithm]) => algorithm.iterations)).toEqual([100000]);
-    expect(count("auth_login_attempts")).toBe(1);
+    expect(count("auth_login_attempts")).toBe(2); // One reserved IP window and one failed username/IP pair.
   });
 
   it("keeps the five-failure throttling gate and does not bypass it with crypto fallback", async () => {
@@ -91,7 +91,7 @@ describe("login under the actual Workers PBKDF2 ceiling", () => {
     expect(response).toMatchObject({ status: 503, data: { error_code: "AUTH_HASH_UNAVAILABLE" } });
     expect(JSON.stringify(response.data)).not.toContain(fixturePassword);
     expect(savedPassword()).toEqual(before); expect(count("auth_sessions")).toBe(0);
-    expect(count("auth_login_attempts")).toBe(0);
+    expect(count("auth_login_attempts")).toBe(1); // KDF failure still consumes its bounded IP reservation.
   });
 
   it("does not overwrite passwords, revoke sessions or create users when strong hashing is unavailable", async () => {
@@ -111,24 +111,14 @@ describe("login under the actual Workers PBKDF2 ceiling", () => {
     expect(count("app_users")).toBe(0); expect(count("auth_sessions")).toBe(0);
   });
 
-  it("does not swallow unrelated crypto failures after password verification", async () => {
+  it("does not swallow unrelated crypto verification failures", async () => {
     const before = savedPassword();
     derive.mockImplementation(async (algorithm, ...args) => {
-      if (algorithm.iterations > 100000) throw new Error("fixture crypto failure");
-      return actualDerive(algorithm, ...args);
+      throw new Error("fixture crypto failure");
     });
     const response = await login();
     expect(response.status).toBe(500); expect(response.data.error_id).toEqual(expect.any(String));
     expect(response.cookie).toBeUndefined(); expect(count("auth_sessions")).toBe(0); expect(savedPassword()).toEqual(before);
-  });
-
-  it("keeps real 600,000-iteration strengthening where the runtime supports it", async () => {
-    derive.mockImplementation((...args) => actualDerive(...args));
-    expect((await login()).status).toBe(200);
-    expect(savedPassword().password_iterations).toBe(600000);
-    expect(savedPassword().password_hash).not.toBe(hash(100000));
-    const strengthened = savedPassword();
-    expect((await login()).status).toBe(200); expect(savedPassword()).toEqual(strengthened);
   });
 
   it("awaits asynchronous login failures so database quota errors stay structured JSON", async () => {

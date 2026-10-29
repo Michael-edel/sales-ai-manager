@@ -79,6 +79,9 @@ jobs:
       - name: Test catalog export
         run: node --test catalog-bridge/export.test.mjs
 
+      - name: Test user account form validation
+        run: node --test frontend/src/lib/user-accounts.test.mjs
+
       - name: Audit production Node dependencies
         run: |
           npm audit --omit=dev --prefix frontend
@@ -107,6 +110,12 @@ jobs:
       - name: Deploy Worker
         working-directory: worker
         run: npx wrangler deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Verify password hashing on Cloudflare
+        run: node worker/scripts/check-auth-runtime.mjs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -19,6 +19,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: node --test catalog-bridge/export.test.mjs
+      - run: node --test frontend/src/lib/user-accounts.test.mjs
       - run: npm ci
         working-directory: worker
       - run: npm run typecheck

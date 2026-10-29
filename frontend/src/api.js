@@ -31,8 +31,8 @@ export function logout() {
   return request("/auth/logout", { method: "POST" });
 }
 
-export function listUsers() {
-  return request("/users");
+export function listUsers(options = {}) {
+  return request("/users", options);
 }
 
 export function createUser(payload) {
