@@ -56,6 +56,7 @@ import {
 } from "./api";
 import EmailFolderNavigation from "./components/email/EmailFolderNavigation";
 import EmailMessageList from "./components/email/EmailMessageList";
+import SmtpSettingsPanel from "./components/email/SmtpSettingsPanel";
 import CatalogSelectionPanel from "./components/catalog/CatalogSelectionPanel";
 import SharedCatalogPanel from "./components/catalog/SharedCatalogPanel";
 import UserManagementPanel from "./components/users/UserManagementPanel";
@@ -2580,6 +2581,7 @@ export default function App() {
         </section>
 
         {authUser.role === "admin" && <UserManagementPanel key={authUser.id} authUser={authUser} roles={ROLE_OPTIONS} onSessionExpired={handleSessionExpired} />}
+        {authUser.role === "admin" && <SmtpSettingsPanel key={`smtp-${authUser.id}`} onSaved={() => refreshSmtpStatus()} />}
 
         {authUser.role === "admin" && (
           <section className="input-area ai-rules-area">

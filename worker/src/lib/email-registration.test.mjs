@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { scryptSync } from 'node:crypto';
 import { handleEmailRegistration } from './email-registration';
 import { PasswordKdf, SCRYPT_PROFILE } from './password-kdf-object';
+import * as nativeMail from './smtp-mail';
 let sqlite, env, delivered, calls;
 const origin = 'https://ai.michael.kz';
 function statement(sql, bindings = []) {
@@ -36,7 +37,7 @@ beforeEach(() => {
     PASSWORD_KDF: { idFromName: x => x, get: () => ({ fetch: (url, options) => { calls++; return kdf.fetch(new Request(url, options)); } }) } };
   vi.stubGlobal('fetch', vi.fn(async (_url, options) => { delivered.push(JSON.parse(options.body)); return Response.json({ sent: true }); }));
 });
-afterEach(() => { vi.unstubAllGlobals(); sqlite.close(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); sqlite.close(); });
 
 describe('email ownership before employee account activation', () => {
   it('sends a one-time corporate link without creating any user or accepting a password upfront', async () => {
@@ -117,5 +118,21 @@ describe('email ownership before employee account activation', () => {
     expect(await call('/verify', { token:raw, password:'Ёжик!12' })).toMatchObject({ status:400 });
     expect(await call('/verify', { token:raw, password:'Ёжик!123' })).toMatchObject({ status:201 });
     expect(sqlite.prepare('SELECT role FROM app_users').get().role).toBe('manager');
+  });
+  it('uses the configured native SMTP sender without requiring a bridge or leaking credentials', async () => {
+    env.EMAIL_BRIDGE_URL=''; env.EMAIL_BRIDGE_TOKEN='';
+    vi.spyOn(nativeMail,'getSmtpSettingsStatus').mockResolvedValue({configured:true});
+    vi.spyOn(nativeMail,'sendCorporateMail').mockImplementation(async (_env,message)=>{delivered.push(message);return{sent:true,from_address:'sender@edel.kz'};});
+    expect(await call()).toMatchObject({status:202});
+    expect(fetch).not.toHaveBeenCalled();
+    expect(delivered.at(-1).to).toBe('anna@edel.kz');
+    expect(await call('/verify',{token:token(),password:'Ёжик!123'})).toMatchObject({status:201});
+  });
+  it('revokes a link if native SMTP fails instead of retrying through another sender', async () => {
+    vi.spyOn(nativeMail,'getSmtpSettingsStatus').mockResolvedValue({configured:true});
+    vi.spyOn(nativeMail,'sendCorporateMail').mockRejectedValue(new Error('private SMTP detail'));
+    const result=await call(); expect(result).toMatchObject({status:503});
+    expect(JSON.stringify(result)).not.toContain('private SMTP'); expect(fetch).not.toHaveBeenCalled();
+    expect(sqlite.prepare('SELECT token_hash FROM auth_email_registrations').get().token_hash).toBe(null);
   });
 });

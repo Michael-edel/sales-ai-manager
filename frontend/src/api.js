@@ -402,6 +402,22 @@ export function getEmailSmtpHealth() {
   return request("/email/smtp/health");
 }
 
+export function getSmtpSettings(options = {}) {
+  return request("/settings/smtp", options);
+}
+
+export function saveSmtpSettings(payload) {
+  return request("/settings/smtp", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+}
+
+export function probeSmtpServer({ host, port }) {
+  return request("/settings/smtp/probe", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host, port }),
+  });
+}
+
 export function sendEmailReply(payload) {
   return request("/email/send", {
     method: "POST",

@@ -1,7 +1,8 @@
 import { createPassword, LEGACY_ITERATIONS, PasswordHashUnavailableError, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH,
   type PasswordKdfEnv } from "./password-kdf";
+import { getSmtpSettingsStatus, sendCorporateMail, type SmtpEnv } from "./smtp-mail";
 
-export interface RegistrationEnv extends PasswordKdfEnv {
+export interface RegistrationEnv extends PasswordKdfEnv, SmtpEnv {
   DB: D1Database;
   EMAIL_BRIDGE_URL?: string;
   EMAIL_BRIDGE_TOKEN?: string;
@@ -66,7 +67,19 @@ function appOrigin(env: RegistrationEnv): string {
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/" || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))) throw new Error("Invalid registration origin");
   return url.origin;
 }
+async function deliveryConfigured(env: RegistrationEnv): Promise<boolean> {
+  if ((await getSmtpSettingsStatus(env)).configured) return true;
+  return Boolean(mailSettings(env));
+}
 async function send(env: RegistrationEnv, to: string, text: string): Promise<void> {
+  if ((await getSmtpSettingsStatus(env)).configured) {
+    try {
+      await sendCorporateMail(env, { to, subject: "Регистрация сотрудника Michael", body: text });
+      return;
+    } catch {
+      throw new RegistrationError("Не удалось отправить письмо подтверждения. Повторите позже или обратитесь к администратору.", 503, "REGISTRATION_MAIL_UNAVAILABLE");
+    }
+  }
   const settings = mailSettings(env);
   if (!settings) throw new RegistrationError("Регистрация по почте временно недоступна. Обратитесь к администратору.", 503, "REGISTRATION_MAIL_UNAVAILABLE");
   try {
@@ -86,7 +99,7 @@ async function requestRegistration(request: Request, env: RegistrationEnv): Prom
   const name = typeof value.display_name === "string" ? value.display_name.trim() : "";
   if (!EMAIL.test(email)) throw new RegistrationError("Укажите корпоративный адрес @edel.kz.");
   if (!name || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) throw new RegistrationError("Укажите имя сотрудника, не более 200 символов.");
-  if (!mailSettings(env)) throw new RegistrationError("Регистрация по почте временно недоступна. Обратитесь к администратору.", 503, "REGISTRATION_MAIL_UNAVAILABLE");
+  if (!await deliveryConfigured(env)) throw new RegistrationError("Регистрация по почте временно недоступна. Обратитесь к администратору.", 503, "REGISTRATION_MAIL_UNAVAILABLE");
   await reserve(env, "request:ip:" + await digest(request.headers.get("CF-Connecting-IP") || "unknown"), 10);
   await reserve(env, "request:email:" + await digest(email), 3);
   const existing = await env.DB.prepare("SELECT id FROM app_users WHERE lower(email_address)=? OR lower(username)=? LIMIT 1").bind(email, email).first();
@@ -138,7 +151,7 @@ export async function handleEmailRegistration(request: Request, env: Registratio
   const path = new URL(request.url).pathname;
   if (!path.startsWith("/api/auth/registration")) return null;
   try {
-    if (path === "/api/auth/registration/status" && request.method === "GET") return response({ enabled: Boolean(mailSettings(env)) });
+    if (path === "/api/auth/registration/status" && request.method === "GET") return response({ enabled: await deliveryConfigured(env) });
     if (path === "/api/auth/registration" && request.method === "POST") return await requestRegistration(request, env);
     if (path === "/api/auth/registration/verify" && request.method === "POST") return await completeRegistration(request, env);
     return response({ detail: "Метод регистрации не найден." }, 404);

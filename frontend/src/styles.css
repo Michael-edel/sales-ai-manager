@@ -1181,6 +1181,17 @@ button:disabled,
 }
 
 .users-access-note { font-size: 13px; line-height: 1.5; }
+.smtp-settings-panel, .smtp-settings-panel form { display: grid; gap: 14px; }
+.smtp-settings-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.smtp-settings-grid label { display: grid; font-size: 13px; gap: 6px; min-width: 0; }
+.smtp-settings-grid label > span { color: #4f5b53; font-weight: 650; }
+.smtp-settings-grid input, .smtp-settings-grid select { min-width: 0; }
+.smtp-settings-grid small { color: #6b756e; font-size: 12px; line-height: 1.5; }
+.smtp-password-field { grid-column: 1 / -1; }
+.smtp-settings-note { align-items: flex-start; color: #58665c; display: flex; font-size: 13px; gap: 7px; line-height: 1.6; margin: 0; }
+.smtp-settings-note svg { flex-shrink: 0; margin-top: 3px; }
+.smtp-verified { color: #285d3d; font-size: 13px; line-height: 1.5; margin: 0; }
+.smtp-settings-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .registration-card h1 { font-size: 23px; }
 .registration-card .muted { font-size: 13px; line-height: 1.6; margin: 0; }
 .registration-card small { color: #6b756e; font-size: 12px; line-height: 1.4; }
@@ -1227,6 +1238,9 @@ button:disabled,
 .account-dialog :is(button, input, select):focus-visible { outline: 3px solid #86b794; outline-offset: 2px; }
 .account-dialog button:disabled { cursor: default; }
 @media (max-width: 600px) {
+  .smtp-settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .smtp-settings-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .smtp-settings-actions .primary-button { grid-row: 1; }
   .shared-catalog-search { grid-template-columns: minmax(0, 1fr); }
   .request-assignee > button { width: 100%; }
   .account-dialog { max-height: calc(100dvh - 20px); padding: 18px; width: calc(100% - 20px); }

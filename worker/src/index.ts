@@ -3,6 +3,7 @@ import { handleCatalogRoutes } from "./lib/catalog-api";
 import { isD1DailyQuotaError } from "./lib/d1-errors";
 import { requestScope, requireRequestAccess, hasRequestAccess, hasClientAccess, RequestAccessError, type RequestActor } from "./lib/request-access";
 import { handleEmailRegistration } from "./lib/email-registration";
+import { handleSmtpSettings, getSmtpSettingsStatus, checkSmtpAuthentication, sendSmtpMessage, SmtpError, type SmtpConnect } from "./lib/smtp-mail";
 import {
   createPassword, dummyPasswordCheck, verifyStoredPassword, PasswordHashUnavailableError,
   LEGACY_SCHEME, LEGACY_ITERATIONS, PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH,
@@ -55,6 +56,9 @@ export interface Env {
   REQUEST_USER?: CurrentUser;
   REGISTRATION_FROM_EMAIL?: string;
   REGISTRATION_APP_ORIGIN?: string;
+  SMTP_CONNECT?: SmtpConnect;
+  SMTP_SETTINGS_KEY?: string;
+  SMTP_ALLOWED_HOSTS?: string;
 }
 
 type Metadata = {
@@ -1251,6 +1255,8 @@ export default {
       const currentUser = await authenticateRequest(request, env);
       if (!currentUser) return json({ detail: "Нужно войти в программу." }, 401);
       env = { ...env, REQUEST_USER: currentUser };
+      const smtpSettingsResponse = await handleSmtpSettings(request, env, currentUser);
+      if (smtpSettingsResponse) return smtpSettingsResponse;
       const scopedRequestPath = url.pathname.match(/^\/api\/requests\/(\d+)(?:\/|$)/);
       if (scopedRequestPath && !await hasRequestAccess(env, currentUser, Number(scopedRequestPath[1]))) {
         return json({ detail: "Заявка не найдена." }, 404);
@@ -1431,6 +1437,13 @@ export default {
         return json(await createEmailSenderFilter(request, env, currentUser));
       }
       if (request.method === "GET" && url.pathname === "/api/email/smtp/health") {
+        const status = await getSmtpSettingsStatus(env);
+        if (status.configured && normalizeCompanyMailboxAddress(currentUser.email_address) === status.from_address) {
+          try { await checkSmtpAuthentication(env); }
+          catch { return json({ configured: true, reachable: false, status: "error", transport: "cloudflare-smtp", smtp: { configured: true, reachable: false, auth_verified: false }, detail: "Защищённая авторизация почты сейчас не подтверждена. Проверьте настройки SMTP." }); }
+          return json({ configured: true, reachable: true, smtp_configured: true, status: "ok", transport: "cloudflare-smtp", smtp: { configured: true, reachable: true, auth_verified: true },
+            detail: "Защищённая авторизация SMTP подтверждена для этого отправителя. Доставка писем этой проверкой не подтверждается.", auth_verified_at: status.auth_verified_at });
+        }
         return json(await checkEmailBridge(env));
       }
       if (request.method === "POST" && url.pathname === "/api/email/check") {
@@ -1589,6 +1602,7 @@ export default {
           error_id: errorId,
         }, 503);
       }
+      if (error instanceof SmtpError) return json({ detail: error.message, error_code: error.code }, error.status);
       if (isD1DailyQuotaError(error)) {
         const now = new Date();
         const resetAt = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
@@ -3546,12 +3560,14 @@ async function checkEmailBridge(env: Env) {
 }
 
 async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUser) {
-  const payload = (await request.json()) as {
+  assertBrowserOrigin(request);
+  const payload = await readBoundedJson(request, 200 * 1024) as {
     request_id?: number;
     to?: string;
     subject?: string;
     body?: string;
   };
+  if (Object.keys(payload).some(field => !["request_id", "to", "subject", "body"].includes(field))) throw new UserInputError("Неизвестное поле письма.");
   const to = normalizeOptionalText(payload.to);
   const subject = normalizeOptionalText(payload.subject);
   const body = normalizeOptionalText(payload.body);
@@ -3562,6 +3578,21 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
   if (!body) throw new UserInputError("Текст письма пустой.");
   const fromAddress = normalizeCompanyMailboxAddress(currentUser.email_address);
   if (!fromAddress) throw new UserInputError("К пользователю не привязан рабочий email @edel.kz.");
+
+  const nativeStatus = await getSmtpSettingsStatus(env);
+  if (nativeStatus.configured && fromAddress === nativeStatus.from_address) {
+    await sendSmtpMessage(env, { to, subject, body }, fromAddress, requestId ? () => hasRequestAccess(env, currentUser, requestId) : undefined);
+    let auditRecorded = !requestId;
+    // SMTP has already accepted this message. Audit/ownership changes after
+    // that point must never report a failed send and encourage duplicate mail.
+    if (requestId) try {
+      await createRequestEvent(env, requestId, "email.sent", currentUser.username, {
+        to, from_address: fromAddress, subject, bridge_status: "accepted", transport: "cloudflare-smtp",
+      });
+      auditRecorded = true;
+    } catch { /* Do not log mail content or append an event to another owner's request. */ }
+    return { sent: true, to, from_address: fromAddress, subject, audit_recorded: auditRecorded, detail: "Почтовый сервер принял письмо к отправке." };
+  }
 
   const baseUrl = (env.EMAIL_BRIDGE_URL || "").trim().replace(/\/+$/, "");
   if (!baseUrl) {
@@ -3587,23 +3618,23 @@ async function sendEmailReply(request: Request, env: Env, currentUser: CurrentUs
     throw new Error(`Ошибка email-bridge: ${data?.detail || raw || response.statusText}`);
   }
 
-  if (requestId) {
+  let auditRecorded = !requestId;
+  if (requestId) try {
     const existing = await getRequest(env, requestId);
     if (existing) {
       await createRequestEvent(env, requestId, "email.sent", currentUser.display_name || currentUser.username, {
-        to,
-        from_address: fromAddress,
-        subject,
-        bridge_status: data?.status || "sent",
+        to, from_address: fromAddress, subject, bridge_status: data?.status || "sent",
       });
+      auditRecorded = true;
     }
-  }
+  } catch { /* SMTP acceptance remains successful even if audit persistence fails. */ }
 
   return {
     sent: true,
     to,
     from_address: fromAddress,
     subject,
+    audit_recorded: auditRecorded,
     detail: data?.detail || "Письмо отправлено через email-bridge.",
   };
 }

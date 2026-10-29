@@ -1,5 +1,5 @@
 name = "sales-ai-manager"
-main = "src/index.ts"
+main = "src/entry.ts"
 compatibility_date = "2026-06-15"
 compatibility_flags = ["nodejs_compat"]
 account_id = "3e2a044cfaf01abb436adfe910297e5c"
@@ -27,6 +27,7 @@ GEMINI_RETRY_ATTEMPTS = "3"
 GEMINI_RETRY_BASE_DELAY_MS = "800"
 WHATSAPP_API_VERSION = "v24.0"
 ACCESS_USERNAME = "manager"
+SMTP_ALLOWED_HOSTS = "mail-edel.edel.kz"
 ONEC_MCP_ALLOWED_TOOLS = "get_metadata_tree,get_object_structure,get_form_structure,get_configuration_info,execute_query,validate_query"
 
 [assets]

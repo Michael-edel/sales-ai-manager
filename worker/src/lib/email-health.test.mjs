@@ -9,6 +9,7 @@ beforeEach(() => {
     EMAIL_BRIDGE_TOKEN: "fixture-bridge-token",
     DB: {
       prepare: sql => {
+        if (sql.includes("FROM smtp_settings")) return { first: async () => null };
         if (!sql.includes("FROM auth_sessions")) throw new Error("Unexpected database mutation or query");
         return { bind: () => ({ first: async () => ({
           id: 1, username: "fixture", display_name: "Fixture", role: "manager", email_address: "fixture@edel.kz",
