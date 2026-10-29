@@ -54,6 +54,12 @@ async function save(body = payload(), options = {}) {
 const count = table => sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
 
 describe("text requests saved without AI", () => {
+  it("does not expose the experimental device endpoint without device credentials or admin controls to a manager", async () => {
+    const device = await worker.fetch(new Request("https://ai.michael.kz/api/catalog-sync/device/status"),env);
+    expect(device.status).toBe(401);
+    const admin = await worker.fetch(new Request("https://ai.michael.kz/api/catalog-sync/admin/devices", {method:"POST",headers:{Origin:"https://ai.michael.kz","Content-Type":"application/json",Cookie:`sales_ai_session=${tokens.manager}`},body:"{}"}),env);
+    expect(admin.status).toBe(403);
+  });
   it("creates a normal pending request and internal selection tasks without external calls", async () => {
     const response = await save();
     expect(response.status).toBe(200);
@@ -153,10 +159,30 @@ describe("text requests saved without AI", () => {
       method: "POST", headers: { "Content-Type": "application/json", Cookie: `sales_ai_session=${tokens.manager}` }, body: JSON.stringify(payload()),
     }), env);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ source_type: "text", ai_result: "A. Анализ тестовой заявки выполнен" });
+    expect(await response.json()).toMatchObject({ source_type: "text", ai_result: "A. Анализ тестовой заявки выполнен\n\nОбщий каталог: позиции автоматически не распознаны; проверьте подбор вручную." });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(count("requests")).toBe(1);
     expect(count("request_draft_submissions")).toBe(0);
     expect(count("request_tasks")).toBe(2);
+  });
+  it("includes catalog candidates in AI review while keeping test warehouse provenance", async () => {
+    env.AI_PROVIDER = "openai"; env.OPENAI_API_KEY = "fixture-only";
+    const now = new Date().toISOString(), id = "11111111-1111-4111-8111-111111111111";
+    const cable = {id:"fixture:cable",productId:"fixture:cable",name:"Кабель КГ 4*4",article:"КГ 4*4",brand:"",onecCode:"C1",unit:"м",sourceId:"warehouse:test",sourceName:"1С тестовая",sourceType:"warehouse",warehouseName:"Экибастуз",quantity:8,available:true,stockConfirmed:true,updatedAt:now,prices:{purchase:{amount:100,currency:"KZT",vatIncluded:true,vatRate:null,updatedAt:now},wholesale:null,retail:null},delivery:{type:"stock",timezone:"Asia/Almaty",windows:[],shippingCost:null,notes:""}};
+    sqlite.prepare("INSERT INTO catalog_imports(id,source_system,exported_at,environment,expected_count,received_count,status,created_by,storage_version) VALUES(?,'michael-cabinet',?,'test',1,1,'complete',1,2)").run(id,now);
+    sqlite.prepare("INSERT INTO catalog_state(id,active_snapshot_id) VALUES(1,?)").run(id);
+    sqlite.prepare("INSERT INTO catalog_pages VALUES(?,?,?,?,?,?,?,?)").run(id,0,1,JSON.stringify([cable]),"кабель кг 4 4",JSON.stringify(["кг 4 4","c1"]),JSON.stringify([cable.id]),JSON.stringify([cable.productId]));
+    const first="| № | Код | Наименование | Ед. изм. | Кол-во | Цена |\n|---|---|---|---|---|---|\n| 1 | уточняется | Кабель КГ 4х4 | м | 30 | уточняется |";
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({output_text:first}))).mockResolvedValueOnce(new Response(JSON.stringify({output_text:"Подбор требует подтверждения."})));
+    const response = await worker.fetch(new Request("https://ai.michael.kz/api/requests/text", {method:"POST",headers:{"Content-Type":"application/json",Cookie:`sales_ai_session=${tokens.manager}`},body:JSON.stringify(payload())}),env);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.ai_result).toContain("Кабель КГ 4*4");
+    expect(result.ai_result).toContain("остаток: 8 м");
+    expect(result.ai_result).toContain("среда: test");
+    const review = JSON.parse(fetch.mock.calls[1][1].body);
+    expect(review.input).toContain('"quantity":8');
+    expect(review.input).toContain("тестовой 1С");
+    expect(count("requests")).toBe(1);
   });
 });

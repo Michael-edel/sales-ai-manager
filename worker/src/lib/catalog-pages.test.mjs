@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { handleCatalogRoutes } from "./catalog-api";
+import { catalogAnalysisEvidence, extractAnalysisProducts } from "./catalog-analysis";
 
 // Execute real SQLite migrations and transactions; only D1's transport is adapted.
 let sqlite, env, queries;
@@ -22,7 +23,7 @@ beforeEach(() => {
   queries = [];
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
-  for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql"])
+  for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql"])
     sqlite.exec(readFileSync(new URL("../../migrations/" + migration, import.meta.url), "utf8"));
   env = { DB: { prepare: sql => statement(sql), batch: async entries => {
     sqlite.exec("BEGIN");
@@ -74,6 +75,32 @@ function raceBatches() {
 }
 
 describe("bounded catalog page storage", () => {
+  it("provides catalog candidates and test provenance to request analysis", async () => {
+    const id = await load([offer("cable", { name: "Кабель КГ 4*4", article: "КГ 4*4", onecCode: "C1", unit: "м" })]);
+    sqlite.prepare("UPDATE catalog_pages SET search_text=? WHERE snapshot_id=?").run("кабель кг 4 4", id);
+    const text = "| № | Код | Наименование | Ед. изм. | Кол-во | Цена |\n|---|---|---|---|---|---|\n| 1 | уточняется | Кабель КГ 4х4 | м | 30 | уточняется |";
+    expect(extractAnalysisProducts(text)).toEqual([{query:"Кабель КГ 4х4",quantity:30,unit:"м"}]);
+    const evidence = await catalogAnalysisEvidence(env, text);
+    expect(evidence.prompt).toContain("среда test");
+    expect(evidence.prompt).toContain("Кабель КГ 4*4");
+    expect(evidence.prompt).toContain("тестовой 1С");
+    expect(evidence.prompt).toContain('"quantity":10');
+    expect(evidence.report).toContain("остаток: 10 м");
+  });
+  it("finds cable dimensions across old indexes without accepting a different size", async () => {
+    const cable = offer("cable:4", { name: "Кабель КГ 4*4", article: "КГ 4*4", brand: "", onecCode: "", unit: "м" });
+    const other = offer("cable:40", { name: "Кабель КГ 4*40", article: "КГ 4*40", brand: "", onecCode: "", unit: "м" });
+    const id = await load([cable, other]);
+    // Simulate pages imported before numeric separators were normalized.
+    sqlite.prepare("UPDATE catalog_pages SET search_text=? WHERE snapshot_id=?").run("кабель кг 4 4 кабель кг 4 40", id);
+    for (const query of ["КГ 4х4", "КГ 4x4", "КГ 4×4", "КГ 4*4"]) {
+      const result = await search(id, line(query, { unit: "м" }));
+      expect(result.status).toBe(200);
+      expect(result.data.candidates.map(item => item.offer.id)).toContain("cable:4");
+      const wrong = result.data.candidates.find(item => item.offer.id === "cable:40");
+      if (wrong) expect(wrong.matchKind).toBe("similar");
+    }
+  });
   it("reads supplier prices only from complete snapshots for the same source and all employee roles", async () => {
     const source = offer("supplier:x", { sourceType: "supplier", sourceId: "s1", sourceName: "S1", unit: "шт" });
     const old = await load([source], { exportedAt: new Date(Date.now() - 120000).toISOString() });

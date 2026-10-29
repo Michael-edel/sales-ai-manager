@@ -1,0 +1,148 @@
+import {beforeEach,afterEach,describe,it,expect} from "vitest";
+import {DatabaseSync} from "node:sqlite";
+import {readFileSync} from "node:fs";
+import {beginPageSync,stagePage,stageNewPage,commitPageSync,abortPageSync} from "./catalog-page-sync";
+import {handleCatalogRoutes} from "./catalog-api";
+import {handleSyncDeviceRequest,handleSyncAdminRequest} from './catalog-sync-api';
+import {tokenHash} from './catalog-sync-device';
+import {synchronizeSuppliers} from '../../../catalog-bridge/device-sync.mjs';
+import {createDeviceRequest} from '../../../catalog-bridge/device-http.mjs';
+let db,env;
+const device={id:"33333333-3333-4333-8333-333333333333",created_by:1};
+function stmt(sql,bindings=[]){const execute=()=>{const st=db.prepare(sql);if(st.columns().length)return{results:st.all(...bindings),meta:{}};return{results:[],meta:{changes:Number(st.run(...bindings).changes)}}};return{bind:(...args)=>stmt(sql,args),first:async()=>execute().results[0]||null,all:async()=>execute(),run:async()=>execute(),execute};}
+const older="2026-10-27T10:00:00.000Z", later="2026-10-28T10:00:00.000Z";
+const offer=id=>({id,productId:id,name:"Test",article:id,brand:"",onecCode:"",unit:"шт",sourceId:"supplier:test",sourceName:"Test",sourceType:"supplier",warehouseName:"",quantity:1,available:true,stockConfirmed:true,updatedAt:older,prices:{purchase:{amount:100,currency:"KZT",vatIncluded:true,vatRate:null,updatedAt:older},retail:null,wholesale:null},delivery:{type:"unknown",timezone:"Asia/Almaty",windows:[],shippingCost:null,notes:""}});
+const update=(id,amount)=>({id,sourceId:"supplier:test",quantity:2,available:true,stockConfirmed:true,updatedAt:later,prices:{purchase:{amount,currency:"KZT",vatIncluded:true,vatRate:null,updatedAt:later},retail:null,wholesale:null}});
+beforeEach(()=>{db=new DatabaseSync(':memory:');db.exec("PRAGMA foreign_keys=ON; CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1);");for(const f of ['0020_catalog_quotations.sql','0022_catalog_pages.sql'])db.exec(readFileSync(new URL('../../migrations/'+f,import.meta.url),'utf8'));db.exec(readFileSync(new URL('./catalog-page-sync.schema.sql',import.meta.url),'utf8')); db.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,'2026-10-27')").run(device.id,'fixture');const id='11111111-1111-4111-8111-111111111111';db.prepare("INSERT INTO catalog_imports(id,source_system,exported_at,environment,expected_count,received_count,status,created_by,storage_version) VALUES(?,'michael-cabinet',?,'test',2,2,'complete',1,2)").run(id,older);db.prepare('INSERT INTO catalog_state(id,active_snapshot_id) VALUES(1,?)').run(id);for(const [i,o] of [offer('a'),offer('b')].entries())db.prepare('INSERT INTO catalog_pages VALUES(?,?,?,?,?,?,?,?)').run(id,i,1,JSON.stringify([o]),o.name,JSON.stringify([o.article]),JSON.stringify([o.id]),JSON.stringify([o.productId]));env={DB:{prepare:s=>stmt(s),batch:async list=>{db.exec('BEGIN');try{const out=list.map(x=>x.execute());db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}}}};});
+afterEach(()=>db.close());
+describe('isolated reference snapshot prototype',()=>{
+ it('removes abandoned staging pages but never an active or historical snapshot',async()=>{
+  const base='11111111-1111-4111-8111-111111111111',sync=await beginPageSync(env,base,device,1,later);
+  await stagePage(env,sync.id,device,0,[update('a',120)]);
+  await expect(abortPageSync(env,sync.id,{id:'44444444-4444-4444-8444-444444444444',created_by:1})).rejects.toThrow();
+  await abortPageSync(env,sync.id,device);await abortPageSync(env,sync.id,device);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM catalog_pages WHERE snapshot_id=?').get(sync.id).n).toBe(0);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM catalog_pages WHERE snapshot_id=?').get(base).n).toBe(2);
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(base);
+ });
+ it('keeps the active catalog and rolls back staging when the history budget is exhausted',async()=>{
+  const base='11111111-1111-4111-8111-111111111111',sync=await beginPageSync(env,base,device,1,later);
+  db.prepare('UPDATE catalog_sync_budget SET used_bytes=299999999 WHERE id=1').run();
+  await expect(stagePage(env,sync.id,device,0,[update('a',120)])).rejects.toThrow();
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(base);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM catalog_sync_pages WHERE sync_id=?').get(sync.id).n).toBe(0);
+  expect(db.prepare('SELECT used_bytes FROM catalog_sync_budget WHERE id=1').get().used_bytes).toBe(299999999);
+ });
+ it('reports a full history budget without leaking diagnostic data',async()=>{
+  const secret='a'.repeat(64),base='11111111-1111-4111-8111-111111111111';db.prepare('UPDATE catalog_sync_devices SET token_hash=? WHERE id=?').run(await tokenHash(secret),device.id);
+  const sync=await beginPageSync(env,base,device,1,later);db.prepare('UPDATE catalog_sync_budget SET used_bytes=299999999 WHERE id=1').run();
+  const request=new Request(`https://ai.michael.kz/api/catalog-sync/device/runs/${sync.id}/pages/0`,{method:'PUT',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},body:JSON.stringify({updates:[update('a',120)]})});
+  const result=await handleSyncDeviceRequest(request,env);expect(result.status).toBe(409);expect((await result.json()).errorCode).toBe('HISTORY_STORAGE_LIMIT');
+ });
+ it('adds new supplier offers, accepting only links to a warehouse item with the same unit',async()=>{
+  const base='11111111-1111-4111-8111-111111111111';const warehouse={...offer('b'),sourceType:'warehouse',sourceId:'warehouse:one'};
+  db.prepare('UPDATE catalog_pages SET payload_json=? WHERE snapshot_id=? AND batch_index=1').run(JSON.stringify([warehouse]),base);
+  const sync=await beginPageSync(env,base,device,1,later,2);
+  await expect(stageNewPage(env,sync.id,device,2,[offer('a')])).rejects.toThrow();
+  await expect(stageNewPage(env,sync.id,device,2,[{...offer('c'),productId:'a'}])).rejects.toThrow();
+  await expect(stageNewPage(env,sync.id,device,2,[{...offer('c'),productId:'b',unit:'м'}])).rejects.toThrow();
+  await expect(stageNewPage(env,sync.id,device,2,[{...offer('c'),sourceType:'warehouse'}])).rejects.toThrow();
+  const incoming=[offer('c'),{...offer('d'),productId:'b'}];
+  await stageNewPage(env,sync.id,device,2,incoming);await stageNewPage(env,sync.id,device,2,incoming);await commitPageSync(env,sync.id,device);
+  expect(db.prepare('SELECT received_count AS n FROM catalog_imports WHERE id=?').get(sync.id).n).toBe(4);
+  expect(db.prepare('SELECT content_snapshot_id AS id FROM catalog_page_refs WHERE snapshot_id=? AND batch_index=0').get(sync.id).id).toBe(base);
+  const found=await handleCatalogRoutes(new Request('https://example.test/api/catalog/search?q=c'),env,{id:1,username:'test',role:'admin'});
+  expect((await found.json()).candidates.map(item=>item.offer.id)).toContain('c');
+ });
+ it('synchronizes a local observation through the scoped HTTP API and exposes the price history',async()=>{
+  const secret='a'.repeat(64);db.prepare('UPDATE catalog_sync_devices SET token_hash=? WHERE id=?').run(await tokenHash(secret),device.id);
+  const request=createDeviceRequest({secret,fetchImpl:async(url,options)=>handleSyncDeviceRequest(new Request(url,options),env)});
+  let checkpoint=null;const journal={read:async()=>checkpoint,write:async x=>{checkpoint=x;},clear:async()=>{checkpoint=null;}};
+  const next=offer('a');Object.assign(next,update('a',120));
+  const result=await synchronizeSuppliers({request,journal,snapshot:{schemaVersion:1,sourceSystem:'michael-cabinet',exportedAt:later,offers:[next,offer('b'),offer('c')]}});
+  expect(result.changed).toBe(1);expect(result.added).toBe(1);expect(checkpoint).toBeNull();
+  const history=await handleCatalogRoutes(new Request('https://example.test/api/catalog/price-history?offerId=a'),env,{id:1,username:'test',role:'admin'});
+  expect((await history.json()).points.map(p=>p.price.amount)).toEqual([120,100]);
+  const added=await handleCatalogRoutes(new Request('https://example.test/api/catalog/search?q=c'),env,{id:1,username:'test',role:'admin'});
+  expect((await added.json()).candidates.map(item=>item.offer.id)).toContain('c');
+ });
+ it('allows only scoped device access and transports changed supplier pages',async()=>{
+  const secret='a'.repeat(64), base='11111111-1111-4111-8111-111111111111';
+  db.prepare('UPDATE catalog_sync_devices SET token_hash=? WHERE id=?').run(await tokenHash(secret),device.id);
+  const call=async(path,method='GET',body,token=secret,origin)=>handleSyncDeviceRequest(new Request('https://ai.michael.kz/api/catalog-sync/device/'+path,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(origin?{Origin:origin}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}),env);
+  expect((await call('status','GET',undefined,'')).status).toBe(401);
+  expect((await call('status','GET',undefined,secret,'https://evil.example')).status).toBe(403);
+  const status=await (await call('status')).json(); expect(status.active.id).toBe(base);
+  expect((await (await call('pages?snapshot='+base)).json()).indexes).toEqual([0,1]);
+  expect((await (await call('pages/0?snapshot='+base)).json()).offers[0].id).toBe('a');
+  const started=await call('runs','POST',{baseId:base,expectedPages:1,addedCount:0,exportedAt:later});expect(started.status).toBe(201);const run=await started.json();
+  expect((await call(`runs/${run.id}/pages/0`,'PUT',{updates:[update('a',120)]})).status).toBe(200);
+  expect((await call(`runs/${run.id}/commit`,'POST',{})).status).toBe(200);
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(run.id);
+  expect((await call('pages/0?snapshot='+base)).status).toBe(404);
+  expect((await (await call('pages/0?snapshot='+run.id)).json()).offers[0].prices.purchase.amount).toBe(120);
+  const adminReq=new Request('https://ai.michael.kz/api/catalog-sync/admin/devices',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://ai.michael.kz'},body:JSON.stringify({id:'55555555-5555-4555-8555-555555555555',hash:'b'.repeat(64)})});
+  expect((await handleSyncAdminRequest(adminReq,env,{id:1,role:'manager'})).status).toBe(403);
+ });
+ it('binds each run to an active device and fails closed if it is revoked',async()=>{
+  const base='11111111-1111-4111-8111-111111111111';
+  const sync=await beginPageSync(env,base,device,1,later);
+  const other={id:'44444444-4444-4444-8444-444444444444',created_by:1};
+  db.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,'2026-10-27')").run(other.id,'other');
+  await expect(stagePage(env,sync.id,other,0,[update('a',120)])).rejects.toThrow(/unauthorized/);
+  await stagePage(env,sync.id,device,0,[update('a',120)]);
+  db.prepare("UPDATE catalog_sync_devices SET revoked_at='2026-10-28' WHERE id=?").run(device.id);
+  await expect(commitPageSync(env,sync.id,device)).rejects.toThrow(/revoked/);
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(base);
+  await expect(beginPageSync(env,base,device,1,later)).rejects.toThrow();
+ });
+ it('checks revocation inside the page transaction, even after authentication succeeds',async()=>{
+  const base='11111111-1111-4111-8111-111111111111'; const sync=await beginPageSync(env,base,device,1,later);
+  const originalBatch=env.DB.batch;
+  env.DB.batch=async entries=>{db.prepare("UPDATE catalog_sync_devices SET revoked_at='2026-10-28' WHERE id=?").run(device.id); return originalBatch(entries);};
+  await expect(stagePage(env,sync.id,device,0,[update('a',120)])).rejects.toThrow(/not staged/);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM catalog_sync_pages WHERE sync_id=?').get(sync.id).n).toBe(0);
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(base);
+ });
+ it('reuses unchanged page, preserves old snapshot, handles replay and atomically activates',async()=>{
+  const base='11111111-1111-4111-8111-111111111111';const sync=await beginPageSync(env,base,device,1,later);expect(sync.pages).toBe(2);
+  await expect(commitPageSync(env,sync.id,device)).rejects.toThrow(/Incomplete/);
+  await stagePage(env,sync.id,device,0,[update('a',120)]);await stagePage(env,sync.id,device,0,[update('a',120)]);
+  await expect(stagePage(env,sync.id,device,0,[update('a',130)])).rejects.toThrow(/replay/);
+  await commitPageSync(env,sync.id,device);await abortPageSync(env,sync.id,device);expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(sync.id);
+  const refs=db.prepare('SELECT batch_index,content_snapshot_id FROM catalog_page_refs WHERE snapshot_id=? ORDER BY batch_index').all(sync.id);expect(refs.map(r=>r.content_snapshot_id)).toEqual([sync.id,base]);
+  expect(JSON.parse(db.prepare('SELECT payload_json FROM catalog_pages WHERE snapshot_id=? AND batch_index=0').get(base).payload_json)[0].prices.purchase.amount).toBe(100);
+  expect(JSON.parse(db.prepare('SELECT payload_json FROM catalog_pages WHERE snapshot_id=? AND batch_index=0').get(sync.id).payload_json)[0].prices.purchase.amount).toBe(120);
+  const user={id:1,username:'test',role:'admin'};
+  const search=await handleCatalogRoutes(new Request('https://example.test/api/catalog/search?q=a'),env,user);
+  expect((await search.json()).candidates[0].offer.prices.purchase.amount).toBe(120);
+  const history=await handleCatalogRoutes(new Request('https://example.test/api/catalog/price-history?offerId=a'),env,user);
+  expect((await history.json()).points.map(p=>p.price.amount)).toEqual([120,100]);
+  const other=await handleCatalogRoutes(new Request('https://example.test/api/catalog/search?q=b'),env,user);
+  expect((await other.json()).candidates[0].offer.prices.purchase.amount).toBe(100);
+ });
+ it('second incremental revision reuses earlier page references and preserves three history points',async()=>{
+  const base='11111111-1111-4111-8111-111111111111';const first=await beginPageSync(env,base,device,1,later);await stagePage(env,first.id,device,0,[update('a',120)]);await commitPageSync(env,first.id,device);
+  await expect(beginPageSync(env,first.id,device,1,'2026-10-28T11:00:00.000Z')).rejects.toThrow();
+  db.prepare('UPDATE catalog_sync_devices SET last_started_at=NULL WHERE id=?').run(device.id);
+  const time='2026-10-28T11:00:00.000Z';const second=await beginPageSync(env,first.id,device,1,time);
+  const next={...update('a',150),updatedAt:time,prices:{...update('a',150).prices,purchase:{...update('a',150).prices.purchase,updatedAt:time}}};
+  await stagePage(env,second.id,device,0,[next]);await commitPageSync(env,second.id,device);
+  const user={id:1,username:'test',role:'admin'};const history=await handleCatalogRoutes(new Request('https://example.test/api/catalog/price-history?offerId=a'),env,user);
+  expect((await history.json()).points.map(p=>p.price.amount)).toEqual([150,120,100]);
+  const refs=db.prepare('SELECT batch_index,content_snapshot_id FROM catalog_page_refs WHERE snapshot_id=? ORDER BY batch_index').all(second.id);expect(refs.map(r=>r.content_snapshot_id)).toEqual([second.id,base]);
+ });
+ it('rejects other source, wrong page, and a changed active base without activation',async()=>{
+  const base='11111111-1111-4111-8111-111111111111';const sync=await beginPageSync(env,base,device,1,later);
+  await expect(stagePage(env,sync.id,device,1,[update('a',120)])).rejects.toThrow(/belong/);
+  await expect(stagePage(env,sync.id,device,0,[{...update('a',120),sourceId:'supplier:other'}])).rejects.toThrow();
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(base);
+  await stagePage(env,sync.id,device,0,[update('a',120)]);
+  const other='22222222-2222-4222-8222-222222222222';
+  db.prepare("INSERT INTO catalog_imports(id,source_system,exported_at,environment,expected_count,received_count,status,created_by,storage_version) VALUES(?,'michael-cabinet',?,'test',1,1,'complete',1,2)").run(other,later);
+  db.prepare('UPDATE catalog_state SET active_snapshot_id=? WHERE id=1').run(other);
+  await expect(commitPageSync(env,sync.id,device)).rejects.toThrow(/conflicting/);
+  expect(db.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(other);
+  expect(db.prepare('SELECT status FROM catalog_imports WHERE id=?').get(sync.id).status).toBe('uploading');
+ });
+});

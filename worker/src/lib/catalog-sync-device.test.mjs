@@ -1,0 +1,11 @@
+import {beforeEach,afterEach,describe,it,expect} from "vitest";
+import {DatabaseSync} from "node:sqlite";
+import {readFileSync} from "node:fs";
+import {tokenHash,registerSyncDevice,verifySyncDevice,revokeSyncDevice} from "./catalog-sync-device";
+let db,env;function stmt(sql,args=[]){const exec=()=>{const q=db.prepare(sql);if(q.columns().length)return{results:q.all(...args),meta:{}};return{results:[],meta:{changes:Number(q.run(...args).changes)}}};return{bind:(...v)=>stmt(sql,v),first:async()=>exec().results[0]||null,run:async()=>exec()};}
+beforeEach(()=>{db=new DatabaseSync(':memory:');db.exec("CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1),(2,'manager',1),(3,'admin',0); CREATE TABLE catalog_pages(snapshot_id TEXT,batch_index INTEGER,PRIMARY KEY(snapshot_id,batch_index));");db.exec(readFileSync(new URL('./catalog-page-sync.schema.sql',import.meta.url),'utf8'));env={DB:{prepare:s=>stmt(s)}};});afterEach(()=>db.close());
+const id='11111111-1111-4111-8111-111111111111';const credential='a'.repeat(64);
+describe('scoped device credentials',()=>{
+ it('accepts only an active administrator, stores a hash, and revokes immediately',async()=>{const digest=await tokenHash(credential);await expect(registerSyncDevice(env,2,id,digest)).rejects.toThrow();await expect(registerSyncDevice(env,3,id,digest)).rejects.toThrow();await registerSyncDevice(env,1,id,digest);expect(db.prepare('SELECT token_hash FROM catalog_sync_devices').get().token_hash).toBe(digest);expect(digest).not.toBe(credential);expect((await verifySyncDevice(env,credential)).id).toBe(id);expect(await verifySyncDevice(env,'b'.repeat(64))).toBeNull();expect(await revokeSyncDevice(env,2,id)).toBe(false);expect(await revokeSyncDevice(env,1,id)).toBe(true);expect(await verifySyncDevice(env,credential)).toBeNull();});
+ it('retries registration idempotently and invalidates the device if its administrator is disabled',async()=>{const digest=await tokenHash(credential);await registerSyncDevice(env,1,id,digest);expect(await registerSyncDevice(env,1,id,digest)).toEqual({id});db.prepare('UPDATE app_users SET is_active=0 WHERE id=1').run();expect(await verifySyncDevice(env,credential)).toBeNull();await expect(registerSyncDevice(env,1,id,digest)).rejects.toThrow();});
+});

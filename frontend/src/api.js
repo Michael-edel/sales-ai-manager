@@ -468,6 +468,10 @@ export function getCatalogStatus(options = {}) {
   return request("/catalog/status", options);
 }
 
+export function registerCatalogSyncDevice(value) {
+  return request("/catalog-sync/admin/devices", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(value) });
+}
+
 export function getCatalogImport(importId, options = {}) {
   return request(`/catalog/imports/${encodeURIComponent(importId)}`, options);
 }

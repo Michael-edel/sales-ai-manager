@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { handleCatalogRoutes } from "./catalog-api";
+import { beginPageSync,stagePage,commitPageSync } from "./catalog-page-sync";
 
 // Opt-in acceptance replay of a private Cabinet export. CI never needs customer
 // data, credentials, a production database, or a local 1C/supplier server.
@@ -15,6 +16,7 @@ const source = {
   alstyle: "supplier:al-style", ct1: "supplier:svetotehnika-1", volt: "supplier:220volt",
 };
 let sqlite, env, snapshot, snapshotId, counts, importedAt;
+const syncDevice={id:"33333333-3333-4333-8333-333333333333",created_by:1};
 const writes = [];
 const requestText = "DK-01S — 3 шт\nDefender 99751 — 1 шт\nXK-100UB — 1 шт\nSirius 006072 — 6 шт\n23876 — 1 шт";
 function statement(sql, bindings = []) {
@@ -57,10 +59,11 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(snapshot.exportedAt));
     sqlite = new DatabaseSync(":memory:");
-    sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT);");
+    sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1); CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT);");
     sqlite.prepare("INSERT INTO requests(id,original_text) VALUES(1,?)").run(requestText);
-    for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql"])
+    for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql"])
       sqlite.exec(readFileSync(new URL("../../migrations/" + migration, import.meta.url), "utf8"));
+    sqlite.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,?)").run(syncDevice.id,"fixture",snapshot.exportedAt);
     env = { DB: { prepare: sql => statement(sql), batch: async entries => {
       sqlite.exec("BEGIN");
       try { const values = entries.map(entry => entry.execute()); sqlite.exec("COMMIT"); return values; }
@@ -192,5 +195,18 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     console.info("Private quotation acceptance:", JSON.stringify({ lines: rows.length, allocations: allocations.length,
       shortage: saved.data.evaluation.lines[3].shortageQuantity, actualProfit: saved.data.evaluation.totals.profitNet,
       demonstrationOnly: evaluated.data.evaluation.totals, status: evaluated.data.evaluation.status }));
+  });
+  it("reuses the real-sized immutable catalog while changing one supplier price",async()=>{
+    const original=pick(source.volt,"23876");
+    const page=sqlite.prepare("SELECT batch_index FROM catalog_pages WHERE snapshot_id=? AND instr(offer_keys,?)>0").get(snapshotId,JSON.stringify(original.id));
+    expect(page).toBeTruthy();
+    const observed=new Date(Date.parse(snapshot.exportedAt)+60000).toISOString();
+    const change={id:original.id,sourceId:original.sourceId,quantity:original.quantity,available:original.available,stockConfirmed:original.stockConfirmed,updatedAt:observed,prices:{...original.prices,purchase:{...original.prices.purchase,amount:original.prices.purchase.amount+1,updatedAt:observed}}};
+    const sync=await beginPageSync(env,snapshotId,syncDevice,1,observed);
+    await stagePage(env,sync.id,syncDevice,page.batch_index,[change]);await commitPageSync(env,sync.id,syncDevice);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM catalog_pages WHERE snapshot_id=?').get(sync.id).n).toBe(1);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM catalog_page_refs WHERE snapshot_id=?').get(sync.id).n).toBe(Math.ceil(snapshot.offers.length/100));
+    const history=await call(`/catalog/price-history?offerId=${encodeURIComponent(original.id)}`);
+    expect(history.data.points.map(x=>x.price.amount)).toEqual([change.prices.purchase.amount,original.prices.purchase.amount]);
   });
 });
