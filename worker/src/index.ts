@@ -171,6 +171,7 @@ const EMAIL_FOLDERS: EmailFolder[] = ["inbox", "in_work", "suppliers", "buyers",
 const EMAIL_SENDER_ROUTE_FOLDERS: EmailFolder[] = ["suppliers", "buyers"];
 const EMAIL_STATUSES: EmailStatus[] = ["received", "in_work", "done", "deleted"];
 const PASSWORD_PBKDF2_ITERATIONS = 600_000;
+const LEGACY_PASSWORD_PBKDF2_ITERATIONS = 100_000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_BLOCK_MS = 15 * 60 * 1000;
@@ -1219,13 +1220,13 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/auth/login") {
         await ensureInitialUser(env);
-        return login(request, env);
+        return await login(request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
-        return logout(request, env);
+        return await logout(request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/email/ingest") {
-        return ingestEmailMessage(request, env);
+        return await ingestEmailMessage(request, env);
       }
 
       const currentUser = await authenticateRequest(request, env);
@@ -1542,6 +1543,13 @@ export default {
       if (error instanceof UserInputError) {
         return json({ detail: error.message }, error.status);
       }
+      if (error instanceof PasswordHashUnavailableError) {
+        return json({
+          detail: "Сервер не может безопасно проверить или сохранить этот пароль. Обратитесь к администратору.",
+          error_code: "AUTH_HASH_UNAVAILABLE",
+          error_id: errorId,
+        }, 503);
+      }
       if (isD1DailyQuotaError(error)) {
         const now = new Date();
         const resetAt = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
@@ -1618,7 +1626,7 @@ async function login(request: Request, env: Env): Promise<Response> {
     password,
     user ? String(user.password_salt) : DUMMY_PASSWORD_SALT,
     user ? String(user.password_hash) : "",
-    user ? passwordIterations : PASSWORD_PBKDF2_ITERATIONS,
+    user ? passwordIterations : LEGACY_PASSWORD_PBKDF2_ITERATIONS,
   );
   if (!user || !passwordMatches) {
     await recordLoginFailure(env, attemptKey);
@@ -1628,17 +1636,27 @@ async function login(request: Request, env: Env): Promise<Response> {
   await env.DB.prepare("DELETE FROM auth_login_attempts WHERE attempt_key = ?").bind(attemptKey).run();
 
   if (passwordIterations < PASSWORD_PBKDF2_ITERATIONS) {
-    const upgradedPassword = await hashPassword(password);
-    await env.DB.prepare(`
-      UPDATE app_users
-      SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).bind(
-      upgradedPassword.hash,
-      upgradedPassword.salt,
-      PASSWORD_PBKDF2_ITERATIONS,
-      Number(user.id),
-    ).run();
+    let upgradedPassword: { hash: string; salt: string } | null = null;
+    try {
+      upgradedPassword = await hashPassword(password);
+    } catch (error) {
+      // Workers rejects a single PBKDF2 derivation above 100,000 iterations.
+      // The existing password was already verified at its stored work factor;
+      // an optional upgrade must not lock out that user or rewrite its hash.
+      if (!(error instanceof PasswordHashUnavailableError)) throw error;
+    }
+    if (upgradedPassword) {
+      await env.DB.prepare(`
+        UPDATE app_users
+        SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(
+        upgradedPassword.hash,
+        upgradedPassword.salt,
+        PASSWORD_PBKDF2_ITERATIONS,
+        Number(user.id),
+      ).run();
+    }
   }
 
   const token = generateSessionToken();
@@ -7097,6 +7115,10 @@ function normalizeRole(value: unknown): string {
   return ["admin", "manager", "accountant", "viewer"].includes(role) ? role : "manager";
 }
 
+class PasswordHashUnavailableError extends Error {
+  constructor() { super("The password work factor is not supported by this runtime."); }
+}
+
 async function hashPassword(
   password: string,
   saltBase64 = "",
@@ -7105,16 +7127,20 @@ async function hashPassword(
   const salt = saltBase64 ? base64ToBytes(saltBase64) : crypto.getRandomValues(new Uint8Array(16));
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt,
-      iterations,
-    },
-    key,
-    256,
-  );
+  let bits: ArrayBuffer;
+  try {
+    bits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256,
+    );
+  } catch (error) {
+    // Catch this documented platform limit only, never arbitrary crypto errors.
+    if (iterations > LEGACY_PASSWORD_PBKDF2_ITERATIONS && error instanceof Error
+      && error.name === "NotSupportedError"
+      && /^Pbkdf2 failed: iteration counts above 100000 are not supported \(requested \d+\)\.?$/.test(error.message)) {
+      throw new PasswordHashUnavailableError();
+    }
+    throw error;
+  }
   return {
     hash: bytesToBase64(new Uint8Array(bits)),
     salt: bytesToBase64(salt),
@@ -7132,10 +7158,10 @@ async function verifyPassword(
 }
 
 function normalizePasswordIterations(value: unknown): number {
-  const iterations = Number(value || 100_000);
-  return Number.isFinite(iterations) && iterations >= 100_000
+  const iterations = Number(value || LEGACY_PASSWORD_PBKDF2_ITERATIONS);
+  return Number.isFinite(iterations) && iterations >= LEGACY_PASSWORD_PBKDF2_ITERATIONS
     ? Math.floor(iterations)
-    : 100_000;
+    : LEGACY_PASSWORD_PBKDF2_ITERATIONS;
 }
 
 async function loginAttemptKey(request: Request, username: string): Promise<string> {
