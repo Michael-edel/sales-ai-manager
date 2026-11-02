@@ -13,9 +13,32 @@ function stmt(sql,bindings=[]){const execute=()=>{const st=db.prepare(sql);if(st
 const older="2026-10-27T10:00:00.000Z", later="2026-10-28T10:00:00.000Z";
 const offer=id=>({id,productId:id,name:"Test",article:id,brand:"",onecCode:"",unit:"шт",sourceId:"supplier:test",sourceName:"Test",sourceType:"supplier",warehouseName:"",quantity:1,available:true,stockConfirmed:true,updatedAt:older,prices:{purchase:{amount:100,currency:"KZT",vatIncluded:true,vatRate:null,updatedAt:older},retail:null,wholesale:null},delivery:{type:"unknown",timezone:"Asia/Almaty",windows:[],shippingCost:null,notes:""}});
 const update=(id,amount)=>({id,sourceId:"supplier:test",quantity:2,available:true,stockConfirmed:true,updatedAt:later,prices:{purchase:{amount,currency:"KZT",vatIncluded:true,vatRate:null,updatedAt:later},retail:null,wholesale:null}});
-beforeEach(()=>{db=new DatabaseSync(':memory:');db.exec("PRAGMA foreign_keys=ON; CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1);");for(const f of ['0020_catalog_quotations.sql','0022_catalog_pages.sql'])db.exec(readFileSync(new URL('../../migrations/'+f,import.meta.url),'utf8'));db.exec(readFileSync(new URL('./catalog-page-sync.schema.sql',import.meta.url),'utf8')); db.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,'2026-10-27')").run(device.id,'fixture');const id='11111111-1111-4111-8111-111111111111';db.prepare("INSERT INTO catalog_imports(id,source_system,exported_at,environment,expected_count,received_count,status,created_by,storage_version) VALUES(?,'michael-cabinet',?,'test',2,2,'complete',1,2)").run(id,older);db.prepare('INSERT INTO catalog_state(id,active_snapshot_id) VALUES(1,?)').run(id);for(const [i,o] of [offer('a'),offer('b')].entries())db.prepare('INSERT INTO catalog_pages VALUES(?,?,?,?,?,?,?,?)').run(id,i,1,JSON.stringify([o]),o.name,JSON.stringify([o.article]),JSON.stringify([o.id]),JSON.stringify([o.productId]));env={DB:{prepare:s=>stmt(s),batch:async list=>{db.exec('BEGIN');try{const out=list.map(x=>x.execute());db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}}}};});
+beforeEach(()=>{db=new DatabaseSync(':memory:');db.exec("PRAGMA foreign_keys=ON; CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1);");for(const f of ['0020_catalog_quotations.sql','0022_catalog_pages.sql','0028_catalog_import_base_guard.sql'])db.exec(readFileSync(new URL('../../migrations/'+f,import.meta.url),'utf8'));db.exec(readFileSync(new URL('./catalog-page-sync.schema.sql',import.meta.url),'utf8')); db.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,'2026-10-27')").run(device.id,'fixture');const id='11111111-1111-4111-8111-111111111111';db.prepare("INSERT INTO catalog_imports(id,source_system,exported_at,environment,expected_count,received_count,status,created_by,storage_version) VALUES(?,'michael-cabinet',?,'test',2,2,'complete',1,2)").run(id,older);db.prepare('INSERT INTO catalog_state(id,active_snapshot_id) VALUES(1,?)').run(id);for(const [i,o] of [offer('a'),offer('b')].entries())db.prepare('INSERT INTO catalog_pages VALUES(?,?,?,?,?,?,?,?)').run(id,i,1,JSON.stringify([o]),o.name,JSON.stringify([o.article]),JSON.stringify([o.id]),JSON.stringify([o.productId]));env={DB:{prepare:s=>stmt(s),batch:async list=>{db.exec('BEGIN');try{const out=list.map(x=>x.execute());db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}}}};});
 afterEach(()=>db.close());
 describe('isolated reference snapshot prototype',()=>{
+ it('updates a live 1C warehouse page and preserves its price history',async()=>{
+  const base='11111111-1111-4111-8111-111111111111',id='warehouse%3Aonec-work-torg2026:12345678-1234-1234-1234-123456789abc';
+  const warehouse={...offer(id),productId:id,sourceId:'warehouse:onec-work-torg2026',sourceName:'Рабочая 1С',sourceType:'warehouse',warehouseName:'Экибастуз',onecCode:'0001'};
+  db.prepare("UPDATE catalog_imports SET environment='live' WHERE id=?").run(base);
+  db.prepare('UPDATE catalog_pages SET payload_json=?,offer_keys=?,product_keys=? WHERE snapshot_id=? AND batch_index=0').run(JSON.stringify([warehouse]),JSON.stringify([id]),JSON.stringify([id]),base);
+  const sync=await beginPageSync(env,base,device,1,later);
+  await stagePage(env,sync.id,device,0,[{...update(id,120),sourceId:warehouse.sourceId}]);
+  await commitPageSync(env,sync.id,device);
+  const history=await handleCatalogRoutes(new Request('https://example.test/api/catalog/price-history?offerId='+encodeURIComponent(id)),env,{id:1,username:'test',role:'admin'});
+  expect((await history.json()).points.map(p=>p.price.amount)).toEqual([120,100]);
+ });
+ it('accepts a new production item only in live snapshots',async()=>{
+  const base='11111111-1111-4111-8111-111111111111',id='warehouse%3Aonec-work-torg2026:22345678-1234-1234-1234-123456789abc';
+  const incoming={...offer(id),productId:id,sourceId:'warehouse:onec-work-torg2026',sourceType:'warehouse',warehouseName:'Экибастуз',onecCode:'0002'};
+  const sync=await beginPageSync(env,base,device,1,later,1);
+  await expect(stageNewPage(env,sync.id,device,2,[incoming])).rejects.toThrow(/live snapshot/);
+  await abortPageSync(env,sync.id,device);
+  db.prepare("UPDATE catalog_imports SET environment='live' WHERE id=?").run(base);
+  db.prepare('UPDATE catalog_sync_devices SET last_started_at=NULL WHERE id=?').run(device.id);
+  const liveSync=await beginPageSync(env,base,device,1,later,1);
+  await stageNewPage(env,liveSync.id,device,2,[incoming]);await commitPageSync(env,liveSync.id,device);
+  expect(db.prepare('SELECT received_count AS n FROM catalog_imports WHERE id=?').get(liveSync.id).n).toBe(3);
+ });
  it('removes abandoned staging pages but never an active or historical snapshot',async()=>{
   const base='11111111-1111-4111-8111-111111111111',sync=await beginPageSync(env,base,device,1,later);
   await stagePage(env,sync.id,device,0,[update('a',120)]);

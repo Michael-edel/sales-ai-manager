@@ -11,7 +11,7 @@ type ImportRow = {
   id: string; source_system: string; exported_at: string;
   environment: "test" | "live" | "unknown";
   expected_count: number; received_count: number; status: string; created_by: number;
-  storage_version: 1 | 2; source_hash: string | null;
+  storage_version: 1 | 2; source_hash: string | null; base_snapshot_id: string | null;
 };
 type SavedQuote = {
   revision: number; catalog_snapshot_id: string; draft_json: string;
@@ -92,7 +92,7 @@ async function importManifest(env: CatalogEnv, id: string, user: CatalogUser) {
   const batches = await env.DB.prepare("SELECT batch_index,offer_count,checksum FROM catalog_import_batches WHERE import_id=? ORDER BY batch_index")
     .bind(id).all<{ batch_index: number; offer_count: number; checksum: string }>();
   return { id, storageVersion: record.storage_version, contentHash: record.source_hash,
-    status: record.status, receivedCount: record.received_count, expectedCount: record.expected_count,
+    status: record.status, receivedCount: record.received_count, expectedCount: record.expected_count, baseSnapshotId: record.base_snapshot_id,
     exportedAt: record.exported_at, environment: record.environment,
     batches: batches.results.map(batch => ({ index: batch.batch_index, offerCount: batch.offer_count, checksum: batch.checksum })) };
 }
@@ -106,9 +106,13 @@ async function createImport(request: Request, env: CatalogEnv, user: CatalogUser
     || Date.parse(value.exportedAt) > Date.now() + 300000) throw new CatalogInputError("Некорректная дата экспорта.");
   if (value.contentHash != null && (typeof value.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(value.contentHash)))
     throw new CatalogInputError("Некорректная контрольная сумма файла каталога.");
+  if (value.baseSnapshotId != null && (typeof value.baseSnapshotId !== "string" || !UUID.test(value.baseSnapshotId)))
+    throw new CatalogInputError("Некорректный исходный каталог.");
+  if (value.baseSnapshotId != null && (await activeSnapshot(env))?.id !== value.baseSnapshotId)
+    throw new CatalogInputError("Исходный каталог уже изменился. Подготовьте обновление заново.", 409);
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO catalog_imports (id,source_system,exported_at,environment,expected_count,created_by,storage_version,source_hash) VALUES (?,?,?,?,?,?,2,?)")
-    .bind(id, "michael-cabinet", new Date(value.exportedAt).toISOString(), value.environment, count, user.id, value.contentHash ?? null).run();
+  await env.DB.prepare("INSERT INTO catalog_imports (id,source_system,exported_at,environment,expected_count,created_by,storage_version,source_hash,base_snapshot_id) VALUES (?,?,?,?,?,?,2,?,?)")
+    .bind(id, "michael-cabinet", new Date(value.exportedAt).toISOString(), value.environment, count, user.id, value.contentHash ?? null, value.baseSnapshotId ?? null).run();
   return { id, storageVersion: 2 };
 }
 async function importBatch(request: Request, env: CatalogEnv, id: string, index: number, user: CatalogUser) {
@@ -174,6 +178,9 @@ async function commitImport(env: CatalogEnv, id: string, user: CatalogUser) {
   if (record.created_by !== user.id) throw new CatalogInputError("Импорт открыт другим администратором.", 403);
   if (record.received_count !== record.expected_count) throw new CatalogInputError("Получен не весь каталог. Завершите загрузку пакетов.", 409);
   const active = await activeSnapshot(env);
+  if (active?.id === id && record.status === 'complete') return { activeSnapshot: publicSnapshot(active) };
+  if (record.base_snapshot_id && active?.id !== record.base_snapshot_id)
+    throw new CatalogInputError("Исходный каталог изменился. Подготовьте обновление заново.", 409);
   if (active && active.id !== id && Date.parse(active.exported_at) >= Date.parse(record.exported_at))
     throw new CatalogInputError("В кабинете уже используется такой же или более свежий экспорт.", 409);
   const completeness = record.storage_version === 2
@@ -181,10 +188,10 @@ async function commitImport(env: CatalogEnv, id: string, user: CatalogUser) {
     : "expected_count=(SELECT COUNT(*) FROM catalog_offers WHERE snapshot_id=?)";
   await env.DB.batch([
     // Count once at activation, instead of scanning the growing catalog after every batch.
-    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND " + completeness + " AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?)")
-      .bind(id, id, ...(record.storage_version === 2 ? [id] : []), id, record.exported_at),
-    env.DB.prepare("INSERT INTO catalog_state (id,active_snapshot_id) SELECT 1,id FROM catalog_imports WHERE id=? AND status='complete' AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?) ON CONFLICT(id) DO UPDATE SET active_snapshot_id=excluded.active_snapshot_id")
-      .bind(id, id, record.exported_at),
+    env.DB.prepare("UPDATE catalog_imports SET status='complete' WHERE id=? AND received_count=expected_count AND " + completeness + " AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?) AND (? IS NULL OR EXISTS(SELECT 1 FROM catalog_state WHERE id=1 AND active_snapshot_id=?))")
+      .bind(id, id, ...(record.storage_version === 2 ? [id] : []), id, record.exported_at, record.base_snapshot_id, record.base_snapshot_id),
+    env.DB.prepare("INSERT INTO catalog_state (id,active_snapshot_id) SELECT 1,id FROM catalog_imports WHERE id=? AND status='complete' AND NOT EXISTS (SELECT 1 FROM catalog_state s JOIN catalog_imports i ON i.id=s.active_snapshot_id WHERE i.id<>? AND i.exported_at>=?) AND (? IS NULL OR EXISTS(SELECT 1 FROM catalog_state WHERE id=1 AND active_snapshot_id=?)) ON CONFLICT(id) DO UPDATE SET active_snapshot_id=excluded.active_snapshot_id")
+      .bind(id, id, record.exported_at, record.base_snapshot_id, record.base_snapshot_id),
   ]);
   const current = await activeSnapshot(env);
   if (current?.id !== id) throw new CatalogInputError("Каталог не активирован: проверьте полноту, повторяющиеся ID предложений или более свежий импорт.", 409);

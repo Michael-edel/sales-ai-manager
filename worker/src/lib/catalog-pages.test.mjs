@@ -23,7 +23,7 @@ beforeEach(() => {
   queries = [];
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT); INSERT INTO requests(id,original_text) VALUES(1,'Автомат Sirius C16 — 5 шт');");
-  for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql"])
+  for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql", "0028_catalog_import_base_guard.sql"])
     sqlite.exec(readFileSync(new URL("../../migrations/" + migration, import.meta.url), "utf8"));
   env = { DB: { prepare: sql => statement(sql), batch: async entries => {
     sqlite.exec("BEGIN");
@@ -75,6 +75,33 @@ function raceBatches() {
 }
 
 describe("bounded catalog page storage", () => {
+  it("rejects a warehouse import when the supplier catalog changes after preparation", async () => {
+    const base=await load([offer('base')],{exportedAt:'2026-10-01T00:00:00.000Z'});
+    const migration=await begin(1,{environment:'live',baseSnapshotId:base,exportedAt:'2026-10-03T00:00:00.000Z'});
+    expect((await upload(migration,0,[offer('replacement')])).status).toBe(200);
+    const newer=await load([offer('new-supplier')],{exportedAt:'2026-10-02T00:00:00.000Z'});
+    expect((await commit(migration)).status).toBe(409);
+    expect((await call('/catalog/status')).data.activeSnapshot.id).toBe(newer);
+    expect((await call(`/catalog/imports/${migration}`)).data.status).toBe('uploading');
+  });
+  it("allows a guarded import to finish and safely replay activation", async () => {
+    const base=await load([offer('base')],{exportedAt:'2026-10-01T00:00:00.000Z'});
+    const migration=await begin(1,{environment:'live',baseSnapshotId:base,exportedAt:'2026-10-02T00:00:00.000Z'});
+    expect((await upload(migration,0,[offer('replacement')])).status).toBe(200);
+    expect((await commit(migration)).status).toBe(200);
+    expect((await commit(migration)).status).toBe(200);
+  });
+  it("checks the base inside activation if another sync wins the race", async () => {
+    const base=await load([offer('base')],{exportedAt:'2026-10-01T00:00:00.000Z'});
+    const migration=await begin(1,{environment:'live',baseSnapshotId:base,exportedAt:'2026-10-03T00:00:00.000Z'});
+    expect((await upload(migration,0,[offer('replacement')])).status).toBe(200);
+    const concurrent=await begin(1,{exportedAt:'2026-10-02T00:00:00.000Z'});
+    expect((await upload(concurrent,0,[offer('new-supplier')])).status).toBe(200);
+    const batch=env.DB.batch;env.DB.batch=async entries=>{sqlite.prepare("UPDATE catalog_imports SET status='complete' WHERE id=?").run(concurrent);sqlite.prepare('UPDATE catalog_state SET active_snapshot_id=? WHERE id=1').run(concurrent);return batch(entries);};
+    expect((await commit(migration)).status).toBe(409);
+    expect(sqlite.prepare('SELECT active_snapshot_id AS id FROM catalog_state').get().id).toBe(concurrent);
+    expect(sqlite.prepare('SELECT status FROM catalog_imports WHERE id=?').get(migration).status).toBe('uploading');
+  });
   it("provides catalog candidates and test provenance to request analysis", async () => {
     const id = await load([offer("cable", { name: "Кабель КГ 4*4", article: "КГ 4*4", onecCode: "C1", unit: "м" })]);
     sqlite.prepare("UPDATE catalog_pages SET search_text=? WHERE snapshot_id=?").run("кабель кг 4 4", id);

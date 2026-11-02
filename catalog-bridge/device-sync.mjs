@@ -1,9 +1,11 @@
 import {createHash} from 'node:crypto';
 import {planSupplierDelta} from './supplier-delta.mjs';
+import {planWarehouseDelta} from './warehouse-delta.mjs';
 
 /** Network transport is deliberately injected: this module never reads or logs credentials. */
-export async function synchronizeSuppliers({request, snapshot, journal, cache}) {
+export async function synchronizeSuppliers({request, snapshot, journal, cache, sourceScope='all'}) {
   if(typeof request!=='function'||!journal?.read||!journal?.write||!journal?.clear) throw new Error('Синхронизация не настроена.');
+  if(!['all','warehouse'].includes(sourceScope))throw new Error('Некорректный источник синхронизации.');
   const status=await request('GET','status');
   const active=status.active;
   if(!active?.id||active.storage_version!==2)throw new Error('Активный каталог не поддерживает обновление.');
@@ -29,12 +31,23 @@ export async function synchronizeSuppliers({request, snapshot, journal, cache}) 
   const position=new Map(), offers=[];
   for(const page of pages)for(const offer of page.offers){if(position.has(offer.id))throw new Error('Повтор товара в облачном каталоге.');position.set(offer.id,page.index);offers.push(offer);}
   if(offers.length!==active.expected_count)throw new Error('Облачный каталог прочитан не полностью.');
-  const plan=planSupplierDelta({schemaVersion:1,sourceSystem:'michael-cabinet',offers},snapshot);
+  if(sourceScope==='warehouse'&&(active.environment!=='live'||snapshot.environment!=='live'))throw new Error('Рабочая база не подтверждена.');
+  const plan=sourceScope==='warehouse'?{changes:[],older:[],missing:[],added:[]}:planSupplierDelta({schemaVersion:1,sourceSystem:'michael-cabinet',offers},snapshot);
+  let warehouseMetadataChanged=0;
+  if(active.environment==='live'&&snapshot.environment==='live'){
+    const warehouse=planWarehouseDelta({environment:active.environment,offers},snapshot);
+    warehouseMetadataChanged=warehouse.metadataChanged.length;
+    plan.changes.push(...warehouse.changes);
+    plan.missing.push(...warehouse.missing.map(id=>({id,sourceId:'warehouse:onec-work-torg2026'})));
+    plan.older.push(...warehouse.older.map(id=>({id,sourceId:'warehouse:onec-work-torg2026'})));
+    plan.added.push(...warehouse.added.map(id=>({id,sourceId:'warehouse:onec-work-torg2026'})));
+  }
   const groups=new Map();for(const change of plan.changes){const index=position.get(change.id);if(index===undefined)throw new Error('Не найдена страница предложения.');if(!groups.has(index))groups.set(index,[]);groups.get(index).push(change);}
   const current=new Map(snapshot.offers.map(offer=>[offer.id,offer]));
   const baselineById=new Map(offers.map(offer=>[offer.id,offer]));
   const unit=value=>String(value||'').normalize('NFKC').trim().toLocaleLowerCase('ru');
   const newOffers=plan.added.map(item=>current.get(item.id)).filter(offer=>{
+    if(offer?.sourceType==='warehouse')return active.environment==='live'&&snapshot.environment==='live'&&offer.sourceId==='warehouse:onec-work-torg2026'&&offer.productId===offer.id&&!!offer.onecCode;
     if(!offer||offer.onecCode)return false;
     if(offer.productId===offer.id)return true;
     const anchor=baselineById.get(offer.productId);
@@ -43,7 +56,7 @@ export async function synchronizeSuppliers({request, snapshot, journal, cache}) 
   const pendingAdded=plan.added.length-newOffers.length,newPages=[];
   let nextIndex=Math.max(...pages.map(page=>page.index))+1;
   for(let i=0;i<newOffers.length;i+=100){if(nextIndex>10000)throw new Error('Слишком много страниц каталога.');newPages.push([nextIndex++,newOffers.slice(i,i+100)]);}
-  if(!groups.size&&!newPages.length){if(pending?.id){await request('POST',`runs/${pending.id}/abort`,{});await journal.clear();}return {changed:0,pages:0,added:0,pendingAdded,missing:plan.missing.length,older:plan.older.length,activeId:active.id};}
+  if(!groups.size&&!newPages.length){if(pending?.id){await request('POST',`runs/${pending.id}/abort`,{});await journal.clear();}return {changed:0,pages:0,added:0,pendingAdded,missing:plan.missing.length,older:plan.older.length,warehouseMetadataChanged,activeId:active.id};}
   const ordered=[...groups].sort((a,b)=>a[0]-b[0]);
   const fingerprint=createHash('sha256').update(JSON.stringify([active.id,ordered,newPages])).digest('hex');
   if(!pending||pending.baseId!==active.id||pending.fingerprint!==fingerprint){
@@ -64,5 +77,5 @@ export async function synchronizeSuppliers({request, snapshot, journal, cache}) 
     cache.id=pending.id;cache.pages=pages;
   }
   await journal.clear();
-  return {changed:plan.changes.length,pages:ordered.length+newPages.length,added:newOffers.length,pendingAdded,missing:plan.missing.length,older:plan.older.length,activeId:pending.id};
+  return {changed:plan.changes.length,pages:ordered.length+newPages.length,added:newOffers.length,pendingAdded,missing:plan.missing.length,older:plan.older.length,warehouseMetadataChanged,activeId:pending.id};
 }

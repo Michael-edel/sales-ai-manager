@@ -3,13 +3,17 @@ import { validateCatalogOffer, type CatalogOffer } from "./catalog-selection";
 /** Private candidate pages only. Callers must authenticate, check the active
  * snapshot identity, and atomically activate every affected page. */
 export type SupplierUpdate = Pick<CatalogOffer, "id" | "sourceId" | "quantity" | "available" | "stockConfirmed" | "updatedAt" | "prices">;
+export function isLiveWarehouseOffer(offer: CatalogOffer): boolean {
+  return offer.sourceType === "warehouse" && offer.sourceId === "warehouse:onec-work-torg2026" && offer.warehouseName === "Экибастуз" && offer.productId === offer.id && /^warehouse%3Aonec-work-torg2026:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(offer.id) && !offer.id.toLowerCase().endsWith(':00000000-0000-0000-0000-000000000000');
+}
 export function applySupplierUpdates(page: CatalogOffer[], updates: Map<string, SupplierUpdate>): { offers: CatalogOffer[]; applied: string[] } {
   const applied: string[] = [];
   const offers = page.map(previous => {
     const update = updates.get(previous.id);
     if (!update) return previous;
     if (update.id !== previous.id) throw new Error("Идентификатор товара не совпадает.");
-    if (previous.sourceType !== "supplier" || previous.sourceId !== update.sourceId) throw new Error("Источник товара не совпадает.");
+    const liveWarehouse = isLiveWarehouseOffer(previous);
+    if ((previous.sourceType !== "supplier" && !liveWarehouse) || previous.sourceId !== update.sourceId) throw new Error("Источник товара не совпадает.");
     if (Object.keys(update).some(key => !["id","sourceId","quantity","available","stockConfirmed","updatedAt","prices"].includes(key))) throw new Error("Недопустимое поле обновления.");
     const priorTime = previous.updatedAt ? Date.parse(previous.updatedAt) : null;
     const updateTime = update.updatedAt ? Date.parse(update.updatedAt) : null;

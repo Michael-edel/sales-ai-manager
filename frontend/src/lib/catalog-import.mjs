@@ -30,13 +30,16 @@ export async function importCatalogFile(file, { api, storage, userId, signal, on
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const contentHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
   const metadata = { schemaVersion: 1, sourceSystem: "michael-cabinet", exportedAt: snapshot.exportedAt,
-    environment: snapshot.environment, offerCount: snapshot.offers.length, contentHash };
+    environment: snapshot.environment, offerCount: snapshot.offers.length, contentHash,
+    ...(snapshot.baseSnapshotId == null ? {} : {baseSnapshotId:snapshot.baseSnapshotId}) };
+  if (metadata.baseSnapshotId != null && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(metadata.baseSnapshotId))
+    throw failure("Не указан корректный исходный каталог. Подготовьте обновление заново.");
   const previous = readImportCheckpoint(storage, userId);
   let record;
   if (previous?.contentHash === contentHash) {
     record = await api.get(previous.id, { signal });
     if (record.contentHash !== contentHash || record.expectedCount !== metadata.offerCount
-      || record.exportedAt !== new Date(metadata.exportedAt).toISOString() || record.environment !== metadata.environment)
+      || record.exportedAt !== new Date(metadata.exportedAt).toISOString() || record.environment !== metadata.environment || (record.baseSnapshotId ?? null) !== (metadata.baseSnapshotId ?? null))
       throw failure("Сохранённая загрузка относится к другому файлу. Сделайте новый экспорт каталога.");
   } else {
     // Test storage before opening an import; a failed checkpoint must never silently duplicate uploads.

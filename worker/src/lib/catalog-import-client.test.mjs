@@ -22,6 +22,11 @@ beforeEach(() => {
 const run = file => importCatalogFile(file, { api, storage, userId: 7, signal: new AbortController().signal });
 
 describe("resumable private catalogue import", () => {
+  it("passes the base snapshot guard for a warehouse replacement", async () => {
+    const payload=JSON.parse(await makeFile(1).text());payload.environment='live';payload.baseSnapshotId='11111111-1111-4111-8111-111111111111';
+    await run(new File([JSON.stringify(payload)],'candidate.json'));
+    expect(api.create).toHaveBeenCalledWith(expect.objectContaining({baseSnapshotId:payload.baseSnapshotId}),expect.anything());
+  });
   it("resumes a failed upload with the same import and skips confirmed batches after a reload", async () => {
     const file = makeFile();
     const upload = api.upload;

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { handleCatalogRoutes } from "./catalog-api";
 import { beginPageSync,stagePage,commitPageSync } from "./catalog-page-sync";
+import { prepareWarehouseReplacement } from '../../../catalog-bridge/warehouse-replacement-plan.mjs';
 
 // Opt-in acceptance replay of a private Cabinet export. CI never needs customer
 // data, credentials, a production database, or a local 1C/supplier server.
@@ -61,7 +62,7 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     sqlite = new DatabaseSync(":memory:");
     sqlite.exec("PRAGMA foreign_keys=ON; CREATE TABLE app_users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER); INSERT INTO app_users VALUES(1,'admin',1); CREATE TABLE requests(id INTEGER PRIMARY KEY,original_text TEXT NOT NULL,source_type TEXT NOT NULL DEFAULT 'text',assigned_user_id INTEGER DEFAULT 2); CREATE TABLE request_events(id INTEGER PRIMARY KEY,request_id INTEGER,event_type TEXT,actor TEXT,payload_json TEXT);");
     sqlite.prepare("INSERT INTO requests(id,original_text) VALUES(1,?)").run(requestText);
-    for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql"])
+    for (const migration of ["0020_catalog_quotations.sql", "0022_catalog_pages.sql", "0027_catalog_sync.sql", "0028_catalog_import_base_guard.sql"])
       sqlite.exec(readFileSync(new URL("../../migrations/" + migration, import.meta.url), "utf8"));
     sqlite.prepare("INSERT INTO catalog_sync_devices(id,token_hash,created_by,created_at) VALUES(?,?,1,?)").run(syncDevice.id,"fixture",snapshot.exportedAt);
     env = { DB: { prepare: sql => statement(sql), batch: async entries => {
@@ -209,4 +210,26 @@ describe.skipIf(!fixturePath)("private real catalogue acceptance (opt-in)", () =
     const history=await call(`/catalog/price-history?offerId=${encodeURIComponent(original.id)}`);
     expect(history.data.points.map(x=>x.price.amount)).toEqual([change.prices.purchase.amount,original.prices.purchase.amount]);
   });
+  it('replays test-to-live replacement with synthetic warehouse data and preserves every supplier and its history',async()=>{
+    const active=sqlite.prepare('SELECT active_snapshot_id AS id FROM catalog_state WHERE id=1').get().id;
+    const rows=sqlite.prepare('SELECT p.payload_json FROM catalog_page_refs r JOIN catalog_pages p ON p.snapshot_id=r.content_snapshot_id AND p.batch_index=r.batch_index WHERE r.snapshot_id=? ORDER BY r.batch_index').all(active);
+    const current=rows.flatMap(row=>JSON.parse(row.payload_json));
+    expect(current).toHaveLength(snapshot.offers.length);
+    const suppliers=current.filter(o=>o.sourceType==='supplier');
+    const original=snapshot.offers.find(o=>o.sourceId===source.volt&&o.article==='23876');
+    const before=await call(`/catalog/price-history?offerId=${encodeURIComponent(original.id)}`);
+    const live=current.filter(o=>o.sourceType==='warehouse').map(o=>{const id=o.id.replace('warehouse%3Aonec-nkt:','warehouse%3Aonec-work-torg2026:');return {...o,id,productId:id,sourceId:'warehouse:onec-work-torg2026',warehouseName:'Экибастуз'};});
+    const timestamp=new Date(Date.parse(snapshot.exportedAt)+120000).toISOString();vi.setSystemTime(new Date(Date.parse(timestamp)+1000));
+    const candidate=prepareWarehouseReplacement({schemaVersion:1,sourceSystem:'michael-cabinet',offers:current},{schemaVersion:1,sourceSystem:'michael-cabinet',environment:'live',exportedAt:timestamp,offers:live},{database:'Torg2026',warehouse:'Экибастуз',baseSnapshotId:active,complete:true,count:live.length});
+    const opened=await call('/catalog/imports','POST',{schemaVersion:1,sourceSystem:'michael-cabinet',environment:'live',baseSnapshotId:candidate.baseSnapshotId,exportedAt:timestamp,offerCount:candidate.offers.length},admin);expect(opened.status).toBe(201);
+    for(let offset=0;offset<candidate.offers.length;offset+=100){const result=await call(`/catalog/imports/${opened.data.id}/batches/${offset/100}`,'PUT',{offers:candidate.offers.slice(offset,offset+100)},admin);expect(result.status).toBe(200);}
+    expect((await call(`/catalog/imports/${opened.data.id}/commit`,'POST',{},admin)).status).toBe(200);
+    const actual=sqlite.prepare('SELECT payload_json FROM catalog_pages WHERE snapshot_id=? ORDER BY batch_index').all(opened.data.id).flatMap(row=>JSON.parse(row.payload_json));
+    expect(actual).toHaveLength(current.length);expect(actual.filter(o=>o.sourceType==='warehouse')).toHaveLength(live.length);
+    expect(actual.filter(o=>o.sourceType==='supplier')).toEqual(suppliers);
+    const after=await call(`/catalog/price-history?offerId=${encodeURIComponent(original.id)}`);
+    const previous=before.data.points.map(p=>p.price.amount),updated=after.data.points.map(p=>p.price.amount);
+    expect(updated.slice(-previous.length)).toEqual(previous);
+    expect(updated[0]).toBe(previous[0]);
+  },120000);
 });

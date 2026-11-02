@@ -30,6 +30,7 @@ beforeEach(() => {
   sqlite.exec(readFileSync(new URL("../../migrations/0020_catalog_quotations.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../migrations/0022_catalog_pages.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../migrations/0027_catalog_sync.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../migrations/0028_catalog_import_base_guard.sql", import.meta.url), "utf8"));
   env = { DB: {
     prepare: sql => statement(sql),
     batch: async entries => {

@@ -1,4 +1,4 @@
-import {applySupplierUpdates,type SupplierUpdate} from "./supplier-sync-plan";
+import {applySupplierUpdates,isLiveWarehouseOffer,type SupplierUpdate} from "./supplier-sync-plan";
 import {normalizeCatalogText,normalizedUnit,validateCatalogOffer,type CatalogOffer} from "./catalog-selection";
 interface Env {DB:D1Database}
 interface Base {id:string;source_system:string;exported_at:string;environment:string;expected_count:number;received_count:number;storage_version:number}
@@ -55,6 +55,7 @@ export async function stagePage(env:Env,id:string,device:Device,index:number,upd
  if(prior){if(prior.checksum!==checksum)throw Error('Conflicting page replay');return;}
  const row=await env.DB.prepare("SELECT p.* FROM catalog_page_refs r JOIN catalog_pages p ON p.snapshot_id=r.content_snapshot_id AND p.batch_index=r.batch_index WHERE r.snapshot_id=? AND r.batch_index=?").bind(id,index).first<{offer_count:number;payload_json:string;search_text:string;exact_keys:string;offer_keys:string;product_keys:string}>();
  if(!row)throw Error('Page not found');const old=JSON.parse(row.payload_json) as CatalogOffer[];
+ if(base.environment!=='live' && old.some(o=>o.sourceType==='warehouse'&&o.sourceId==='warehouse:onec-work-torg2026'&&updates.some(u=>u.id===o.id)))throw Error('Live warehouse requires a live snapshot');
  const result=applySupplierUpdates(old,new Map(updates.map(u=>[u.id,u])));if(result.applied.length!==updates.length)throw Error('Update does not belong to page');
  const data=JSON.stringify(result.offers),pageBytes=new TextEncoder().encode(data+row.search_text+row.exact_keys+row.offer_keys+row.product_keys).length;if(pageBytes>1800000)throw Error('Page too large');
  await env.DB.batch([
@@ -71,12 +72,13 @@ export async function stagePage(env:Env,id:string,device:Device,index:number,upd
 export async function stageNewPage(env:Env,id:string,device:Device,index:number,input:unknown[]){
  if(!UUID.test(id)||!device||!UUID.test(device.id)||!Number.isSafeInteger(index)||index<0||!Array.isArray(input)||!input.length||input.length>100)throw Error('Invalid new page');
  const offers=input.map(validateCatalogOffer);
- if(offers.some(o=>o.sourceType!=='supplier'||!!o.onecCode||(o.stockConfirmed&&(o.quantity===null||!o.updatedAt))||(o.quantity!==null&&o.available!==null&&o.available!==(o.quantity>0)))||new Set(offers.map(o=>o.id)).size!==offers.length)throw Error('Invalid new supplier offers');
+ if(offers.some(o=>(o.sourceType==='supplier'?!!o.onecCode:!isLiveWarehouseOffer(o)||!o.onecCode)||(o.stockConfirmed&&(o.quantity===null||!o.updatedAt))||(o.quantity!==null&&o.available!==null&&o.available!==(o.quantity>0)))||new Set(offers.map(o=>o.id)).size!==offers.length)throw Error('Invalid new offers');
  const run=await getRun(env,id),base=await active(env);
+ if(base?.environment!=='live'&&offers.some(o=>o.sourceType==='warehouse'))throw Error('Live warehouse requires a live snapshot');
  if(run.status!=='staging'||base?.id!==run.base_snapshot_id||run.device_id!==device.id)throw Error('Active catalog changed');
  if(!(await env.DB.prepare("SELECT d.id FROM catalog_sync_devices d JOIN app_users u ON u.id=d.created_by AND u.role='admin' AND u.is_active=1 WHERE d.id=? AND d.created_by=? AND d.revoked_at IS NULL").bind(device.id,device.created_by).first()))throw Error('Device revoked or unauthorized');
  const anchors=new Map<string,CatalogOffer|null>();
- for(const offer of offers.filter(o=>o.productId!==o.id)){
+ for(const offer of offers.filter(o=>o.sourceType==='supplier'&&o.productId!==o.id)){
   if(!offer.unit)throw Error('Linked offer unit missing');
   if(!anchors.has(offer.productId)){
    const page=await env.DB.prepare("SELECT p.payload_json FROM catalog_page_refs r JOIN catalog_pages p ON p.snapshot_id=r.content_snapshot_id AND p.batch_index=r.batch_index WHERE r.snapshot_id=? AND instr(p.offer_keys,?)>0 LIMIT 1").bind(id,JSON.stringify(offer.productId)).first<{payload_json:string}>();
