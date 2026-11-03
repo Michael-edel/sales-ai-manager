@@ -118,6 +118,18 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
+      - name: Configure read-only 1C bridge token
+        working-directory: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ONEC_BRIDGE_DEPLOY_TOKEN"
+          printf '%s' "$ONEC_BRIDGE_DEPLOY_TOKEN" | npx wrangler secret put ONEC_MCP_BRIDGE_TOKEN
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ONEC_BRIDGE_DEPLOY_TOKEN: ${{ secrets.ONEC_BRIDGE_DEPLOY_TOKEN }}
+
       - name: Deploy Worker
         working-directory: worker
         run: npx wrangler deploy
