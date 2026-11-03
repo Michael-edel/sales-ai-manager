@@ -21,7 +21,8 @@ function smtp(options = {}) {
   const commands = [], messages = [], sockets = [], connections = [];
   let authBad = false, onAuth, onData;
   function socket(secure, greeting) {
-    let controller, closed = false, resolveClosed, data = false, login = 0;
+    let controller, closed = false, resolveClosed, resolveOpened, data = false, login = 0;
+    const deferredOpened = new Promise(resolve => { resolveOpened = resolve; });
     const closedPromise = new Promise(resolve => { resolveClosed = resolve; });
     const answer = text => { if (!closed) controller.enqueue(new TextEncoder().encode(text)); };
     const item = {
@@ -29,6 +30,7 @@ function smtp(options = {}) {
       readable: new ReadableStream({ start(value) { controller = value; if (greeting && !options.stall) answer("220 fixture mail\r\n"); } }),
       writable: new WritableStream({ write(bytes) {
         const value = new TextDecoder().decode(bytes); commands.push({ secure, value });
+        if (secure && !greeting && options.openedOnWrite) resolveOpened({});
         if (options.stall) return;
         if (data) { messages.push(value); data = false; onData?.(); answer(options.rejectData ? "550 fixture rejected\r\n" : "250 accepted\r\n"); return; }
         if (login) { if (login === 1) { login = 2; answer("334 UGFzc3dvcmQ6\r\n"); } else { login = 0; onAuth?.(); answer(authBad ? "535 fixture password echo must stay private\r\n" : "235 authenticated\r\n"); } return; }
@@ -44,7 +46,7 @@ function smtp(options = {}) {
         if (value === "QUIT\r\n") { answer("221 bye\r\n"); return; }
         throw new Error("Unexpected fixture SMTP command");
       } }),
-      opened: options.tlsFail && secure ? Promise.reject(new Error("fixture certificate failure")) : Promise.resolve({}),
+      opened: options.tlsFail && secure ? Promise.reject(new Error("fixture certificate failure")) : secure && !greeting && options.openedOnWrite ? deferredOpened : Promise.resolve({}),
       closed: closedPromise,
       async close() { if (!closed) { closed = true; item.closedFlag = true; controller.close(); resolveClosed(); } },
       startTls(tls) { expect(tls).toEqual({ expectedServerHostname: host }); void item.close(); return socket(true, false); },
@@ -85,6 +87,12 @@ describe("encrypted SMTP settings and private TLS transport", () => {
   it("probes TLS without any credentials, storage write, AUTH or message", async () => {
     expect(await call("/probe", "POST", { host, port: 587 })).toEqual({ status: 200, data: { reachable: true, tls_verified: true, authenticated: false } });
     expect(row()).toBeUndefined(); expect(fake.commands.some(command => /AUTH|MAIL|RCPT|DATA/.test(command.value))).toBe(false);
+  });
+  it("allows STARTTLS handshake to begin on the first encrypted write", async () => {
+    fake = smtp({ openedOnWrite: true }); env.SMTP_CONNECT = fake.connect;
+    expect((await call("/probe", "POST", { host, port: 587 })).status).toBe(200);
+    expect(fake.commands.some(command => command.secure && command.value.startsWith("EHLO"))).toBe(true);
+    expect(fake.commands.some(command => command.value.startsWith("AUTH"))).toBe(false);
   });
   it("supports implicit TLS and LOGIN after encryption without STARTTLS downgrade", async () => {
     fake = smtp({ loginOnly: true }); env.SMTP_CONNECT = fake.connect;

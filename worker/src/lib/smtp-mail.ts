@@ -168,17 +168,19 @@ async function exchange(env: SmtpEnv, config: Pick<Config, "host" | "port"> & Pa
   const wait = <T>(value: Promise<T>) => Promise.race([value, expired]);
   try {
     socket = env.SMTP_CONNECT({ hostname: config.host, port: config.port }, { secureTransport: config.port === 465 ? "on" : "starttls", allowHalfOpen: false });
-    void socket.closed.catch(() => {}); await wait(socket.opened);
+    void socket.closed.catch(() => {});
     session = new Session(socket, wait);
-    if ((await session.response()).code !== 220) throw connectionError();
+    const [, initialGreeting] = await wait(Promise.all([socket.opened, session.response()]));
+    if (initialGreeting.code !== 220) throw connectionError();
     let greeting = await session.command("EHLO ai.michael.kz", [250]);
     if (config.port === 587) {
       if (!greeting.lines.some(line => /^STARTTLS(?:\s|$)/i.test(line))) throw new SmtpError("SMTP_TLS_FAILED", "Почтовый сервер не подтвердил обязательный STARTTLS.");
       await session.command("STARTTLS", [220]);
       if (!session.canUpgrade()) throw connectionError();
       session.release(); socket = socket.startTls({ expectedServerHostname: config.host });
-      void socket.closed.catch(() => {}); await wait(socket.opened);
-      session = new Session(socket, wait); greeting = await session.command("EHLO ai.michael.kz", [250]);
+      void socket.closed.catch(() => {});
+      session = new Session(socket, wait);
+      [, greeting] = await wait(Promise.all([socket.opened, session.command("EHLO ai.michael.kz", [250])]));
     }
     if (mode !== "probe") {
       const auth = greeting.lines.find(line => /^AUTH(?:[ =]|$)/i.test(line))?.replace(/^AUTH[ =]*/i, "").toUpperCase().split(/\s+/) || [];
