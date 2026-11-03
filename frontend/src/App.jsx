@@ -1899,12 +1899,16 @@ export default function App() {
     : parserStatus?.configured
       ? "ошибка"
       : "PDF через Gemini";
-  const onecMcpHealthClass = onecMcpStatus?.reachable
+  const onecMcpHealthClass = onecMcpStatus?.reachable && onecMcpStatus?.status === "partial"
+    ? "warn"
+    : onecMcpStatus?.reachable
     ? "ok"
     : onecMcpStatus?.configured
       ? "error"
       : "warn";
-  const onecMcpHealthText = onecMcpStatus?.reachable
+  const onecMcpHealthText = onecMcpStatus?.reachable && onecMcpStatus?.status === "partial"
+    ? "частичное подключение: товары, остатки и цены"
+    : onecMcpStatus?.reachable
     ? `подключен, инструментов ${onecMcpStatus.tools_count || 0}`
     : onecMcpStatus?.configured
       ? "ошибка"
